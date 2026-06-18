@@ -19,6 +19,8 @@ VERSION    equ $A10001
 IO_DATA1   equ $A10003
 IO_CTRL1   equ $A10009
 
+    include "build/splash.i"       ; SPLASH_W / SPLASH_H / SPLASH_NTILES
+
 ; ---- channel struct ----
 NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
 CHSIZE     equ 32
@@ -69,6 +71,8 @@ cur_songrow equ $00FFE211          ; editing context: song row drilled from
 g_ticks    equ $00FFE212           ; VBlank tick counter (word) for the top-right readout
 play_mode  equ $00FFE214           ; 0 = full song, 1 = chain-solo, 2 = phrase-solo
 play_from  equ $00FFE215           ; song row to start from (full-song mode)
+in_splash  equ $00FFE216           ; 1 = showing the power-up splash
+splash_ctr equ $00FFE218           ; splash countdown (word)
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -76,7 +80,8 @@ SCR_PHRASE equ 0
 SCR_CHAIN  equ 1
 SCR_SONG   equ 2
 SCR_INSTR  equ 3
-SCR_MAXPOS equ 3                    ; rightmost map position
+SCR_FM     equ 4                    ; FM editor (below INSTR on the map)
+SCR_MAXPOS equ 3                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
 scb_data   equ $00FFE221
 ym_count   equ $00FFE260           ; YM write count + buffer (triples)
@@ -89,9 +94,13 @@ CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
 instrum    equ $00FFF700            ; instrument pool (INSTR_SIZE each)
-INSTR_SIZE equ 8                    ; [type, ...params] (params grow with the FM editor)
+INSTR_SIZE equ 40                   ; type + algo/fb + 4 ops x 8 params
 NINSTR     equ 32
 i_type     equ 0                    ; instrument field: type (0 FM, 1 SQ, 2 NO, 3 KIT)
+i_algo     equ 1                    ; FM algorithm 0-7
+i_fb       equ 2                    ; FM feedback 0-7
+i_op       equ 8                    ; 4 operators x 8 bytes: MUL DT TL AR D1 D2 RR SL
+FM_NPARM   equ 8
 NITYPE     equ 4
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
@@ -160,6 +169,8 @@ Start:
     add.w   #$0100, d0
     dbra    d1, .reg
 
+    move.w  #$8134, (a0)                ; display OFF while loading VRAM (writes during
+                                        ; active display drop and corrupt tiles)
     move.l  #$40000000, (a0)            ; clear VRAM
     move.w  #($10000/2)-1, d0
 .vc:
@@ -183,6 +194,12 @@ Start:
 .ft:
     move.w  (a1)+, VDP_DATA
     dbra    d0, .ft
+    move.l  #$60000000, (a0)            ; splash logo tiles -> VRAM $2000 (tile $100)
+    lea     splash_tiles, a1
+    move.w  #(SPLASH_NTILES*16)-1, d0
+.fs:
+    move.w  (a1)+, VDP_DATA
+    dbra    d0, .fs
 
     move.l  #$C0000000, (a0)            ; palette 0
     move.w  #$0E40, VDP_DATA            ; c0 sky blue (backdrop)
@@ -229,9 +246,15 @@ Start:
 .ci:
     move.b  #0, (a2)+
     dbra    d0, .ci
+    lea     default_fm, a1                ; instrument 0 = default FM patch
+    lea     instrum, a2
+    moveq   #INSTR_SIZE-1, d0
+.cdf:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .cdf
 
     bsr     engine_init
-    bsr     ym_setup                     ; M6-A: one FM voice + key-on
+    bsr     ym_setup                     ; build YM ch0's patch from instrument 0
     move.b  #0, cur_row
     move.b  #0, cur_col
     move.b  #0, key_prev
@@ -252,11 +275,12 @@ Start:
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
-    moveq   #1, d3
-    moveq   #1, d4                        ; title at top-left (col 1)
-    lea     str_title, a1
-    bsr     print_at
+    move.b  #1, in_splash                 ; power-up splash
+    move.w  #150, splash_ctr             ; ~2.5s, skippable with Start
 
+    lea     VDP_CTRL, a0
+    bsr     draw_splash                   ; draw splash while display is still off
+    move.w  #$8174, (a0)                  ; display ON -> splash visible
     move    #$2000, sr
 .forever:
     bra.s   .forever
@@ -265,6 +289,12 @@ Start:
 VBlankInt:
     movem.l d0-d7/a0-a6, -(sp)
     tst.w   VDP_CTRL
+    tst.b   in_splash                     ; power-up splash holds the screen
+    beq.s   .run
+    lea     VDP_CTRL, a0
+    bsr     splash_tick
+    bra     .vbend
+.run:
     bsr     input_tick
     bsr     engine_tick
     lea     VDP_CTRL, a0
@@ -292,7 +322,12 @@ VBlankInt:
     beq.s   .gch
     cmpi.b  #SCR_SONG, d0
     beq.s   .gsg
+    cmpi.b  #SCR_FM, d0
+    beq.s   .gfm
     bsr     render_instr
+    bra.s   .gd
+.gfm:
+    bsr     render_fm
     bra.s   .gd
 .gch:
     bsr     render_chain
@@ -368,8 +403,95 @@ VBlankInt:
     moveq   #35, d4
     bsr     print_at
     bsr     draw_map                      ; map at row5 col35
+.vbend:
     movem.l (sp)+, d0-d7/a0-a6
     rte
+
+; ---- power-up splash ----
+SPLASH_TILEBASE equ $0100                 ; VRAM $2000 / $20
+SPLASH_COL  equ (40-SPLASH_W)/2
+SPLASH_ROW  equ 8
+
+splash_tick:                              ; a0 = VDP_CTRL; count down, allow skip
+    addq.w  #1, g_ticks                   ; liveness counter (top-right of splash)
+    move.l  #$40C60003, (a0)
+    move.w  g_ticks, d2
+    lea     hexd, a1
+    moveq   #3, d3
+.tk:
+    rol.w   #4, d2
+    move.w  d2, d0
+    andi.w  #$000F, d0
+    move.b  (a1,d0.w), d0
+    andi.w  #$00FF, d0
+    move.w  d0, VDP_DATA
+    dbra    d3, .tk
+    bsr     pad_read
+    btst    #7, d0                        ; Start -> skip the splash
+    bne.s   .end
+    subq.w  #1, splash_ctr
+    bne.s   .ret
+.end:
+    bsr     clear_splash
+    moveq   #1, d3                        ; restore GENMDDJ title at row1 col1
+    moveq   #1, d4
+    lea     str_title, a1
+    bsr     print_at
+    move.b  #0, in_splash
+    move.b  #1, need_clear                ; redraw the UI next frame
+.ret:
+    rts
+
+draw_splash:                              ; a0 = VDP_CTRL; logo + version + hash
+    lea     splash_map, a2
+    moveq   #0, d5                        ; tile row 0..SPLASH_H-1
+.sr:
+    moveq   #0, d0                        ; clear high word (swap below needs it 0)
+    move.w  d5, d0
+    addi.w  #SPLASH_ROW, d0
+    lsl.w   #6, d0                        ; * 64
+    addi.w  #SPLASH_COL, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #SPLASH_W-1, d6
+.sc:
+    moveq   #0, d1
+    move.b  (a2)+, d1                     ; local tile index
+    addi.w  #SPLASH_TILEBASE, d1
+    move.w  d1, VDP_DATA
+    dbra    d6, .sc
+    addq.w  #1, d5
+    cmpi.w  #SPLASH_H, d5
+    bne.s   .sr
+    moveq   #SPLASH_ROW+SPLASH_H+1, d3    ; version, centred-ish
+    moveq   #17, d4
+    lea     ver_str, a1
+    bsr     print_at
+    moveq   #SPLASH_ROW+SPLASH_H+2, d3    ; git build stamp below
+    moveq   #16, d4
+    lea     git_hash_str, a1
+    bsr     print_at
+    rts
+
+clear_splash:                             ; a0 = VDP_CTRL; blank the visible plane
+    moveq   #0, d2
+.r:
+    move.w  d2, d0
+    lsl.w   #6, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  #40-1, d3
+.c:
+    move.w  #0, VDP_DATA
+    dbra    d3, .c
+    addq.w   #1, d2
+    cmpi.w  #28, d2
+    bne.s   .r
+    rts
 
 ; screen map widget: the screens in map order with the current one highlighted
 draw_map:                                 ; a0 = VDP_CTRL
@@ -391,6 +513,13 @@ draw_map:                                 ; a0 = VDP_CTRL
     addq.w  #1, d2
     cmpi.w  #4, d2
     bne.s   .ml
+    move.l  #$434C0003, (a0)             ; 'F' below 'I' at row 6, col 38
+    moveq   #'F', d0
+    cmpi.b  #SCR_FM, cur_screen
+    bne.s   .nfh
+    addi.w  #$60, d0                       ; highlight when on the FM editor
+.nfh:
+    move.w  d0, VDP_DATA
     rts
 
 ; a1 -> {header_str, name_str} pair for the current screen
@@ -405,6 +534,9 @@ screen_ptr:
     cmpi.b  #SCR_SONG, d0
     beq.s   .r
     lea     scr_in_tab, a1
+    cmpi.b  #SCR_INSTR, d0
+    beq.s   .r
+    lea     scr_fm_tab, a1
 .r:
     rts
 
@@ -453,6 +585,10 @@ input_tick:
     beq     .done
     move.b  d5, d2
     bsr     edit_value
+    cmpi.b  #SCR_FM, cur_screen           ; FM edit -> re-apply patch (heard next note)
+    bne.s   .ne
+    bsr     ym_setup
+.ne:
     rts
 .cheld:                                   ; C = map navigation + (temp) selector
     btst    #2, d5                         ; C+Left -> left on the map (toward SONG)
@@ -464,24 +600,23 @@ input_tick:
     bsr     screen_right
 .nsr:
     bsr     clamp_col
-    cmpi.b  #SCR_INSTR, cur_screen         ; C+Up/Down: browse instruments (INSTR only)
+    move.b  cur_screen, d0                 ; C+Up/Down: vertical map (INSTR <-> FM)
+    cmpi.b  #SCR_INSTR, d0
+    bne.s   .cvfm
+    btst    #1, d5                         ; INSTR + C+Down -> FM editor
+    beq.s   .done
+    move.b  #SCR_FM, cur_screen
+    bra.s   .vnav
+.cvfm:
+    cmpi.b  #SCR_FM, d0
     bne.s   .done
-    move.b  #NINSTR_ED, d1
-    lea     cur_instr, a1
-    btst    #0, d5                         ; C+Up -> previous
-    beq.s   .ncu
-    move.b  (a1), d0
-    beq.s   .ncu
-    subq.b  #1, d0
-    move.b  d0, (a1)
-.ncu:
-    btst    #1, d5                         ; C+Down -> next
+    btst    #0, d5                         ; FM + C+Up -> back to INSTR
     beq.s   .done
-    move.b  (a1), d0
-    cmp.b   d1, d0
-    beq.s   .done
-    addq.b  #1, d0
-    move.b  d0, (a1)
+    move.b  #SCR_INSTR, cur_screen
+.vnav:
+    move.b  #1, need_clear
+    move.b  #0, cur_row
+    move.b  #0, cur_col
 .done:
     rts
 
@@ -665,6 +800,25 @@ move_cursor:
     addq.b  #1, d0
     move.b  d0, cur_col
 .nr:
+    bsr     clamp_row
+    rts
+
+clamp_row:                                ; FM = 5 rows (0-4); INSTR = 1 row
+    move.b  cur_screen, d0
+    cmpi.b  #SCR_FM, d0
+    beq.s   .fm
+    cmpi.b  #SCR_INSTR, d0
+    beq.s   .in
+    rts
+.fm:
+    move.b  cur_row, d0
+    cmpi.b  #5, d0
+    blo.s   .cr_done                      ; 0-4 ok; 5-15 -> bottom row
+    move.b  #4, cur_row
+.cr_done:
+    rts
+.in:
+    move.b  #0, cur_row
     rts
 
 col_max:                                  ; -> d1 = highest column index for cur_screen
@@ -674,7 +828,12 @@ col_max:                                  ; -> d1 = highest column index for cur
     beq.s   .sg
     cmpi.b  #SCR_INSTR, d1
     beq.s   .in
+    cmpi.b  #SCR_FM, d1
+    beq.s   .fm
     moveq   #1, d1                        ; CHAIN: PH,TR
+    rts
+.fm:
+    moveq   #FM_NPARM-1, d1               ; FM: 8 op-param columns
     rts
 .ph:
     moveq   #3, d1                        ; PHRASE: NOT,IN,C,PR
@@ -767,14 +926,79 @@ get_field_addr:                           ; -> a1 = cursor field byte
     lea     instrum, a1
     moveq   #0, d0
     move.b  cur_instr, d0
-    lsl.w   #3, d0                          ; * INSTR_SIZE (8)
+    mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a1
     moveq   #0, d0
     move.b  cur_row, d0
     adda.w  d0, a1
     rts
 
+; FM cell edit: d2 = dpad bits; L/R = +-1, U/D = +-16, clamped to [0, param max]
+edit_fm:
+    lea     instrum, a3
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3
+    cmpi.b  #4, cur_row
+    beq.s   .algofb
+    moveq   #0, d0                         ; op grid: i_op + row*8 + col
+    move.b  cur_row, d0
+    lsl.w   #3, d0
+    moveq   #0, d1
+    move.b  cur_col, d1
+    add.w   d1, d0
+    addi.w  #i_op, d0
+    lea     0(a3,d0.w), a1
+    lea     fm_pmax, a2
+    moveq   #0, d3
+    move.b  (a2,d1.w), d3                  ; this param's max
+    bra.s   .adj
+.algofb:
+    tst.b   cur_col
+    bne.s   .fb
+    lea     (i_algo,a3), a1
+    moveq   #7, d3
+    bra.s   .adj
+.fb:
+    cmpi.b  #1, cur_col
+    bne.s   .efm_done                      ; algo row cols 2-7: nothing
+    lea     (i_fb,a3), a1
+    moveq   #7, d3
+.adj:
+    moveq   #0, d0
+    move.b  (a1), d0
+    btst    #2, d2
+    beq.s   .e1
+    subq.w  #1, d0
+.e1:
+    btst    #3, d2
+    beq.s   .e2
+    addq.w  #1, d0
+.e2:
+    btst    #0, d2
+    beq.s   .e3
+    addi.w  #$10, d0
+.e3:
+    btst    #1, d2
+    beq.s   .e4
+    subi.w  #$10, d0
+.e4:
+    tst.w   d0
+    bpl.s   .nlo
+    moveq   #0, d0
+.nlo:
+    cmp.w   d3, d0
+    bls.s   .nhi
+    move.w  d3, d0
+.nhi:
+    move.b  d0, (a1)
+.efm_done:
+    rts
+
 edit_value:
+    cmpi.b  #SCR_FM, cur_screen           ; FM editor: adjust the operator/global cell
+    beq     edit_fm
     cmpi.b  #SCR_INSTR, cur_screen        ; INSTRUMENT: cycle the field's value
     beq     edit_instr
     tst.b   cur_screen                    ; CHAIN/SONG: both cols are byte +-1/+-$10
@@ -1296,7 +1520,7 @@ render_instr:
     lea     instrum, a1
     moveq   #0, d0
     move.b  cur_instr, d0
-    lsl.w   #3, d0
+    mulu.w  #INSTR_SIZE, d0
     move.b  (a1,d0.w), d1                 ; type
     andi.w  #$0003, d1
     add.w   d1, d1
@@ -1309,6 +1533,103 @@ render_instr:
     andi.w  #$00FF, d0
     add.w   d4, d0
     move.w  d0, VDP_DATA
+    rts
+
+; FM editor: 4 operator rows (MUL DT TL AR D1 D2 RR SL) + ALGO/FB row
+render_fm:                                ; a0 = VDP_CTRL
+    moveq   #3, d3                        ; column header each frame (clear_grid on the
+    moveq   #1, d4                        ; switch frame can drop the one-shot header)
+    lea     str_hdr_fm, a1
+    bsr     print_at
+    lea     instrum, a3
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3                         ; a3 = instrum[cur_instr]
+    moveq   #0, d6                         ; operator row 0..3
+.oprow:
+    moveq   #0, d0                         ; "OPn" at (GRID_TOP+op, col1)
+    move.w  d6, d0
+    addi.w  #GRID_TOP, d0
+    lsl.w   #6, d0
+    addq.w  #1, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  d6, d0
+    add.w   d6, d0
+    add.w   d6, d0                         ; op * 3
+    lea     op_names, a1
+    adda.w  d0, a1
+    moveq   #2, d2
+.oplbl:
+    move.b  (a1)+, d0
+    andi.w  #$00FF, d0
+    move.w  d0, VDP_DATA
+    dbra    d2, .oplbl
+    moveq   #0, d5                         ; param 0..7
+.parm:
+    moveq   #0, d0                         ; addr at (GRID_TOP+op, fm_scol[param])
+    move.w  d6, d0
+    addi.w  #GRID_TOP, d0
+    lsl.w   #6, d0
+    lea     fm_scol, a1
+    moveq   #0, d1
+    move.b  (a1,d5.w), d1
+    add.w   d1, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  d6, d0                         ; value = a3[i_op + op*8 + param]
+    lsl.w   #3, d0
+    add.w   d5, d0
+    move.b  (i_op,a3,d0.w), d3
+    moveq   #0, d4
+    move.b  cur_row, d1                    ; highlight cursor cell
+    cmp.b   d6, d1
+    bne.s   .nhl
+    move.b  cur_col, d1
+    cmp.b   d5, d1
+    bne.s   .nhl
+    moveq   #$60, d4
+.nhl:
+    bsr     draw_hex2
+    addq.w  #1, d5
+    cmpi.w  #FM_NPARM, d5
+    bne.s   .parm
+    addq.w  #1, d6
+    cmpi.w  #4, d6
+    bne     .oprow
+    moveq   #GRID_TOP+6, d3                ; ALGO label
+    moveq   #1, d4
+    lea     str_algo, a1
+    bsr     print_at
+    move.l  #$458C0003, (a0)              ; algo value at row 11, col 6
+    move.b  (i_algo,a3), d3
+    moveq   #0, d4
+    cmpi.b  #4, cur_row
+    bne.s   .na
+    tst.b   cur_col
+    bne.s   .na
+    moveq   #$60, d4
+.na:
+    bsr     draw_hex2
+    moveq   #GRID_TOP+6, d3                ; FB label
+    moveq   #10, d4
+    lea     str_fb, a1
+    bsr     print_at
+    move.l  #$459A0003, (a0)              ; fb value at row 11, col 13
+    move.b  (i_fb,a3), d3
+    moveq   #0, d4
+    cmpi.b  #4, cur_row
+    bne.s   .nb
+    cmpi.b  #1, cur_col
+    bne.s   .nb
+    moveq   #$60, d4
+.nb:
+    bsr     draw_hex2
     rts
 
 draw_hex2:
@@ -1907,22 +2228,74 @@ push_scb:
     rts
 
 ; push a YM2612 write list (part,reg,value triples) once: patch + key-on
+; build YM ch0's patch from instrument 0's record and push it to the Z80.
+; per op (n=0..3, reg offset n*4): $30=(DT<<4)|MUL $40=TL $50=AR $60=D1R
+; $70=D2R $80=(SL<<4)|RR; then $B0=(FB<<3)|ALGO, $B4=$C0 (L+R)
 ym_setup:
     move.w  #$0100, Z80_BUSREQ
 .w:
     btst    #0, Z80_BUSREQ
     bne.s   .w
     move.b  #0, Z80_RAM+$1F01            ; psg_count = 0
-    move.b  #(fm_patch_end-fm_patch)/3, Z80_RAM+$1F20
-    lea     fm_patch, a1
+    lea     instrum, a3                   ; instrument 0 (the FM voice on F1)
     lea     Z80_RAM+$1F21, a2
-    move.w  #(fm_patch_end-fm_patch)-1, d0
-.cp:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .cp
+    moveq   #0, d7                        ; triple count
+    moveq   #0, d6                        ; operator 0..3
+.op:
+    move.w  d6, d5
+    lsl.w   #3, d5
+    addi.w  #i_op, d5                     ; param base = i_op + op*8
+    move.w  d6, d4
+    lsl.w   #2, d4                        ; reg offset = op*4
+    move.b  (1,a3,d5.w), d1               ; $30: (DT<<4)|MUL
+    lsl.b   #4, d1
+    move.b  (0,a3,d5.w), d0
+    or.b    d1, d0
+    move.b  #$30, d2
+    bsr     .emit
+    move.b  (2,a3,d5.w), d0               ; $40: TL
+    move.b  #$40, d2
+    bsr     .emit
+    move.b  (3,a3,d5.w), d0               ; $50: AR (RS=0)
+    move.b  #$50, d2
+    bsr     .emit
+    move.b  (4,a3,d5.w), d0               ; $60: D1R
+    move.b  #$60, d2
+    bsr     .emit
+    move.b  (5,a3,d5.w), d0               ; $70: D2R
+    move.b  #$70, d2
+    bsr     .emit
+    move.b  (7,a3,d5.w), d1               ; $80: (SL<<4)|RR
+    lsl.b   #4, d1
+    move.b  (6,a3,d5.w), d0
+    or.b    d1, d0
+    move.b  #$80, d2
+    bsr     .emit
+    addq.w  #1, d6
+    cmpi.w  #4, d6
+    bne.s   .op
+    moveq   #0, d4                        ; $B0: (FB<<3)|ALGO
+    move.b  (i_fb,a3), d1
+    lsl.b   #3, d1
+    move.b  (i_algo,a3), d0
+    or.b    d1, d0
+    move.b  #$B0, d2
+    bsr     .emit
+    move.b  #$C0, d0                      ; $B4: L+R
+    move.b  #$B4, d2
+    bsr     .emit
+    move.b  d7, Z80_RAM+$1F20            ; ym_count
     addq.b  #1, g_seq
     move.b  g_seq, Z80_RAM+$1F00
     move.w  #$0000, Z80_BUSREQ
+    rts
+.emit:                                    ; emit triple: part0, (d2+d4), d0
+    move.b  #0, (a2)+
+    move.b  d2, d1
+    add.b   d4, d1
+    move.b  d1, (a2)+
+    move.b  d0, (a2)+
+    addq.w  #1, d7
     rts
 
 ; ============================================================
@@ -1971,15 +2344,23 @@ Exception:
 ; data
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
+ver_str:    dc.b "V0.01",0
 str_hdr_ph: dc.b "   NOT IN C PR",0
 str_hdr_ch: dc.b "   PH TR      ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
+str_hdr_fm: dc.b "OP  MU DT TL AR D1 D2 RR SL",0
 str_scr_ph: dc.b "PHRASE",0
 str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
+str_scr_fm: dc.b "FM    ",0
+op_names:   dc.b "OP1OP2OP3OP4"            ; 3 chars per operator row
+fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26   ; 8 op-param columns
+fm_pmax:    dc.b 15, 7, 127, 31, 31, 31, 15, 15 ; MUL DT TL AR D1 D2 RR SL
 str_type:   dc.b "TYPE",0
+str_algo:   dc.b "ALGO",0
+str_fb:     dc.b "FB",0
 type_names: dc.b "FMSQNOKI"                 ; 2 chars per type (FM SQ NO KIt)
 map_letters: dc.b "SCPI"                    ; map order: SONG CHAIN PHRASE INSTR
 str_play:   dc.b "PLAY",0
@@ -2003,12 +2384,13 @@ ch_config:                                      ; type, p1, p2, p3 per channel
     dc.b 0, $C0, $D0, 0      ; T3 = square PSG ch2
     dc.b 2, $E0, $F0, 0      ; NO = noise PSG ch3
 scr_order:  dc.b SCR_SONG, SCR_CHAIN, SCR_PHRASE, SCR_INSTR   ; map pos -> screen id
-scr_pos:    dc.b 2, 1, 0, 3                 ; screen id -> map pos (PHRASE CHAIN SONG INSTR)
+scr_pos:    dc.b 2, 1, 0, 3, $FF            ; screen id -> map pos ($FF = off the row, FM)
     even
 scr_ph_tab: dc.l str_hdr_ph, str_scr_ph    ; {header, name} per screen
 scr_ch_tab: dc.l str_hdr_ch, str_scr_ch
 scr_sg_tab: dc.l str_hdr_sg, str_scr_sg
 scr_in_tab: dc.l str_hdr_in, str_scr_in
+scr_fm_tab: dc.l str_hdr_fm, str_scr_fm
 
 tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $00000000
@@ -2067,34 +2449,13 @@ demo_song_end:
 ; M6-A FM test: a minimal patch on YM channel 1 + key-on.
 ; triples: part(0=ch1-3), reg, value. algorithm 7 (all ops are carriers),
 ; op1 loud, ops 2-4 muted -> a single sine-ish FM voice.
-fm_patch:
-    dc.b 0,$30,$01  ; op1 DT/MUL=1
-    dc.b 0,$34,$01
-    dc.b 0,$38,$01
-    dc.b 0,$3C,$01
-    dc.b 0,$40,$00  ; op1 TL=0 (loud)
-    dc.b 0,$44,$7F  ; op2-4 TL=$7F (silent)
-    dc.b 0,$48,$7F
-    dc.b 0,$4C,$7F
-    dc.b 0,$50,$1F  ; AR=31 (fast attack)
-    dc.b 0,$54,$1F
-    dc.b 0,$58,$1F
-    dc.b 0,$5C,$1F
-    dc.b 0,$60,$00  ; DR=0
-    dc.b 0,$64,$00
-    dc.b 0,$68,$00
-    dc.b 0,$6C,$00
-    dc.b 0,$70,$00  ; SR=0
-    dc.b 0,$74,$00
-    dc.b 0,$78,$00
-    dc.b 0,$7C,$00
-    dc.b 0,$80,$0F  ; SL=0 RR=15
-    dc.b 0,$84,$0F
-    dc.b 0,$88,$0F
-    dc.b 0,$8C,$0F
-    dc.b 0,$B0,$07  ; feedback 0, algorithm 7
-    dc.b 0,$B4,$C0  ; L+R enabled
-fm_patch_end:                       ; (freq + key-on are driven per-note by the engine)
+; default FM voice (instrument 0): algo 7 (all carriers), op1 loud, op2-4 muted
+default_fm:
+    dc.b 0, 7, 0, 0,0,0,0,0        ; type, algo, fb, reserved
+    dc.b 1,0,0,  31,0,0,15,0       ; op0: MUL DT TL AR D1 D2 RR SL
+    dc.b 1,0,127,31,0,0,15,0       ; op1 (TL=127 = silent)
+    dc.b 1,0,127,31,0,0,15,0       ; op2
+    dc.b 1,0,127,31,0,0,15,0       ; op3
     even
 
 ; YM2612 F-numbers for one octave (C..B); block = note/12 selects the octave
@@ -2115,6 +2476,13 @@ notetable:
 z80_blob:
     incbin "build/driver.z80.bin"
 z80_blob_end:
+    even
+    include "build/gitver.i"             ; git_hash_str (build stamp)
+    even
+splash_tiles:
+    incbin "build/splash_tiles.bin"
+splash_map:
+    incbin "build/splash_map.bin"
     even
 font_data:
     incbin "build/font.bin"

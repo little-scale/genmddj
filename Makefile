@@ -28,7 +28,21 @@ $(Z80BIN): $(Z80SRC) | $(BUILD)
 	printf '[objects]\n$(BUILD)/driver.z80.o\n' > $(BUILD)/driver.link
 	wlalink -b $(BUILD)/driver.link $(Z80BIN)
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) | $(BUILD)
+SPLASH := $(BUILD)/splash.i
+GITVER := $(BUILD)/gitver.i
+
+$(SPLASH): tools/makesplash.py art/genmddj.png | $(BUILD)
+	python3 tools/makesplash.py art/genmddj.png \
+	    $(BUILD)/splash_tiles.bin $(BUILD)/splash_map.bin $(SPLASH) 32
+
+# build stamp: regenerated every build (FORCE) so hash/dirty flag stay current
+$(GITVER): FORCE | $(BUILD)
+	@hash=`git rev-parse --short=7 HEAD 2>/dev/null || echo 0000000`; \
+	 dirty=`test -n "$$(git status --porcelain 2>/dev/null)" && echo + || echo`; \
+	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
+FORCE:
+
+$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SPLASH) $(GITVER) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py
