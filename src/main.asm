@@ -2454,13 +2454,13 @@ ym_setup:
 .nolfo:
     move.b  #$22, d2
     bsr     .emit
-    moveq   #0, d6                        ; operator 0..3
+    moveq   #0, d6                        ; operator slot 0..3 (rows are in register order)
 .op:                                      ; params: MUL DT TL RS AR AM D1 D2 RR SL
     move.w  d6, d5
     mulu.w  #FM_NPARM, d5
-    addi.w  #i_op, d5                     ; param base = i_op + op*10
+    addi.w  #i_op, d5                     ; param base = i_op + slot*10
     move.w  d6, d4
-    lsl.w   #2, d4                        ; reg offset = op*4
+    lsl.w   #2, d4                        ; reg offset = slot*4 (S1,S3,S2,S4 = rows OP1,OP3,OP2,OP4)
     move.b  (1,a3,d5.w), d1               ; $30: (DT<<4)|MUL
     lsl.b   #4, d1
     move.b  (0,a3,d5.w), d0
@@ -2583,7 +2583,7 @@ str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
-op_names:   dc.b "OP1OP2OP3OP4"            ; 3 chars per operator row
+op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
     even
