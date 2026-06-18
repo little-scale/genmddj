@@ -20,6 +20,7 @@ IO_DATA1   equ $A10003
 IO_CTRL1   equ $A10009
 
     include "build/splash.i"       ; SPLASH_W / SPLASH_H / SPLASH_NTILES
+    include "build/algos.i"        ; ALGO_W / ALGO_H / ALGO_NTILES / ALGO_MAPSZ
 
 ; ---- channel struct ----
 NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
@@ -205,6 +206,12 @@ Start:
 .fs:
     move.w  (a1)+, VDP_DATA
     dbra    d0, .fs
+    move.l  #$6C000000, (a0)            ; FM algorithm tiles -> VRAM $2C00 (tile $160)
+    lea     algo_tiles, a1
+    move.w  #(ALGO_NTILES*16)-1, d0
+.fa:
+    move.w  (a1)+, VDP_DATA
+    dbra    d0, .fa
 
     move.l  #$C0000000, (a0)            ; palette 0
     move.w  #$0E40, VDP_DATA            ; c0 sky blue (backdrop)
@@ -346,12 +353,7 @@ VBlankInt:
     beq.s   .gch
     cmpi.b  #SCR_SONG, d0
     beq.s   .gsg
-    cmpi.b  #SCR_FM, d0
-    beq.s   .gfm
-    bsr     render_instr
-    bra.s   .gd
-.gfm:
-    bsr     render_fm
+    bsr     render_fm                     ; INSTR (and FM) = the FM editor
     bra.s   .gd
 .gch:
     bsr     render_chain
@@ -558,13 +560,6 @@ draw_map:                                 ; a0 = VDP_CTRL
     addq.w  #1, d2
     cmpi.w  #4, d2
     bne.s   .ml
-    move.l  #$434C0003, (a0)             ; 'F' below 'I' at row 6, col 38
-    moveq   #'F', d0
-    cmpi.b  #SCR_FM, cur_screen
-    bne.s   .nfh
-    addi.w  #$60, d0                       ; highlight when on the FM editor
-.nfh:
-    move.w  d0, VDP_DATA
     rts
 
 ; a1 -> {header_str, name_str} pair for the current screen
@@ -635,8 +630,11 @@ input_tick:
     beq     .done
     move.b  d5, d2
     bsr     edit_value
-    cmpi.b  #SCR_FM, cur_screen           ; FM edit -> re-apply patch (heard next note)
+    cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM edit -> re-apply patch (heard next note)
+    beq.s   .reapply
+    cmpi.b  #SCR_INSTR, cur_screen
     bne.s   .ne
+.reapply:
     bsr     ym_setup
 .ne:
     rts
@@ -650,23 +648,6 @@ input_tick:
     bsr     screen_right
 .nsr:
     bsr     clamp_col
-    move.b  cur_screen, d0                 ; C+Up/Down: vertical map (INSTR <-> FM)
-    cmpi.b  #SCR_INSTR, d0
-    bne.s   .cvfm
-    btst    #1, d5                         ; INSTR + C+Down -> FM editor
-    beq.s   .done
-    move.b  #SCR_FM, cur_screen
-    bra.s   .vnav
-.cvfm:
-    cmpi.b  #SCR_FM, d0
-    bne.s   .done
-    btst    #0, d5                         ; FM + C+Up -> back to INSTR
-    beq.s   .done
-    move.b  #SCR_INSTR, cur_screen
-.vnav:
-    move.b  #1, need_clear
-    move.b  #0, cur_row
-    move.b  #0, cur_col
 .done:
     rts
 
@@ -879,22 +860,19 @@ move_cursor:
     bsr     clamp_row
     rts
 
-clamp_row:                                ; FM = 9 rows (0-4 voice, 5-8 ops); INSTR = 1
+clamp_row:                                ; INSTR/FM = 11 rows (TYPE, 6 voice, 4 ops)
     move.b  cur_screen, d0
     cmpi.b  #SCR_FM, d0
     beq.s   .fm
     cmpi.b  #SCR_INSTR, d0
-    beq.s   .in
+    beq.s   .fm
     rts
 .fm:
     move.b  cur_row, d0
-    cmpi.b  #10, d0
-    blo.s   .cr_done                      ; 0-9 ok; 10-15 -> bottom row
-    move.b  #9, cur_row
+    cmpi.b  #11, d0
+    blo.s   .cr_done                      ; 0-10 ok; 11-15 -> bottom row
+    move.b  #10, cur_row
 .cr_done:
-    rts
-.in:
-    move.b  #0, cur_row
     rts
 
 col_max:                                  ; -> d1 = highest column index for cur_screen
@@ -903,13 +881,13 @@ col_max:                                  ; -> d1 = highest column index for cur
     cmpi.b  #SCR_SONG, d1
     beq.s   .sg
     cmpi.b  #SCR_INSTR, d1
-    beq.s   .in
+    beq.s   .fm
     cmpi.b  #SCR_FM, d1
     beq.s   .fm
     moveq   #1, d1                        ; CHAIN: PH,TR
     rts
 .fm:
-    cmpi.b  #6, cur_row                   ; voice/LFO rows have one value; op rows have 10
+    cmpi.b  #7, cur_row                   ; TYPE/voice/LFO rows have one value; ops have 10
     bhs.s   .fmop
     moveq   #0, d1
     rts
@@ -1021,12 +999,15 @@ edit_fm:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
-    cmpi.b  #6, cur_row
+    tst.b   cur_row
+    beq.s   .typeedit                      ; row 0 = instrument TYPE
+    cmpi.b  #7, cur_row
     bhs.s   .opedit
-    cmpi.b  #5, cur_row
+    cmpi.b  #6, cur_row
     beq.s   .lfoedit
-    moveq   #0, d0                         ; voice param (rows 0..4: ALGO FB PAN AMS FMS)
+    moveq   #0, d0                         ; voice param (rows 1..5: ALGO FB PAN AMS FMS)
     move.b  cur_row, d0
+    subq.b  #1, d0
     lea     voice_off, a1
     moveq   #0, d1
     move.b  (a1,d0.w), d1
@@ -1035,14 +1016,18 @@ edit_fm:
     moveq   #0, d3
     move.b  (a2,d0.w), d3
     bra.s   .adj
+.typeedit:
+    lea     (i_type,a3), a1
+    moveq   #NITYPE-1, d3
+    bra.s   .adj
 .lfoedit:
-    lea     g_lfo, a1                      ; row 5 = global LFO (0 off, 1-8 rate)
+    lea     g_lfo, a1                      ; row 6 = global LFO (0 off, 1-8 rate)
     moveq   #8, d3
     bra.s   .adj
 .opedit:
-    moveq   #0, d0                         ; op grid: i_op + (row-6)*10 + col
+    moveq   #0, d0                         ; op grid: i_op + (row-7)*10 + col
     move.b  cur_row, d0
-    subi.w  #6, d0
+    subi.w  #7, d0
     mulu.w  #FM_NPARM, d0
     moveq   #0, d1
     move.b  cur_col, d1
@@ -1084,10 +1069,10 @@ edit_fm:
     rts
 
 edit_value:
-    cmpi.b  #SCR_FM, cur_screen           ; FM editor: adjust the operator/global cell
+    cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: edit the cell
     beq     edit_fm
-    cmpi.b  #SCR_INSTR, cur_screen        ; INSTRUMENT: cycle the field's value
-    beq     edit_instr
+    cmpi.b  #SCR_INSTR, cur_screen
+    beq     edit_fm
     tst.b   cur_screen                    ; CHAIN/SONG: both cols are byte +-1/+-$10
     bne.s   .hexfield
     move.b  cur_col, d0
@@ -1622,10 +1607,13 @@ render_instr:
     move.w  d0, VDP_DATA
     rts
 
-FM_VHDR equ 4                             ; VOICE: header (rows 2-3 = top spacing)
-FM_VTOP equ 5                             ; voice params, one per row (5..9), LFO at 10
-FM_OHDR equ 12                            ; operator grid header
-FM_OTOP equ 13                            ; operator grid
+FM_VHDR equ 6                             ; VOICE: header (top spacing for instrument page)
+FM_VTOP equ 7                             ; voice params, one per row, LFO at FM_VTOP+5
+FM_OHDR equ 14                            ; operator grid header
+FM_OTOP equ 15                            ; operator grid
+ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
+ALGO_DIAG_ROW equ 6                       ; algorithm diagram (right of the voice list)
+ALGO_DIAG_COL equ 10
 
 ; FM editor: VOICE section (one param per row) then the 4-operator grid
 render_fm:                                ; a0 = VDP_CTRL
@@ -1634,6 +1622,29 @@ render_fm:                                ; a0 = VDP_CTRL
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3                         ; a3 = instrum[cur_instr]
+    moveq   #3, d3                         ; TYPE field (cur_row 0)
+    moveq   #1, d4
+    lea     str_type, a1
+    bsr     print_at
+    move.l  #$41900003, (a0)              ; type name at row 3, col 8
+    moveq   #0, d1
+    move.b  (i_type,a3), d1
+    andi.w  #$0003, d1
+    add.w   d1, d1
+    lea     type_names, a1
+    moveq   #0, d4
+    tst.b   cur_row                        ; highlight when cur_row == 0
+    bne.s   .tnh
+    moveq   #$60, d4
+.tnh:
+    move.b  (a1,d1.w), d0
+    andi.w  #$00FF, d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    move.b  (1,a1,d1.w), d0
+    andi.w  #$00FF, d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
     moveq   #FM_VHDR, d3                   ; "VOICE:" header
     moveq   #1, d4
     lea     str_voice, a1
@@ -1662,7 +1673,8 @@ render_fm:                                ; a0 = VDP_CTRL
     move.b  (a1,d6.w), d0
     move.b  (a3,d0.w), d3                  ; value
     moveq   #0, d4
-    move.b  cur_row, d1                    ; highlight if cur_row == voice idx
+    move.b  cur_row, d1                    ; highlight if cur_row-1 == voice idx
+    subq.b  #1, d1
     cmp.b   d6, d1
     bne.s   .vnh
     moveq   #$60, d4
@@ -1685,7 +1697,7 @@ render_fm:                                ; a0 = VDP_CTRL
     move.l  d0, (a0)
     move.b  g_lfo, d3
     moveq   #0, d4
-    cmpi.b  #5, cur_row
+    cmpi.b  #6, cur_row                    ; LFO cursor row (TYPE shifted everything +1)
     bne.s   .lnh
     moveq   #$60, d4
 .lnh:
@@ -1738,9 +1750,9 @@ render_fm:                                ; a0 = VDP_CTRL
     mulu.w  #FM_NPARM, d0
     add.w   d5, d0
     move.b  (i_op,a3,d0.w), d3
-    moveq   #0, d4                          ; highlight if cur_row==6+op && cur_col==param
+    moveq   #0, d4                          ; highlight if cur_row==7+op && cur_col==param
     move.b  cur_row, d1
-    subi.b  #6, d1
+    subi.b  #7, d1
     cmp.b   d6, d1
     bne.s   .nhl
     move.b  cur_col, d1
@@ -1763,6 +1775,38 @@ render_fm:                                ; a0 = VDP_CTRL
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .oprow
+    bsr     draw_algo_diagram             ; a3 still = instrum[cur_instr]
+    rts
+
+; draw the current algorithm's routing diagram (tilemap) for instrum a3
+draw_algo_diagram:                        ; a0 = VDP_CTRL, a3 = instrument
+    moveq   #0, d0
+    move.b  (i_algo,a3), d0
+    andi.w  #7, d0
+    mulu.w  #ALGO_MAPSZ, d0
+    lea     algo_maps, a2
+    adda.w  d0, a2                         ; a2 = this algorithm's tilemap
+    moveq   #0, d5                         ; tile row 0..ALGO_H-1
+.ar:
+    moveq   #0, d0                         ; addr at (ALGO_DIAG_ROW+row, ALGO_DIAG_COL)
+    move.w  d5, d0
+    addi.w  #ALGO_DIAG_ROW, d0
+    lsl.w   #6, d0
+    addi.w  #ALGO_DIAG_COL, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #ALGO_W-1, d6
+.ac:
+    moveq   #0, d1
+    move.b  (a2)+, d1
+    addi.w  #ALGO_TILEBASE, d1
+    move.w  d1, VDP_DATA
+    dbra    d6, .ac
+    addq.w  #1, d5
+    cmpi.w  #ALGO_H, d5
+    bne.s   .ar
     rts
 
 draw_hex1:                                ; d3 = value (low nibble), d4 = cursor offset
@@ -1792,8 +1836,11 @@ draw_hex2:
 draw_cmd:
     move.b  d3, d0
     bne.s   .v
-    moveq   #'.', d0
+    moveq   #'.', d0                       ; 0 = no command
+    bra.s   .draw
 .v:
+    addi.b  #$40, d0                       ; 1-26 -> 'A'-'Z' (H = HOP)
+.draw:
     andi.w  #$00FF, d0
     add.w   d4, d0
     move.w  d0, VDP_DATA
@@ -2062,11 +2109,21 @@ advance_ch:                               ; a6 = channel
 .nextchain:
     bsr     advance_chain                 ; phrase ended -> next chain step
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
-    beq.s   .ret
+    beq     .ret
     moveq   #0, d0
 .gotrow:
     move.b  d0, c_row(a6)
     movea.l c_phrase(a6), a1
+    move.w  d0, d1                         ; HOP: command 8 ('H') -> jump to param row
+    lsl.w   #2, d1
+    cmpi.b  #8, (2,a1,d1.w)
+    bne.s   .nohop
+    moveq   #0, d2
+    move.b  (3,a1,d1.w), d2               ; param = destination row (low nibble)
+    andi.b  #$0F, d2
+    subq.b  #1, d2                         ; next advance does +1, landing on param
+    move.b  d2, c_row(a6)
+.nohop:
     lsl.w   #2, d0
     moveq   #0, d2
     move.b  (a1,d0.w), d2                 ; note (0-95) or $FF
@@ -2635,10 +2692,10 @@ demo_song_end:
 ; default FM voice (instrument 0): algo 7 (all carriers), op1 loud, op2-4 muted
 default_fm:
     dc.b 0, 7, 0, 3, 0,0,0,0       ; type, algo, fb, pan(L+R), ams, fms, reserved
-    dc.b 1,0,0,  0,31,0,0,0,15,0   ; op0 (loud): MUL DT TL RS AR AM D1 D2 RR SL
-    dc.b 1,0,127,0,31,0,0,0,15,0   ; op1 (TL=127 = silent)
-    dc.b 1,0,127,0,31,0,0,0,15,0   ; op2
-    dc.b 1,0,127,0,31,0,0,0,15,0   ; op3
+    dc.b 1,0,0,  0,31,0,0,0,15,0   ; slot0 (loud): MUL DT TL RS AR AM D1 D2 RR SL
+    dc.b 1,0,127,0,31,0,0,0,15,0   ; slot1 (TL=127 = silent)
+    dc.b 1,0,127,0,31,0,0,0,15,0   ; slot2
+    dc.b 1,0,127,0,31,0,0,0,15,0   ; slot3
     even
 
 ; YM2612 F-numbers for one octave (C..B); block = note/12 selects the octave
@@ -2666,6 +2723,11 @@ splash_tiles:
     incbin "build/splash_tiles.bin"
 splash_map:
     incbin "build/splash_map.bin"
+    even
+algo_tiles:
+    incbin "build/algo_tiles.bin"
+algo_maps:
+    incbin "build/algo_maps.bin"
     even
 font_data:
     incbin "build/font.bin"

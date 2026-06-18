@@ -30,10 +30,15 @@ $(Z80BIN): $(Z80SRC) | $(BUILD)
 
 SPLASH := $(BUILD)/splash.i
 GITVER := $(BUILD)/gitver.i
+ALGOS  := $(BUILD)/algos.i
 
 $(SPLASH): tools/makesplash.py art/genmddj.png | $(BUILD)
 	python3 tools/makesplash.py art/genmddj.png \
 	    $(BUILD)/splash_tiles.bin $(BUILD)/splash_map.bin $(SPLASH) 32
+
+$(ALGOS): tools/makealgos.py | $(BUILD)
+	python3 tools/makealgos.py \
+	    $(BUILD)/algo_tiles.bin $(BUILD)/algo_maps.bin $(ALGOS)
 
 # build stamp: regenerated every build (FORCE) so hash/dirty flag stay current
 $(GITVER): FORCE | $(BUILD)
@@ -42,7 +47,7 @@ $(GITVER): FORCE | $(BUILD)
 	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
 FORCE:
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SPLASH) $(GITVER) | $(BUILD)
+$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SPLASH) $(ALGOS) $(GITVER) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py
