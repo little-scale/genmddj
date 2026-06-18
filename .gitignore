@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# build artifacts
+/build/
+a.out
+*.o
+
+# emulator core: large prebuilt binary + zipped copy (fetch separately);
+# retroshot is built from tools/emu/harness.c
+tools/emu/*.dylib
+tools/emu/*.zip
+tools/emu/retroshot
