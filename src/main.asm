@@ -1350,7 +1350,9 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     moveq   #0, d0                          ; + the column under the cursor (VOL/ARP/CMD/PRM)
     move.b  cur_col, d0
     adda.w  d0, a1
-    move.b  (a1), d0
+    cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0-26, wrap)
+    beq.s   .et_cmd
+    move.b  (a1), d0                         ; VOL/ARP/PRM: +-1 (L/R), +-$10 (U/D)
     btst    #2, d2
     beq.s   .et1
     subq.b  #1, d0
@@ -1369,10 +1371,29 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
 .et4:
     move.b  d0, (a1)
     rts
+.et_cmd:
+    move.b  (a1), d0
+    btst    #3, d2                           ; Right -> next command (wrap at 27)
+    beq.s   .etcl
+    addq.b  #1, d0
+    cmpi.b  #27, d0
+    blo.s   .etcl
+    moveq   #0, d0
+.etcl:
+    btst    #2, d2                           ; Left -> previous command (wrap to 26)
+    beq.s   .etcw
+    tst.b   d0
+    bne.s   .etcd
+    moveq   #27, d0
+.etcd:
+    subq.b  #1, d0
+.etcw:
+    move.b  d0, (a1)
+    rts
 
 edit_value:
-    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the arp cell
-    beq.s   edit_table
+    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the cursor cell
+    beq     edit_table
     cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: dispatch by instrument type
     beq.s   .instr
     cmpi.b  #SCR_INSTR, cur_screen
@@ -1615,7 +1636,13 @@ render_table:                             ; 4 columns: VOL ARP CMD PRM at screen
     bne.s   .tnh
     moveq   #$60, d4
 .tnh:
+    cmpi.w  #t_cmd, d5                     ; CMD column = a command letter, not hex
+    bne.s   .thex
+    bsr     draw_cmd
+    bra.s   .tadv
+.thex:
     bsr     draw_hex2
+.tadv:
     addq.w  #1, d5
     cmpi.w  #4, d5
     bne.s   .tc
