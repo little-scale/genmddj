@@ -24,8 +24,8 @@ IO_CTRL1   equ $A10009
 
 ; ---- channel struct ----
 NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
-CHSIZE     equ 32
-ch_state   equ $00FFE000           ; NCH * CHSIZE = 320 bytes ($FFE000-$FFE13F)
+CHSIZE     equ 34                  ; even (keeps the long c_phrase word-aligned)
+ch_state   equ $00FFE000           ; NCH * CHSIZE = 340 bytes ($FFE000-$FFE154)
 c_note     equ 0
 c_period   equ 2                    ; word
 c_vol      equ 4
@@ -49,6 +49,7 @@ c_ymkey    equ 28                   ; FM: $28 channel-select nibble (0-2, 4-6)
 c_trig     equ 29                   ; FM: 1 = retrigger (key-off, freq, key-on) this tick
 c_keyon    equ 30                   ; FM: desired key state
 c_kshadow  equ 31                   ; FM: last key state sent to the chip
+c_hold     equ 32                   ; gate countdown: $FF = held, else ticks until key-off
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -78,6 +79,14 @@ vdirty     equ $00FFE21A           ; 1 = input changed the grid; redraw needed
 eng_adv    equ $00FFE21B           ; 1 = engine advanced a step; redraw the playhead
 splash_row equ $00FFE21C           ; splash incremental-draw progress (0..SPLASH_H+1)
 g_lfo      equ $00FFE21D           ; global FM LFO: 0 = off, 1-8 = on at rate 0-7
+env_dirty  equ $00FFE21E           ; 1 = envelope needs rasterising (UI changed)
+env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progress
+env_ntdone equ $00FFE3CA           ; 0 = canvas nametable still needs writing this upload
+env_slot   equ $00FFE3CB           ; envelope rasteriser: operator slot 0..3 being drawn
+env_upos   equ $00FFE3CC           ; (word) upload cursor: next canvas tile to push
+env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connector)
+env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
+env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -107,6 +116,8 @@ i_fb       equ 2                    ; FM feedback 0-7
 i_pan      equ 3                    ; FM stereo pan: 0 off, 1 R, 2 L, 3 L+R
 i_ams      equ 4                    ; LFO amplitude-mod sensitivity 0-3
 i_fms      equ 5                    ; LFO freq-mod (vibrato) sensitivity 0-7
+i_hld      equ 6                    ; gate time: note-off after HLD*2 ticks; $F = hold
+i_vol      equ 7                    ; instrument volume 0-15 (attenuates carriers); $F = full
 i_op       equ 8                    ; 4 ops x 10: MUL DT TL RS AR AM D1 D2 RR SL
 FM_NPARM   equ 10
 NITYPE     equ 4
@@ -297,7 +308,16 @@ Start:
     lea     str_title, a1
     bsr     print_at
     move    #$2000, sr
-.forever:
+.forever:                                  ; idle loop does the heavy envelope raster
+    tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
+    beq.s   .forever
+    move.b  #0, env_dirty
+    cmpi.b  #SCR_INSTR, cur_screen
+    bne.s   .forever
+    bsr     env_rasterize
+    clr.w   env_upos                      ; (re)start the chunked upload from tile 0
+    clr.b   env_ntdone                    ; nametable first, then tile chunks
+    move.b  #1, env_ready                 ; VBlank pushes it a chunk at a time
     bra.s   .forever
 
 ; ============================================================
@@ -341,6 +361,7 @@ VBlankInt:
     bsr     print_at
     move.b  #0, need_clear
     move.b  #1, vdirty                    ; re-render next frame (header self-heals)
+    move.b  #1, env_dirty
     moveq   #1, d7
 .nc:
     bsr     get_playrow                   ; playhead position for this screen
@@ -432,6 +453,12 @@ VBlankInt:
     moveq   #35, d4
     bsr     print_at
     bsr     draw_map                      ; map at row5 col35
+    tst.b   env_ready                     ; push an envelope chunk every frame (budget OK)
+    beq.s   .vbend
+    cmpi.b  #SCR_INSTR, cur_screen
+    bne.s   .vbend
+    move.b  #0, env_ready
+    bsr     env_upload
 .vbend:
     movem.l (sp)+, d0-d7/a0-a6
     rte
@@ -636,6 +663,9 @@ input_tick:
     bne.s   .ne
 .reapply:
     bsr     ym_setup
+    cmpi.b  #NVOICE+2, cur_row            ; only an operator edit changes an envelope
+    blo.s   .ne
+    move.b  #1, env_dirty
 .ne:
     rts
 .cheld:                                   ; C = map navigation + (temp) selector
@@ -869,9 +899,9 @@ clamp_row:                                ; INSTR/FM = 11 rows (TYPE, 6 voice, 4
     rts
 .fm:
     move.b  cur_row, d0
-    cmpi.b  #11, d0
-    blo.s   .cr_done                      ; 0-10 ok; 11-15 -> bottom row
-    move.b  #10, cur_row
+    cmpi.b  #NVOICE+6, d0
+    blo.s   .cr_done                      ; 0..NVOICE+5 ok; clamp to bottom op row
+    move.b  #NVOICE+5, cur_row
 .cr_done:
     rts
 
@@ -887,7 +917,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #1, d1                        ; CHAIN: PH,TR
     rts
 .fm:
-    cmpi.b  #7, cur_row                   ; TYPE/voice/LFO rows have one value; ops have 10
+    cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
     bhs.s   .fmop
     moveq   #0, d1
     rts
@@ -1001,11 +1031,11 @@ edit_fm:
     adda.w  d0, a3
     tst.b   cur_row
     beq.s   .typeedit                      ; row 0 = instrument TYPE
-    cmpi.b  #7, cur_row
+    cmpi.b  #NVOICE+2, cur_row
     bhs.s   .opedit
-    cmpi.b  #6, cur_row
+    cmpi.b  #NVOICE+1, cur_row
     beq.s   .lfoedit
-    moveq   #0, d0                         ; voice param (rows 1..5: ALGO FB PAN AMS FMS)
+    moveq   #0, d0                         ; voice param (rows 1..NVOICE)
     move.b  cur_row, d0
     subq.b  #1, d0
     lea     voice_off, a1
@@ -1025,9 +1055,9 @@ edit_fm:
     moveq   #8, d3
     bra.s   .adj
 .opedit:
-    moveq   #0, d0                         ; op grid: i_op + (row-7)*10 + col
+    moveq   #0, d0                         ; op grid: i_op + (row-(NVOICE+2))*10 + col
     move.b  cur_row, d0
-    subi.w  #7, d0
+    subi.w  #NVOICE+2, d0
     mulu.w  #FM_NPARM, d0
     moveq   #0, d1
     move.b  cur_col, d1
@@ -1384,7 +1414,7 @@ render_cfield:                            ; d5=field(0=PH,1=TR), d6=row, d4=curs
     movem.l (sp)+, d4-d6/a1-a2
     rts
 
-clear_grid:                               ; a0=VDP_CTRL; blank header + grid rows (3..20)
+clear_grid:                               ; a0=VDP_CTRL; blank header + grid + envelope (3..24)
     moveq   #0, d2
 .row:
     moveq   #0, d0
@@ -1400,7 +1430,7 @@ clear_grid:                               ; a0=VDP_CTRL; blank header + grid row
     move.w  #' ', VDP_DATA
     dbra    d3, .col
     addq.w   #1, d2
-    cmpi.w  #18, d2                        ; rows 3..20
+    cmpi.w  #23, d2                        ; rows 3..25 (canvas + OP labels)
     bne.s   .row
     rts
 
@@ -1607,13 +1637,30 @@ render_instr:
     move.w  d0, VDP_DATA
     rts
 
-FM_VHDR equ 6                             ; VOICE: header (top spacing for instrument page)
-FM_VTOP equ 7                             ; voice params, one per row, LFO at FM_VTOP+5
+FM_VHDR equ 5                             ; VOICE: header (top spacing for instrument page)
+FM_VTOP equ 6                             ; voice params, one per row, LFO at FM_VTOP+NVOICE
 FM_OHDR equ 14                            ; operator grid header
 FM_OTOP equ 15                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
 ALGO_DIAG_ROW equ 6                       ; algorithm diagram (right of the voice list)
 ALGO_DIAG_COL equ 10
+ENV_TW  equ 32                            ; envelope canvas: 4 ops x 8 tiles wide, 4 tall
+ENV_TH  equ 4
+ENV_TILES equ ENV_TW*ENV_TH
+ENV_W   equ ENV_TW*8                      ; canvas px (256 x 32), each op = 64px sub-column
+ENV_H   equ ENV_TH*8
+ENV_VRAM equ $3400                        ; canvas tiles -> VRAM (after the algo tiles)
+ENV_TILEBASE equ ENV_VRAM/$20
+ENV_ROW equ 21                            ; canvas nametable position (below the op grid)
+ENV_COL equ 2
+ENV_LBLROW equ ENV_ROW+ENV_TH              ; OP labels centered below the boxes
+ENV_CHUNK equ 16                          ; canvas tiles uploaded per frame (~256 words)
+ENV_SUBW equ 64                           ; per-operator lane width (px)
+ENV_BOXT equ 1                            ; box top edge (1px margin from lane edge)
+ENV_BOXB equ ENV_H-2                       ; box bottom edge
+ENV_TOP equ ENV_BOXT+1                     ; curve/guide top: 1px INSIDE the box
+ENV_BOT equ ENV_BOXB-1                     ; curve/guide baseline: 1px inside the box
+ENV_AMAX equ ENV_BOT-ENV_TOP               ; max amplitude in px (curve clears the borders)
 
 ; FM editor: VOICE section (one param per row) then the 4-operator grid
 render_fm:                                ; a0 = VDP_CTRL
@@ -1681,14 +1728,14 @@ render_fm:                                ; a0 = VDP_CTRL
 .vnh:
     bsr     draw_hex1
     addq.w  #1, d6
-    cmpi.w  #5, d6
+    cmpi.w  #NVOICE, d6
     bne.s   .vrow
-    moveq   #FM_VTOP+5, d3                  ; LFO row (chip-wide global, cur_row 5)
+    moveq   #FM_VTOP+NVOICE, d3            ; LFO row (chip-wide global)
     moveq   #1, d4
     lea     str_lfo, a1
     bsr     print_at
     moveq   #0, d0                          ; value at col8
-    move.w  #FM_VTOP+5, d0
+    move.w  #FM_VTOP+NVOICE, d0
     lsl.w   #6, d0
     addi.w  #8, d0
     add.w   d0, d0
@@ -1697,12 +1744,12 @@ render_fm:                                ; a0 = VDP_CTRL
     move.l  d0, (a0)
     move.b  g_lfo, d3
     moveq   #0, d4
-    cmpi.b  #6, cur_row                    ; LFO cursor row (TYPE shifted everything +1)
+    cmpi.b  #NVOICE+1, cur_row             ; LFO cursor row (after TYPE + voice params)
     bne.s   .lnh
     moveq   #$60, d4
 .lnh:
     bsr     draw_hex1
-    moveq   #FM_VTOP+5, d3                  ; "(GLOBAL)" marker
+    moveq   #FM_VTOP+NVOICE, d3            ; "(GLOBAL)" marker
     moveq   #10, d4
     lea     str_global, a1
     bsr     print_at
@@ -1750,9 +1797,9 @@ render_fm:                                ; a0 = VDP_CTRL
     mulu.w  #FM_NPARM, d0
     add.w   d5, d0
     move.b  (i_op,a3,d0.w), d3
-    moveq   #0, d4                          ; highlight if cur_row==7+op && cur_col==param
+    moveq   #0, d4                          ; highlight if cur_row==NVOICE+2+op && cur_col==param
     move.b  cur_row, d1
-    subi.b  #7, d1
+    subi.b  #NVOICE+2, d1
     cmp.b   d6, d1
     bne.s   .nhl
     move.b  cur_col, d1
@@ -1776,6 +1823,30 @@ render_fm:                                ; a0 = VDP_CTRL
     cmpi.w  #4, d6
     bne     .oprow
     bsr     draw_algo_diagram             ; a3 still = instrum[cur_instr]
+    moveq   #0, d5                         ; OP labels centered under each envelope box
+.eolbl:
+    moveq   #0, d0                          ; clear high word (swap below puts it in cmd low!)
+    move.w  d5, d0
+    lsl.w   #3, d0                         ; slot*8
+    addi.w  #ENV_LBLROW*64+ENV_COL+2, d0   ; row 25, col = ENV_COL+2 + slot*8 (centered)
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  d5, d0                         ; op_names[slot*3 .. +2] = OP1/OP3/OP2/OP4
+    add.w   d5, d0
+    add.w   d5, d0
+    lea     op_names, a1
+    adda.w  d0, a1
+    moveq   #2, d6
+.eolc:
+    move.b  (a1)+, d0
+    andi.w  #$00FF, d0
+    move.w  d0, VDP_DATA
+    dbra    d6, .eolc
+    addq.w  #1, d5
+    cmpi.w  #4, d5
+    bne.s   .eolbl
     rts
 
 ; draw the current algorithm's routing diagram (tilemap) for instrum a3
@@ -1808,6 +1879,353 @@ draw_algo_diagram:                        ; a0 = VDP_CTRL, a3 = instrument
     cmpi.w  #ALGO_H, d5
     bne.s   .ar
     rts
+
+; ---- envelope diagram -----------------------------------------------------
+; rasterise the current operator's ADSR shape into env_canvas, then DMA it.
+; the envelope is y = f(x), so each column is one y -> no general line algo;
+; consecutive columns are joined with a vertical run (env_colpix).
+; env_rasterize: draw the curve into env_canvas (RAM only -- runs in the main
+; loop, NOT in VBlank: it is far too heavy for the ~18k-cycle VBlank budget).
+env_rasterize:
+    lea     instrum, a3
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3                         ; a3 = instrum[cur_instr]
+    lea     env_canvas, a1                 ; clear the whole bitmap (all 4 envelopes)
+    move.w  #(ENV_TILES*32/4)-1, d0
+    moveq   #0, d1
+.declr:
+    move.l  d1, (a1)+
+    dbra    d0, .declr
+    move.b  #0, env_slot                  ; draw each operator into its 64px sub-column
+.deslot:
+    moveq   #0, d0                         ; a4 = this slot's op params
+    move.b  env_slot, d0
+    mulu.w  #FM_NPARM, d0
+    addi.w  #i_op, d0
+    lea     0(a3,d0.w), a4
+    moveq   #0, d0                         ; aPeak = (127-TL) * ENV_AMAX / 127
+    move.b  (2,a4), d0
+    neg.w   d0
+    addi.w  #127, d0
+    mulu.w  #ENV_AMAX, d0
+    divu.w  #127, d0
+    andi.l  #$FFFF, d0
+    move.w  d0, d3                         ; d3 = aPeak
+    moveq   #0, d0                         ; aSus = aPeak * (15-SL) / 15
+    move.b  (9,a4), d0
+    andi.w  #$0F, d0
+    neg.w   d0
+    addi.w  #15, d0
+    mulu.w  d3, d0
+    divu.w  #15, d0
+    andi.l  #$FFFF, d0
+    move.w  d0, d4                         ; d4 = aSus
+    moveq   #0, d0                         ; aSus2 = aSus * (31-D2) / 31
+    move.b  (7,a4), d0
+    andi.w  #$1F, d0
+    neg.w   d0
+    addi.w  #31, d0
+    mulu.w  d4, d0
+    divu.w  #31, d0
+    andi.l  #$FFFF, d0
+    move.w  d0, d5                         ; d5 = aSus2
+    moveq   #0, d6                         ; x base = slot*64 + 2 (1px inside the box left)
+    move.b  env_slot, d6
+    lsl.w   #6, d6
+    addq.w  #2, d6
+    lea     env_pts, a2                    ; build (x,a) breakpoints (widths halved)
+    move.w  d6, (a2)+                      ; P0 x = base
+    clr.w   (a2)+                          ;    a = 0
+    moveq   #0, d0                         ; wA = (31-AR)>>1
+    move.b  (4,a4), d0
+    andi.w  #$1F, d0
+    moveq   #31, d1
+    sub.w   d0, d1
+    lsr.w   #1, d1
+    add.w   d1, d6
+    move.w  d6, (a2)+                      ; P1 x
+    move.w  d3, (a2)+                      ;    a = aPeak
+    moveq   #0, d0                         ; wD1 = (31-D1)>>1
+    move.b  (6,a4), d0
+    andi.w  #$1F, d0
+    moveq   #31, d1
+    sub.w   d0, d1
+    lsr.w   #1, d1
+    add.w   d1, d6
+    move.w  d6, (a2)+                      ; P2 x
+    move.w  d4, (a2)+                      ;    a = aSus
+    addi.w  #12, d6                        ; sustain hold (halved)
+    move.w  d6, (a2)+                      ; P3 x
+    move.w  d5, (a2)+                      ;    a = aSus2
+    moveq   #0, d0                         ; wR = (31-RR)>>1
+    move.b  (8,a4), d0
+    andi.w  #$1F, d0
+    moveq   #31, d1
+    sub.w   d0, d1
+    lsr.w   #1, d1
+    add.w   d1, d6
+    move.w  d6, (a2)+                      ; P4 x
+    clr.w   (a2)+                          ;    a = 0
+    bsr     env_decor                      ; box + dashed timing/amplitude guides (behind)
+    move.w  #ENV_BOT, env_prevy            ; connector starts at this envelope's baseline
+    lea     env_pts, a2                    ; draw the 4 segments
+.deseg:
+    move.w  (a2), d0
+    move.w  2(a2), d1
+    move.w  4(a2), d2
+    move.w  6(a2), d3
+    bsr     env_seg
+    addq.l  #4, a2
+    cmpa.l  #env_pts+16, a2
+    bne.s   .deseg
+    addq.b  #1, env_slot
+    cmpi.b  #4, env_slot
+    blo     .deslot
+    rts
+
+; env_upload: push ENV_CHUNK canvas tiles to VRAM and advance env_upos. Runs
+; one chunk per idle VBlank frame -- a full 64-tile blit overruns H40 VBlank and
+; tears the picture, so the upload is spread over several frames. Keeps env_ready
+; set until the whole canvas (and the static nametable, written on the first
+; chunk) has been sent. a0 = VDP_CTRL on entry.
+env_upload:
+    tst.b   env_ntdone                     ; nametable gets its own frame (128 words)
+    bne.s   .eutiles
+    st      env_ntdone
+    move.b  #1, env_ready                  ; tiles follow on subsequent idle frames
+    moveq   #0, d5
+.eunrow:
+    moveq   #0, d0                          ; clear high word (swap below puts it in cmd low!)
+    move.w  d5, d0
+    addi.w  #ENV_ROW, d0
+    lsl.w   #6, d0
+    addi.w  #ENV_COL, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  d5, d1
+    mulu.w  #ENV_TW, d1
+    addi.w  #ENV_TILEBASE, d1
+    moveq   #ENV_TW-1, d2
+.euncol:
+    move.w  d1, VDP_DATA
+    addq.w  #1, d1
+    dbra    d2, .euncol
+    addq.w  #1, d5
+    cmpi.w  #ENV_TH, d5
+    bne.s   .eunrow
+    rts                                       ; nametable done -> tiles next frame
+.eutiles:
+    move.w  env_upos, d1                   ; VRAM addr = ENV_VRAM + env_upos*32
+    lsl.w   #5, d1
+    addi.w  #ENV_VRAM, d1                   ; addr spans $3400..$43FF (crosses $4000!)
+    move.w  d1, d2                          ; A15,A14 -> command low word bits 1,0
+    rol.w   #2, d2
+    andi.w  #3, d2
+    moveq   #0, d0
+    move.w  d1, d0
+    andi.w  #$3FFF, d0                      ; A13..A0 -> high word
+    swap    d0
+    or.w    d2, d0
+    ori.l   #$40000000, d0
+    move.l  d0, (a0)
+    lea     env_canvas, a1                 ; source = env_canvas + env_upos*32
+    move.w  env_upos, d1
+    lsl.w   #5, d1
+    adda.w  d1, a1
+    move.w  #(ENV_CHUNK*16)-1, d0
+.eutc:
+    move.w  (a1)+, VDP_DATA
+    dbra    d0, .eutc
+    addi.w  #ENV_CHUNK, env_upos           ; next chunk, or finish the burst
+    cmpi.w  #ENV_TILES, env_upos
+    blo.s   .eumore
+    clr.w   env_upos
+    rts
+.eumore:
+    move.b  #1, env_ready                  ; more chunks -> keep going next idle frame
+    rts
+
+; env_seg: draw segment (d0=x0,d1=a0) -> (d2=x1,d3=a1); joins from env_prevy.
+; clobbers d0-d7,a1; preserves a0,a2,a3.
+env_seg:
+    move.w  d2, d4
+    sub.w   d0, d4                         ; dx
+    bne.s   .esm
+    move.w  d0, d5                         ; dx=0: single column at x0
+    move.w  #ENV_BOT, d6
+    sub.w   d3, d6
+    bra.s   env_colpix
+.esm:
+    move.w  d0, d5                         ; x = x0
+.esl:
+    move.w  d3, d6                         ; a = a0 + (a1-a0)*(x-x0)/dx
+    sub.w   d1, d6
+    move.w  d5, d7
+    sub.w   d0, d7
+    muls.w  d7, d6
+    divs.w  d4, d6
+    add.w   d1, d6
+    bpl.s   .esp
+    moveq   #0, d6
+.esp:
+    cmpi.w  #ENV_AMAX, d6
+    bls.s   .esc
+    move.w  #ENV_AMAX, d6
+.esc:
+    move.w  #ENV_BOT, d7
+    sub.w   d6, d7
+    move.w  d7, d6                         ; d6 = y
+    bsr     env_colpix
+    addq.w  #1, d5
+    cmp.w   d2, d5
+    ble.s   .esl
+    rts
+
+; env_colpix: at column d5=x, fill from env_prevy to d6=y; clobbers d6,d7; keeps d0-d5
+env_colpix:
+    move.w  d6, d7                         ; d7 = target y
+    move.w  env_prevy, d6                  ; d6 = old prev = start of the run
+    move.w  d7, env_prevy                  ; remember target for the next column
+    cmp.w   d7, d6                         ; iterate d6 from prev toward target d7
+    ble.s   .ecu
+.ecd:
+    bsr     env_setpix
+    subq.w  #1, d6
+    cmp.w   d7, d6
+    bge.s   .ecd
+    rts
+.ecu:
+    bsr     env_setpix
+    addq.w  #1, d6
+    cmp.w   d7, d6
+    ble.s   .ecu
+    rts
+
+; env_setpix: set colour-1 pixel at (d5=x,d6=y) in env_canvas; preserves all but flags
+env_setpix:
+    movem.l d0-d2/a1, -(sp)
+    move.w  d6, d0
+    lsr.w   #3, d0
+    mulu.w  #ENV_TW, d0                    ; tile_row * ENV_TW
+    move.w  d5, d1
+    lsr.w   #3, d1
+    add.w   d1, d0                         ; + tile_col = tile index
+    lsl.w   #5, d0                         ; * 32 bytes
+    move.w  d6, d1
+    andi.w  #7, d1
+    lsl.w   #2, d1                         ; (y&7) * 4
+    add.w   d1, d0
+    move.w  d5, d1
+    andi.w  #7, d1
+    lsr.w   #1, d1                         ; (x&7) >> 1 = byte within the tile row
+    add.w   d1, d0                         ; byte offset
+    lea     env_canvas, a1
+    move.b  #$10, d2                       ; even x -> high nibble
+    btst    #0, d5
+    beq.s   .spw
+    move.b  #$01, d2                       ; odd x -> low nibble
+.spw:
+    or.b    d2, (a1,d0.w)
+    movem.l (sp)+, d0-d2/a1
+    rts
+
+; env_hl: horizontal line/dash. d2=x0, d3=x1, d4=y, d7=0 solid / 1 dashed. keeps d2-d4,d7.
+env_hl:
+    move.w  d2, d5
+.hll:
+    tst.w   d7
+    beq.s   .hlp
+    btst    #0, d5                          ; dashed: only even columns
+    bne.s   .hls
+.hlp:
+    move.w  d4, d6
+    bsr     env_setpix
+.hls:
+    addq.w  #1, d5
+    cmp.w   d3, d5
+    ble.s   .hll
+    rts
+
+; env_vl: vertical line/dash. d4=x, d2=y0, d3=y1, d7=0 solid / 1 dashed. keeps d2-d4,d7.
+env_vl:
+    move.w  d2, d6
+.vll:
+    tst.w   d7
+    beq.s   .vlp
+    btst    #0, d6                          ; dashed: only even rows
+    bne.s   .vls
+.vlp:
+    move.w  d4, d5
+    bsr     env_setpix
+.vls:
+    addq.w  #1, d6
+    cmp.w   d3, d6
+    ble.s   .vll
+    rts
+
+; env_decor: bounding box (solid) + dashed timing/amplitude guides for env_slot.
+; env_pts must hold the breakpoints; clobbers d0-d7,a1,a2.
+env_decor:
+    moveq   #0, d0                          ; box left = slot*64 + 1
+    move.b  env_slot, d0
+    lsl.w   #6, d0
+    addq.w  #1, d0
+    move.w  d0, d2                          ; box left
+    move.w  d0, d3
+    addi.w  #ENV_SUBW-3, d3                 ; box right (base+62)
+    moveq   #ENV_BOXT, d4                   ; top edge
+    moveq   #0, d7
+    bsr     env_hl
+    moveq   #ENV_BOXB, d4                   ; bottom edge
+    moveq   #0, d7
+    bsr     env_hl
+    move.w  d2, d4                          ; left edge
+    moveq   #ENV_BOXT, d2
+    moveq   #ENV_BOXB, d3
+    moveq   #0, d7
+    bsr     env_vl
+    moveq   #0, d0                          ; right edge
+    move.b  env_slot, d0
+    lsl.w   #6, d0
+    addi.w  #ENV_SUBW-2, d0
+    move.w  d0, d4
+    moveq   #ENV_BOXT, d2
+    moveq   #ENV_BOXB, d3
+    moveq   #0, d7
+    bsr     env_vl
+    lea     env_pts, a2                    ; dashed vertical guides (1px inside the box)
+    move.w  4(a2), d4                       ; P1.x (attack end)
+    bsr     .vdash
+    move.w  8(a2), d4                       ; P2.x (decay end)
+    bsr     .vdash
+    move.w  12(a2), d4                      ; P3.x (sustain end)
+    bsr     .vdash
+    moveq   #0, d0                          ; dashed horizontal guides: peak + sustain levels
+    move.b  env_slot, d0
+    lsl.w   #6, d0
+    move.w  d0, d2
+    addq.w  #2, d2                          ; curve left = base+2
+    move.w  d0, d3
+    addi.w  #ENV_SUBW-3, d3                 ; curve right = base+61
+    lea     env_pts, a2
+    move.w  #ENV_BOT, d4                     ; peak level y = ENV_BOT - aPeak
+    sub.w   6(a2), d4
+    moveq   #1, d7
+    bsr     env_hl
+    move.w  #ENV_BOT, d4                     ; sustain level y = ENV_BOT - aSus
+    sub.w   10(a2), d4
+    moveq   #1, d7
+    bsr     env_hl
+    rts
+.vdash:
+    moveq   #ENV_TOP, d2
+    moveq   #ENV_BOT, d3
+    moveq   #1, d7
+    bra     env_vl
 
 draw_hex1:                                ; d3 = value (low nibble), d4 = cursor offset
     move.b  d3, d0
@@ -1924,6 +2342,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #0, c_trig(a6)
     move.b  #0, c_keyon(a6)
     move.b  #0, c_kshadow(a6)
+    move.b  #$FF, c_hold(a6)             ; gate inactive (no auto key-off until a note sets it)
     move.l  #phrases, c_phrase(a6)
     move.b  #0, c_songpos(a6)            ; song row 0; chain = song[0][track]
     lea     song, a2
@@ -2077,6 +2496,7 @@ engine_tick:
     lea     ch_state, a6
 .ch:
     bsr     env_ch
+    bsr     hold_tick
     bsr     compose_ch
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
@@ -2087,6 +2507,19 @@ engine_tick:
     beq.s   .nopush
     bsr     push_scb
 .nopush:
+    rts
+
+; gate countdown: $FF = held; else decrement, and request key-off when it hits 0
+hold_tick:                                ; a6 = channel
+    move.b  c_hold(a6), d0
+    cmpi.b  #$FF, d0
+    beq.s   .hret
+    subq.b  #1, d0
+    move.b  d0, c_hold(a6)
+    bne.s   .hret
+    move.b  #0, c_keyon(a6)               ; gate expired -> key-off
+    move.b  #$FF, c_hold(a6)
+.hret:
     rts
 
 advance_ch:                               ; a6 = channel
@@ -2114,27 +2547,62 @@ advance_ch:                               ; a6 = channel
 .gotrow:
     move.b  d0, c_row(a6)
     movea.l c_phrase(a6), a1
-    move.w  d0, d1                         ; HOP: command 8 ('H') -> jump to param row
+    move.w  d0, d1                         ; d1 = row*4 (command/param offset)
     lsl.w   #2, d1
-    cmpi.b  #8, (2,a1,d1.w)
-    bne.s   .nohop
+    move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
+    cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
+    beq.s   .cmd_hop
+    cmpi.b  #1, d2                         ; A = set FM algorithm to PR
+    beq     .cmd_algo
+    cmpi.b  #22, d2                        ; V = set FM volume to PR
+    beq     .cmd_vol
+    bra     .cmddone
+.cmd_hop:
     moveq   #0, d2
     move.b  (3,a1,d1.w), d2               ; param = destination row (low nibble)
     andi.b  #$0F, d2
     subq.b  #1, d2                         ; next advance does +1, landing on param
     move.b  d2, c_row(a6)
-.nohop:
+    bra     .cmddone
+.cmd_algo:
+    cmpi.b  #1, c_type(a6)                 ; FM channels only
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = new algorithm 0-7
+    andi.b  #7, d2
+    lea     instrum, a4
+    moveq   #0, d3
+    move.b  cur_instr, d3
+    mulu.w  #INSTR_SIZE, d3
+    move.b  d2, (i_algo,a4,d3.w)
+    bsr     ym_setup                       ; re-push patch: carriers re-derived, no key-on
+    bra.s   .cmd_reload
+.cmd_vol:
+    cmpi.b  #1, c_type(a6)
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = new volume 0-15
+    andi.b  #$0F, d2
+    lea     instrum, a4
+    moveq   #0, d3
+    move.b  cur_instr, d3
+    mulu.w  #INSTR_SIZE, d3
+    move.b  d2, (i_vol,a4,d3.w)
+    bsr     ym_setup
+.cmd_reload:
+    moveq   #0, d0                         ; ym_setup clobbered d0/a1 -> restore for note read
+    move.b  c_row(a6), d0
+    movea.l c_phrase(a6), a1
+.cmddone:
     lsl.w   #2, d0
     moveq   #0, d2
     move.b  (a1,d0.w), d2                 ; note (0-95) or $FF
     cmpi.w  #$FF, d2
-    beq.s   .ret
+    beq     .ret
     move.b  c_transp(a6), d3              ; + transpose (signed)
     ext.w   d3
     add.w   d3, d2
-    bmi.s   .ret
+    bmi     .ret
     cmpi.w  #96, d2
-    bhs.s   .ret
+    bhs     .ret
     move.b  d2, c_note(a6)
     move.b  c_type(a6), d3
     beq.s   .square
@@ -2142,6 +2610,19 @@ advance_ch:                               ; a6 = channel
     beq.s   .noise
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
+    lea     instrum, a4                  ; HLD: gate time from the current instrument
+    moveq   #0, d2
+    move.b  cur_instr, d2
+    mulu.w  #INSTR_SIZE, d2
+    move.b  (i_hld,a4,d2.w), d2
+    cmpi.b  #15, d2                      ; $F = hold until the next note
+    bne.s   .hldcnt
+    move.b  #$FF, c_hold(a6)
+    rts
+.hldcnt:
+    add.b   d2, d2                       ; HLD*2 (+1 so HLD=0 still gates, and != $FF)
+    addq.b  #1, d2
+    move.b  d2, c_hold(a6)
     rts
 .noise:                                   ; noise: note -> mode (low 3 bits), AHD vol
     andi.w  #$0007, d2
@@ -2467,7 +2948,21 @@ ym_setup:
     or.b    d1, d0
     move.b  #$30, d2
     bsr     .emit
-    move.b  (2,a3,d5.w), d0               ; $40: TL
+    move.b  (2,a3,d5.w), d0               ; $40: TL (+ VOL attenuation if this op is a carrier)
+    moveq   #0, d1
+    move.b  (i_algo,a3), d1
+    andi.w  #7, d1
+    lea     carrier_mask, a4
+    btst    d6, (a4,d1.w)                 ; slot d6 a carrier in this algorithm?
+    beq.s   .novol
+    moveq   #15, d1                       ; atten = (15 - VOL) * 8
+    sub.b   (i_vol,a3), d1
+    lsl.b   #3, d1
+    add.b   d1, d0
+    cmpi.b  #127, d0                      ; clamp (unsigned)
+    bls.s   .novol
+    moveq   #127, d0
+.novol:
     move.b  #$40, d2
     bsr     .emit
     move.b  (3,a3,d5.w), d1               ; $50: (RS<<6)|AR
@@ -2493,7 +2988,7 @@ ym_setup:
     bsr     .emit
     addq.w  #1, d6
     cmpi.w  #4, d6
-    bne.s   .op
+    bne     .op
     moveq   #0, d4                        ; $B0: (FB<<3)|ALGO
     move.b  (i_fb,a3), d1
     lsl.b   #3, d1
@@ -2594,13 +3089,16 @@ str_fb:     dc.b "FB",0
 str_pan:    dc.b "PAN",0
 str_ams:    dc.b "AMS",0
 str_fms:    dc.b "FMS",0
+str_hld:    dc.b "HLD",0
+str_vol:    dc.b "VOL",0
 str_lfo:    dc.b "LFO",0
 str_global: dc.b "(GLOBAL)",0
     even
-voice_lbl:  dc.l str_algo, str_fb, str_pan, str_ams, str_fms   ; 5 voice params
-voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms
-voice_max:  dc.b 7, 7, 3, 3, 7
+voice_lbl:  dc.l str_algo, str_fb, str_pan, str_ams, str_fms, str_hld, str_vol  ; 7
+voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms, i_hld, i_vol
+voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
     even
+NVOICE     equ 7                            ; voice params before the (global) LFO row
 type_names: dc.b "FMSQNOKI"                 ; 2 chars per type (FM SQ NO KIt)
 map_letters: dc.b "SCPI"                    ; map order: SONG CHAIN PHRASE INSTR
 str_play:   dc.b "PLAY",0
@@ -2691,11 +3189,17 @@ demo_song_end:
 ; op1 loud, ops 2-4 muted -> a single sine-ish FM voice.
 ; default FM voice (instrument 0): algo 7 (all carriers), op1 loud, op2-4 muted
 default_fm:
-    dc.b 0, 7, 0, 3, 0,0,0,0       ; type, algo, fb, pan(L+R), ams, fms, reserved
+    dc.b 0, 7, 0, 3, 0,0,15,15     ; type, algo, fb, pan(L+R), ams, fms, HLD=hold, VOL=full
     dc.b 1,0,0,  0,31,0,0,0,15,0   ; slot0 (loud): MUL DT TL RS AR AM D1 D2 RR SL
     dc.b 1,0,127,0,31,0,0,0,15,0   ; slot1 (TL=127 = silent)
     dc.b 1,0,127,0,31,0,0,0,15,0   ; slot2
     dc.b 1,0,127,0,31,0,0,0,15,0   ; slot3
+    even
+
+; carrier slots per algorithm (bit d6 set = record slot d6 is a carrier, in S1,S3,S2,S4
+; register order). VOL attenuates only carriers so it scales output without retiming/timbre.
+carrier_mask:
+    dc.b $08,$08,$08,$08,$0C,$0E,$0E,$0F
     even
 
 ; YM2612 F-numbers for one octave (C..B); block = note/12 selects the octave
