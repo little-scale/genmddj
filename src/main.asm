@@ -1886,25 +1886,20 @@ render_inst_hdr:
     moveq   #1, d4
     lea     str_type, a1
     bsr     print_at
-    move.l  #$42100003, (a0)              ; type name at row 4, col 8
-    moveq   #0, d1
+    moveq   #0, d1                          ; full type name at row 4, col 8
     move.b  (i_type,a3), d1
-    andi.w  #$0007, d1                     ; up to 5 types
-    add.w   d1, d1
-    lea     type_names, a1
-    moveq   #0, d4
-    cmpi.b  #1, cur_row                    ; highlight when cur_row == 1
+    andi.w  #$0007, d1
+    lsl.w   #2, d1
+    lea     type_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #0, d2                          ; highlight offset
+    cmpi.b  #1, cur_row
     bne.s   .tnh
-    moveq   #$60, d4
+    moveq   #$60, d2
 .tnh:
-    move.b  (a1,d1.w), d0
-    andi.w  #$00FF, d0
-    add.w   d4, d0
-    move.w  d0, VDP_DATA
-    move.b  (1,a1,d1.w), d0
-    andi.w  #$00FF, d0
-    add.w   d4, d0
-    move.w  d0, VDP_DATA
+    moveq   #4, d3
+    moveq   #8, d4
+    bsr     print_hl
     rts
 
 ; placeholder for KIT/WAVE until their editors land
@@ -1927,45 +1922,81 @@ render_psg:                               ; d7 = field count; a0 = VDP_CTRL
     bsr     render_inst_hdr               ; a3 = instrum[cur_instr]
     moveq   #0, d6                         ; field index
 .prow:
-    move.w  d6, d3                          ; label at (PSG_TOP+idx, col1)
-    addi.w  #PSG_TOP, d3
+    move.w  d6, d5                          ; display row = PSG_TOP + idx + group gaps
+    addi.w  #PSG_TOP, d5                    ;   blank row after VOL(0), DCY(3), TRM(7), TBS(9)
+    cmpi.w  #1, d6
+    blo.s   .nog
+    addq.w  #1, d5
+    cmpi.w  #4, d6
+    blo.s   .nog
+    addq.w  #1, d5
+    cmpi.w  #8, d6
+    blo.s   .nog
+    addq.w  #1, d5
+    cmpi.w  #10, d6
+    blo.s   .nog
+    addq.w  #1, d5
+.nog:
+    move.w  d5, d3                          ; label at (row, col1)
     moveq   #1, d4
     move.w  d6, d0
     lsl.w   #2, d0
     lea     psg_lbl, a1
     move.l  (a1,d0.w), a1
     bsr     print_at
-    moveq   #0, d0                          ; value cell at (PSG_TOP+idx, col8)
-    move.w  d6, d0
-    addi.w  #PSG_TOP, d0
-    lsl.w   #6, d0
-    addi.w  #8, d0
-    add.w   d0, d0
-    swap    d0
-    ori.l   #$40000003, d0
-    move.l  d0, (a0)
-    lea     psg_off, a1                    ; value from the record
+    lea     psg_off, a1                    ; value -> d1
     moveq   #0, d0
     move.b  (a1,d6.w), d0
-    move.b  (a3,d0.w), d3
-    moveq   #0, d4                          ; highlight if cur_row-2 == idx
-    move.b  cur_row, d1
-    subq.b  #2, d1
-    cmp.b   d6, d1
+    move.b  (a3,d0.w), d1
+    moveq   #0, d2                          ; highlight offset (cur_row-2 == idx)
+    move.b  cur_row, d0
+    subq.b  #2, d0
+    cmp.b   d6, d0
     bne.s   .pnh
-    moveq   #$60, d4
+    moveq   #$60, d2
 .pnh:
-    lea     psg_fmt, a1
-    tst.b   (a1,d6.w)
+    lea     psg_fmt, a1                    ; format dispatch
+    move.b  (a1,d6.w), d0
+    cmpi.b  #2, d0
+    beq.s   .pmode
+    cmpi.b  #3, d0
+    beq.s   .prate
+    moveq   #0, d3                          ; hex: value cell at (row, col8)
+    move.w  d5, d3
+    lsl.w   #6, d3
+    addi.w  #8, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    move.b  d1, d3                          ; value
+    move.b  d2, d4                          ; offset
+    tst.b   d0
     beq.s   .ph1
     bsr     draw_hex2
     bra.s   .pnext
 .ph1:
     bsr     draw_hex1
+    bra.s   .pnext
+.pmode:
+    lea     mode_lbl, a1
+    andi.w  #1, d1
+    lsl.w   #2, d1
+    move.l  (a1,d1.w), a1
+    bra.s   .penum
+.prate:
+    lea     rate_lbl, a1
+    andi.w  #3, d1
+    lsl.w   #2, d1
+    move.l  (a1,d1.w), a1
+.penum:
+    move.w  d5, d3                          ; print_hl(str, row, col8, offset d2)
+    moveq   #8, d4
+    bsr     print_hl
 .pnext:
     addq.w  #1, d6
     cmp.w   d7, d6
-    bne.s   .prow
+    bne     .prow
     rts
 
 render_fm:                                ; a0 = VDP_CTRL
@@ -3374,6 +3405,26 @@ print_at:
 .pd:
     rts
 
+; like print_at but adds d2 (char offset, e.g. $60 for highlight) to each tile
+print_hl:                                 ; a1=str, d3=row, d4=col, d2=char offset
+    moveq   #0, d0
+    move.w  d3, d0
+    lsl.w   #6, d0
+    add.w   d4, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+.phl:
+    move.b  (a1)+, d1
+    beq.s   .phd
+    andi.w  #$00FF, d1
+    add.w   d2, d1
+    move.w  d1, VDP_DATA
+    bra.s   .phl
+.phd:
+    rts
+
 Exception:
     bra.s   Exception
 
@@ -3419,7 +3470,21 @@ str_tbl:    dc.b "TBL",0
 str_tbs:    dc.b "TBS",0
 str_mode:   dc.b "MODE",0
 str_rate:   dc.b "RATE",0
+str_t_fm:   dc.b "FM",0
+str_t_kit:  dc.b "KIT",0
+str_t_wav:  dc.b "WAVE",0
+str_t_ton:  dc.b "TONE",0
+str_t_noi:  dc.b "NOISE",0
+str_random: dc.b "RANDOM  ",0               ; padded so a shorter value overwrites cleanly
+str_period: dc.b "PERIODIC",0
+str_r512:   dc.b "512     ",0
+str_r1k:    dc.b "1K      ",0
+str_r2k:    dc.b "2K      ",0
+str_pitch:  dc.b "PITCHED ",0
     even
+type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi
+mode_lbl:   dc.l str_random, str_period
+rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
 voice_lbl:  dc.l str_algo, str_fb, str_pan, str_ams, str_fms, str_hld, str_vol  ; 7
 voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms, i_hld, i_vol
 voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
@@ -3428,7 +3493,7 @@ voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
 psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm, ip_tbl, ip_tbs, ip_mode, ip_rate
 psg_max:    dc.b 15, 15, 15, 15, 255, 255, 255, 255, 31, 15, 1, 3
-psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0   ; 0 = hex1, 1 = hex2
+psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE text, 3 RATE text
     even
 NVOICE     equ 7                            ; voice params before the (global) LFO row
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
