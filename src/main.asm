@@ -3429,6 +3429,30 @@ compose_noise:                            ; a6=ch; a3/d6=PSG buf
     move.b  d3, (a3)+
     addq.b  #1, d6
 .nd:
+    move.b  c_period(a6), d0             ; rate 3 = pitched: steal T3 (chan 2) for the noise pitch
+    andi.b  #3, d0
+    cmpi.b  #3, d0
+    bne.s   .nret
+    moveq   #0, d0
+    move.b  c_note(a6), d0
+    cmpi.w  #96, d0
+    bhs.s   .nret                         ; no valid note yet -> leave T3 alone
+    add.w   d0, d0
+    lea     notetable, a1
+    move.w  (a1,d0.w), d2                ; T3 period = notetable[note]
+    move.b  d2, d3
+    andi.b  #$0F, d3
+    ori.b   #$C0, d3                     ; channel 2 tone latch + low nibble
+    move.b  d3, (a3)+
+    addq.b  #1, d6
+    move.w  d2, d3
+    lsr.w   #4, d3
+    andi.w  #$3F, d3
+    move.b  d3, (a3)+
+    addq.b  #1, d6
+    move.b  #$DF, (a3)+                  ; mute T3's own tone ($D0 vol latch | 15 = silent)
+    addq.b  #1, d6
+.nret:
     rts
 
 ; add the instrument's vibrato to a square period. VIB = (speed<<4)|depth; the LFO
