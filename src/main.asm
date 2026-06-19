@@ -3141,9 +3141,9 @@ advance_ch:                               ; a6 = channel
     beq.s   .noise
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
-    lea     instrum, a4                  ; HLD: gate time from the current instrument
-    moveq   #0, d2
-    move.b  cur_instr, d2
+    lea     instrum, a4                  ; HLD: gate time from the channel's instrument
+    moveq   #0, d2                       ; (c_instr -- NOT cur_instr: the editor's current
+    move.b  c_instr(a6), d2             ;  instrument must not change a playing FM voice's gate)
     mulu.w  #INSTR_SIZE, d2
     move.b  (i_hld,a4,d2.w), d2
     cmpi.b  #15, d2                      ; $F = hold until the next note
@@ -3663,9 +3663,15 @@ ym_setup:                                 ; editor/boot path: own BUSREQ, build 
 ; caller sets a2 (dest) + d7 (running count). NO BUSREQ / push of its own, so it is
 ; safe to call both standalone (ym_setup) and mid-SCB (push_scb's repatch append).
 ym_build_patch:
-    lea     instrum, a3                   ; the live instrument -> F1's voice
-    moveq   #0, d0
+    lea     instrum, a3                   ; F1's instrument: its own song instrument while
+    moveq   #0, d0                        ; playing, cur_instr only when editing -- so viewing
+    tst.b   playing                       ; another instrument can't overwrite a playing FM voice
+    beq.s   .ybcur
+    move.b  ch_state+c_instr, d0          ; F1 = channel 0
+    bra.s   .ybgot
+.ybcur:
     move.b  cur_instr, d0
+.ybgot:
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
     move.b  live_algo, d0                ; effective ALGO = transient override or stored value
