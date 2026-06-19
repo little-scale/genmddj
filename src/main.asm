@@ -713,7 +713,7 @@ draw_map:                                 ; a0 = VDP_CTRL; 3x5 nav cross at rows
     andi.w  #$000F, d3                      ; vrow
     addi.w  #5, d3                          ; row = 5 + vrow
     lsl.w   #6, d3
-    addi.w  #35, d4                         ; col = 35 + hcol
+    addi.w  #34, d4                         ; col = 34 + hcol (cross sits one col in from the edge)
     add.w   d4, d3
     add.w   d3, d3
     swap    d3
