@@ -476,7 +476,12 @@ VBlankInt:
     beq.s   .gtone
     cmpi.b  #4, d1
     beq.s   .gnoise
-    bsr     render_psg_stub               ; KIT/WAVE
+    cmpi.b  #1, d1
+    bne.s   .gwave
+    bsr     render_kit                    ; KIT
+    bra.s   .gd
+.gwave:
+    bsr     render_psg_stub               ; WAVE (stub)
     bra.s   .gd
 .gtone:
     bsr     render_tone
@@ -1153,7 +1158,11 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     mulu.w  #INSTR_SIZE, d0
     move.b  (i_type,a1,d0.w), d0
     beq.s   .crfm                          ; FM
-    moveq   #1, d1                          ; KIT/WAVE: INST/TYPE only
+    moveq   #1, d1                          ; WAVE: INST/TYPE only
+    cmpi.b  #1, d0
+    bne.s   .crkit
+    moveq   #2, d1                          ; KIT: + the kit-selector row
+.crkit:
     cmpi.b  #3, d0
     bne.s   .crk1
     moveq   #11, d1                         ; TONE: 1 + 10 fields
@@ -1476,6 +1485,13 @@ edit_psg:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
+    cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = the kit selector
+    bne.s   .ep_psgf
+    lea     (i_kit,a3), a1
+    moveq   #7, d3                          ; 8 kits (0..7)
+    moveq   #1, d4
+    bra     adj_field
+.ep_psgf:
     moveq   #0, d0
     move.b  cur_row, d0
     subq.b  #2, d0                          ; field index
@@ -2372,6 +2388,50 @@ render_psg_stub:
     moveq   #1, d4
     lea     str_wip, a1
     bsr     print_at
+    rts
+
+; KIT instrument page: the kit selector + a fill map of its 16 pads.
+render_kit:
+    bsr     render_inst_hdr
+    lea     instrum, a3
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3
+    moveq   #5, d3                          ; "KIT" + kit index at row 5 (cur_row 2)
+    moveq   #1, d4
+    lea     str_kit, a1
+    bsr     print_at
+    move.l  #$42900003, (a0)               ; kit index at row 5 col 8
+    move.b  (i_kit,a3), d3
+    moveq   #0, d4
+    cmpi.b  #2, cur_row
+    bne.s   .rk1
+    moveq   #$60, d4                         ; highlight the KIT field row
+.rk1:
+    bsr     draw_hex2
+    moveq   #7, d3                          ; "PADS" + 16 fill markers at row 7
+    moveq   #1, d4
+    lea     str_pads, a1
+    bsr     print_at
+    move.l  #$438C0003, (a0)               ; markers at row 7 col 6
+    lea     sample_pool, a4
+    moveq   #0, d2
+    move.b  (i_kit,a3), d2
+    lsl.w   #7, d2                          ; kit * 128 (16 members x 8 bytes)
+    adda.w  d2, a4
+    moveq   #15, d5
+.rkpad:
+    move.l  4(a4), d0                       ; member length (0 = empty pad)
+    moveq   #'-', d1
+    tst.l   d0
+    beq.s   .rkpe
+    moveq   #'#', d1
+.rkpe:
+    andi.w  #$00FF, d1
+    move.w  d1, VDP_DATA
+    lea     8(a4), a4
+    dbra    d5, .rkpad
     rts
 
 PSG_TOP equ 6                             ; PSG field list top row
@@ -4258,6 +4318,8 @@ fm_pstep:   dc.b 4, 4, 16, 1, 16, 1, 16, 4, 4, 4         ; B+U/D coarse step (<=
 str_inst:   dc.b "INST",0
 str_wip:    dc.b "(WIP)",0
 str_type:   dc.b "TYPE",0
+str_kit:    dc.b "KIT",0
+str_pads:   dc.b "PADS",0
 str_voice:  dc.b "VOICE:",0
 str_algo:   dc.b "ALGO",0
 str_fb:     dc.b "FB",0
