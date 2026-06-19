@@ -1164,7 +1164,44 @@ get_field_addr:                           ; -> a1 = cursor field byte
     adda.w  d0, a1
     rts
 
-; FM cell edit: d2 = dpad bits; L/R = +-1, U/D = +-16, clamped to [0, param max]
+; shared field adjust: a1=field addr, d2=dpad bits, d3=max, d4=coarse step.
+; L/R = +-1 (fine), U/D = +-step (coarse); result WRAPS to [0,max] (top<->bottom).
+adj_field:
+    moveq   #0, d0
+    move.b  (a1), d0
+    btst    #2, d2                          ; Left -1
+    beq.s   .af1
+    subq.w  #1, d0
+.af1:
+    btst    #3, d2                          ; Right +1
+    beq.s   .af2
+    addq.w  #1, d0
+.af2:
+    btst    #0, d2                          ; Up +step
+    beq.s   .af3
+    add.w   d4, d0
+.af3:
+    btst    #1, d2                          ; Down -step
+    beq.s   .af4
+    sub.w   d4, d0
+.af4:
+    move.w  d3, d1                          ; modulus = max+1
+    addq.w  #1, d1
+.aflo:
+    tst.w   d0
+    bpl.s   .afhi
+    add.w   d1, d0
+    bra.s   .aflo
+.afhi:
+    cmp.w   d3, d0
+    bls.s   .afwr
+    sub.w   d1, d0
+    bra.s   .afhi
+.afwr:
+    move.b  d0, (a1)
+    rts
+
+; FM cell edit: d2 = dpad bits; L/R = +-1, U/D = +-step, wrapping
 edit_fm:
     lea     instrum, a3
     moveq   #0, d0
@@ -1231,40 +1268,7 @@ edit_fm:
     moveq   #0, d4
     move.b  (a2,d1.w), d4
 .adj:
-    moveq   #0, d0
-    move.b  (a1), d0
-    btst    #2, d2
-    beq.s   .e1
-    subq.w  #1, d0
-.e1:
-    btst    #3, d2
-    beq.s   .e2
-    addq.w  #1, d0
-.e2:
-    btst    #0, d2                          ; Up = +coarse step
-    beq.s   .e3
-    add.w   d4, d0
-.e3:
-    btst    #1, d2                          ; Down = -coarse step
-    beq.s   .e4
-    sub.w   d4, d0
-.e4:
-    move.w  d3, d1                          ; wrap to [0,max] (top<->bottom), not clamp
-    addq.w  #1, d1                          ; modulus = max+1
-.adjlo:
-    tst.w   d0
-    bpl.s   .adjhi
-    add.w   d1, d0
-    bra.s   .adjlo
-.adjhi:
-    cmp.w   d3, d0
-    bls.s   .adjwr
-    sub.w   d1, d0
-    bra.s   .adjhi
-.adjwr:
-    move.b  d0, (a1)
-.efm_done:
-    rts
+    bra     adj_field                      ; a1=field d2=buttons d3=max d4=step -> wrap-adjust
 
 ; TONE/NOISE/KIT/WAVE editor: INST (row 0), TYPE (row 1), PSG fields (row 2+)
 edit_psg:
@@ -1331,28 +1335,10 @@ edit_psg:
     lea     psg_max, a2
     moveq   #0, d3
     move.b  (a2,d0.w), d3                   ; field max
-    moveq   #0, d0
-    move.b  (a1), d0
-    btst    #2, d2                          ; Left -> -1 (wrap to max)
-    beq.s   .ep_f1
-    tst.b   d0
-    bne.s   .ep_fdec
-    move.b  d3, d0
-    bra.s   .ep_f1
-.ep_fdec:
-    subq.b  #1, d0
-.ep_f1:
-    btst    #3, d2                          ; Right -> +1 (wrap to 0)
-    beq.s   .ep_fw
-    cmp.b   d3, d0
-    blo.s   .ep_finc
-    moveq   #0, d0
-    bra.s   .ep_fw
-.ep_finc:
-    addq.b  #1, d0
-.ep_fw:
-    move.b  d0, (a1)
-    rts
+    lea     psg_step, a2                   ; coarse step (B+Up/Down); TSP = 12 (octave)
+    moveq   #0, d4
+    move.b  (a2,d0.w), d4
+    bra     adj_field                      ; L/R +-1, U/D +-step, wrapping
 
 edit_table:                               ; left/right = +-1, up/down = +-$10 on the cursor cell
     lea     tbl_ram, a1
@@ -3981,6 +3967,7 @@ voice_step: dc.b 4, 4, 1, 1, 4, 4, 4                     ; ALGO FB (PAN AMS) FMS
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
 psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm, i_tbl, i_tbs, ip_mode, ip_rate
 psg_max:    dc.b 15, 15, 15, 15, 255, 255, 255, 255, 31, 15, 1, 3
+psg_step:   dc.b 4, 4, 4, 4, 12, 16, 16, 16, 16, 4, 1, 1   ; TSP=12; SWP/VIB/TRM/TBL=16
 psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE text, 3 RATE text
     even
 NVOICE     equ 7                            ; voice params before the (global) LFO row
