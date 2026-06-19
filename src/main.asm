@@ -24,8 +24,8 @@ IO_CTRL1   equ $A10009
 
 ; ---- channel struct ----
 NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
-CHSIZE     equ 36                  ; even (keeps the long c_phrase word-aligned)
-ch_state   equ $00FFE000           ; NCH * CHSIZE = 360 bytes ($FFE000-$FFE168)
+CHSIZE     equ 40                  ; even (keeps the long c_phrase word-aligned)
+ch_state   equ $00FFE000           ; NCH * CHSIZE = 400 bytes ($FFE000-$FFE190)
 c_note     equ 0
 c_period   equ 2                    ; word
 c_vol      equ 4
@@ -52,7 +52,10 @@ c_kshadow  equ 31                   ; FM: last key state sent to the chip
 c_hold     equ 32                   ; gate countdown: $FF = held, else ticks until key-off
 c_instr    equ 33                   ; instrument this channel is playing (from the phrase IN col)
 c_modph    equ 34                   ; PSG vibrato LFO phase
-c_modph2   equ 35                   ; PSG tremolo LFO phase (fits CHSIZE=36 padding)
+c_modph2   equ 35                   ; PSG tremolo LFO phase
+c_tbl      equ 36                   ; active macro table ($FF = none)
+c_trow     equ 37                   ; macro table row 0-15
+c_tctr     equ 38                   ; macro table tick counter (advances at TBS speed)
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -2649,6 +2652,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #0, c_instr(a6)
     move.b  #0, c_modph(a6)
     move.b  #0, c_modph2(a6)
+    move.b  #$FF, c_tbl(a6)
     move.l  #phrases, c_phrase(a6)
     move.b  #0, c_songpos(a6)            ; song row 0; chain = song[0][track]
     lea     song, a2
@@ -2941,6 +2945,16 @@ advance_ch:                               ; a6 = channel
     bhs     .ret
     move.b  d2, c_note(a6)
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
+    cmpi.b  #1, c_type(a6)               ; PSG: (re)start the instrument's macro table
+    beq.s   .notbset
+    lea     instrum, a4
+    moveq   #0, d3
+    move.b  c_instr(a6), d3
+    mulu.w  #INSTR_SIZE, d3
+    move.b  (ip_tbl,a4,d3.w), c_tbl(a6)
+    move.b  #0, c_trow(a6)
+    move.b  #0, c_tctr(a6)
+.notbset:
     move.b  c_type(a6), d3
     beq.s   .square
     cmpi.b  #2, d3
@@ -3067,6 +3081,42 @@ env_ch:                                   ; a6 = channel
     move.b  c_instr(a6), d1
     mulu.w  #INSTR_SIZE, d1
     adda.w  d1, a4
+    moveq   #0, d3                         ; macro table: advance at TBS, arp the period
+    move.b  c_tbl(a6), d3
+    cmpi.b  #$FF, d3
+    beq.s   .notbl
+    addq.b  #1, c_tctr(a6)
+    move.b  c_tctr(a6), d1
+    moveq   #0, d2
+    move.b  (ip_tbs,a4), d2
+    bne.s   .tbsok
+    moveq   #1, d2                          ; TBS 0 -> 1 (per-note advance deferred)
+.tbsok:
+    cmp.b   d2, d1
+    blo.s   .tapply
+    move.b  #0, c_tctr(a6)
+    move.b  c_trow(a6), d1
+    addq.b  #1, d1
+    andi.b  #$0F, d1                        ; loop row 16 -> 0
+    move.b  d1, c_trow(a6)
+.tapply:
+    lsl.w   #4, d3                          ; table# * 16 + row
+    moveq   #0, d1
+    move.b  c_trow(a6), d1
+    add.w   d1, d3
+    lea     psg_tables, a1
+    move.b  (a1,d3.w), d3                  ; signed semitone offset
+    ext.w   d3
+    moveq   #0, d1
+    move.b  c_note(a6), d1
+    add.w   d1, d3                          ; effective note
+    bmi.s   .notbl
+    cmpi.w  #96, d3
+    bhs.s   .notbl
+    add.w   d3, d3
+    lea     notetable, a1
+    move.w  (a1,d3.w), c_period(a6)
+.notbl:
     move.b  (ip_swp,a4), d3               ; SWP: per-tick pitch slide (signed period delta)
     beq.s   .noswp
     ext.w   d3
@@ -3756,6 +3806,13 @@ default_tone:                      ; a basic TONE (PSG square) instrument
 ; register order). VOL attenuates only carriers so it scales output without retiming/timbre.
 carrier_mask:
     dc.b $08,$08,$08,$08,$0C,$0E,$0E,$0F
+    even
+
+; macro tables: 32 tables x 16 rows of signed semitone (arp) offset. Table 0 is a
+; demo major arpeggio; the rest are empty until the TABLE editor screen lands.
+psg_tables:
+    dc.b 0, 4, 7, 0, 4, 7, 0, 4, 7, 0, 4, 7, 0, 4, 7, 0
+    dcb.b 31*16, 0
     even
 
 ; YM2612 F-numbers for one octave (C..B); block = note/12 selects the octave
