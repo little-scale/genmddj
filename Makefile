@@ -17,8 +17,8 @@ NOTES    := $(BUILD)/notes.bin
 Z80SRC   := src/z80/driver.asm
 Z80BIN   := $(BUILD)/driver.z80.bin
 
-$(FONT): tools/makefont.py tools/font8x8_basic.h | $(BUILD)
-	python3 tools/makefont.py tools/font8x8_basic.h $(FONT)
+$(FONT): tools/makefont.py | $(BUILD)
+	python3 tools/makefont.py $(FONT)
 
 $(NOTES): tools/maketables.py | $(BUILD)
 	python3 tools/maketables.py $(NOTES)
