@@ -1048,7 +1048,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     beq.s   .fm
     cmpi.b  #SCR_TABLE, d1
     bne.s   .cmch
-    moveq   #0, d1                        ; TABLE: 1 column (ARP)
+    moveq   #3, d1                        ; TABLE: 4 columns (VOL ARP CMD PRM)
     rts
 .cmch:
     moveq   #1, d1                        ; CHAIN: PH,TR
@@ -1337,7 +1337,7 @@ edit_psg:
     move.b  d0, (a1)
     rts
 
-edit_table:                               ; left/right = +-1, up/down = +-$10 on the arp cell
+edit_table:                               ; left/right = +-1, up/down = +-$10 on the cursor cell
     lea     tbl_ram, a1
     moveq   #0, d0
     move.b  cur_table, d0
@@ -1347,7 +1347,9 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     lsl.w   #2, d1
     add.w   d1, d0
     adda.w  d0, a1
-    addq.w  #t_arp, a1                      ; ARP column
+    moveq   #0, d0                          ; + the column under the cursor (VOL/ARP/CMD/PRM)
+    move.b  cur_col, d0
+    adda.w  d0, a1
     move.b  (a1), d0
     btst    #2, d2
     beq.s   .et1
@@ -1577,37 +1579,49 @@ pad_read:
 ; ============================================================
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
-render_table:
-    moveq   #0, d6
+render_table:                             ; 4 columns: VOL ARP CMD PRM at screen cols 4/8/12/16
+    moveq   #0, d6                         ; row 0-15
 .tr:
     bsr     draw_rowhdr                    ; row number + playhead at the left
-    moveq   #0, d0                         ; ARP cell at (GRID_TOP+row, col4)
+    moveq   #0, d5                         ; column 0-3
+.tc:
+    moveq   #0, d0                         ; VDP addr for (GRID_TOP+row, 4 + col*4)
     move.w  d6, d0
     addi.w  #GRID_TOP, d0
     lsl.w   #6, d0
-    addi.w  #4, d0
+    move.w  d5, d1
+    lsl.w   #2, d1
+    addi.w  #4, d1
+    add.w   d1, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    lea     tbl_ram, a1                    ; ARP = tbl_ram[cur_table*64 + row*4 + t_arp]
+    lea     tbl_ram, a1                    ; value = tbl_ram[cur_table*64 + row*4 + col]
     moveq   #0, d0
     move.b  cur_table, d0
     lsl.w   #6, d0
     move.w  d6, d1
     lsl.w   #2, d1
     add.w   d1, d0
-    move.b  (t_arp,a1,d0.w), d3
-    moveq   #0, d4
-    move.b  cur_row, d0                    ; highlight the cursor row
+    add.w   d5, d0
+    move.b  (a1,d0.w), d3
+    moveq   #0, d4                         ; highlight if cursor on this cell
+    move.b  cur_row, d0
     cmp.b   d6, d0
+    bne.s   .tnh
+    move.b  cur_col, d0
+    cmp.b   d5, d0
     bne.s   .tnh
     moveq   #$60, d4
 .tnh:
     bsr     draw_hex2
+    addq.w  #1, d5
+    cmpi.w  #4, d5
+    bne.s   .tc
     addq.w  #1, d6
     cmpi.w  #TBL_ROWS, d6
-    bne.s   .tr
+    bne     .tr
     rts
 
 ; ============================================================
@@ -3763,7 +3777,7 @@ str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
 str_scr_tb: dc.b "TABLE ",0
-str_hdr_tb: dc.b "   ARP",0
+str_hdr_tb: dc.b "    VL  AR  CM  PR",0
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
