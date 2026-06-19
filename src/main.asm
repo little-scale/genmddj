@@ -1209,18 +1209,13 @@ adj_field:
     beq.s   .af4
     sub.w   d4, d0
 .af4:
-    move.w  d3, d1                          ; modulus = max+1
-    addq.w  #1, d1
-.aflo:
-    tst.w   d0
-    bpl.s   .afhi
-    add.w   d1, d0
-    bra.s   .aflo
-.afhi:
+    tst.w   d0                              ; clamp to [0,max] (hold to slam to min/max)
+    bpl.s   .afnlo
+    moveq   #0, d0
+.afnlo:
     cmp.w   d3, d0
     bls.s   .afwr
-    sub.w   d1, d0
-    bra.s   .afhi
+    move.w  d3, d0
 .afwr:
     move.b  d0, (a1)
     rts
@@ -1534,16 +1529,13 @@ edit_value:
     beq.s   .n4
     subi.w  #12, d0
 .n4:
-.nwlo:                                     ; wrap to [0,95] (octave roll-over), not clamp
-    tst.w   d0
-    bpl.s   .nwhi
-    addi.w  #96, d0
-    bra.s   .nwlo
-.nwhi:
+    tst.w   d0                              ; clamp to [0,95]
+    bpl.s   .nlo
+    moveq   #0, d0
+.nlo:
     cmpi.w  #95, d0
-    bls.s   .nhi
-    subi.w  #96, d0
-    bra.s   .nwhi
+    ble.s   .nhi
+    move.w  #95, d0
 .nhi:
     move.b  d0, (a1)
     move.b  d0, last_note
