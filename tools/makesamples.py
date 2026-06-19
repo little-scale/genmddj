@@ -25,7 +25,7 @@ import sys, os, re, glob, wave, struct
 import numpy as np
 
 MAGIC = b'GMDJKIT1'
-NKITS = 8
+NKITS = 16
 NPADS = 16
 DAC_RATE = 17756                 # k=3 Timer-A cadence (DESIGN Q2)
 HEADER = 16
