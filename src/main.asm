@@ -2416,9 +2416,10 @@ render_kit:
     bsr     print_at
     move.l  #$438C0003, (a0)               ; markers at row 7 col 6
     lea     sample_pool, a4
+    adda.w  #16, a4                          ; skip the magic header -> directory
     moveq   #0, d2
     move.b  (i_kit,a3), d2
-    lsl.w   #7, d2                          ; kit * 128 (16 members x 8 bytes)
+    lsl.w   #8, d2                          ; kit * 256 (16 members x 16 bytes)
     adda.w  d2, a4
     moveq   #15, d5
 .rkpad:
@@ -2430,7 +2431,7 @@ render_kit:
 .rkpe:
     andi.w  #$00FF, d1
     move.w  d1, VDP_DATA
-    lea     8(a4), a4
+    lea     16(a4), a4
     dbra    d5, .rkpad
     rts
 
@@ -4044,10 +4045,11 @@ push_scb:
 ; window bank/pointer, and pushes the DAC command (own BUSREQ). Empty pad = no-op.
 dac_play:
     movem.l d2-d6/a0, -(sp)
-    move.w  d0, d2                         ; member index = (kit*16 + pad) * 8
+    move.w  d0, d2                         ; member = pool + 16 (header) + (kit*16+pad)*16
     lsl.w   #4, d2
     add.w   d1, d2
-    lsl.w   #3, d2
+    lsl.w   #4, d2                          ; *16 (member size)
+    addi.w  #16, d2                         ; skip the magic header
     lea     sample_pool, a0
     move.l  (a0,d2.w), d3                  ; member offset (bytes from pool start)
     move.l  4(a0,d2.w), d4                 ; member length

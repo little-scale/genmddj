@@ -1,23 +1,37 @@
 #!/usr/bin/env python3
 """Build the genmddj sample pool (kit directory + 8-bit PCM) from samples/kit NN/*.wav.
 
-Pool layout (big-endian, 68k-native), labelled `sample_pool` in ROM:
-  directory : NKITS * NPADS members, 8 bytes each
-    member  = { u32 offset (bytes from pool start), u32 length }   (length 0 = empty pad)
-  pcm       : concatenated 8-bit *unsigned* samples (0x80 = silence) at ~DAC_RATE Hz
+Pool layout (big-endian, 68k-native), labelled `sample_pool` in ROM. The 8-byte
+magic lets the browser kit-patcher locate and rewrite the pool in a built ROM.
+
+  header (16 bytes):
+    +0  magic  "GMDJKIT1"
+    +8  nkits  (1)
+    +9  npads  (1)
+    +10 rate   (u16, DAC sample rate)
+    +12 reserved (4, zero)
+  directory (nkits*npads members, 16 bytes each):
+    +0  offset (u32, bytes from pool start to this pad's PCM)
+    +4  length (u32, byte count; 0 = empty pad)
+    +8  name   (8 ASCII, null-padded; display only)
+  pcm: concatenated 8-bit *unsigned* samples (0x80 = silence) at `rate` Hz
 
 The 68k reads a member directly (ROM is on its bus) and hands the Z80 the absolute
 ROM pointer + length in the SCB DAC command; the Z80 streams it to YM2612 reg $2A.
 
     makesamples.py samples/ build/samples.bin
 """
-import sys, os, glob, wave, struct
+import sys, os, re, glob, wave, struct
 import numpy as np
 
+MAGIC = b'GMDJKIT1'
 NKITS = 8
 NPADS = 16
 DAC_RATE = 17756                 # k=3 Timer-A cadence (DESIGN Q2)
-DIR_SIZE = NKITS * NPADS * 8
+HEADER = 16
+MEMBER = 16
+DIR_SIZE = NKITS * NPADS * MEMBER
+POOL_BASE = HEADER + DIR_SIZE    # first PCM byte
 
 
 def load_wav_8bit(path):
@@ -41,8 +55,14 @@ def load_wav_8bit(path):
     loud = np.where(np.abs(v) > 0.02)[0]                      # trim trailing silence
     if len(loud):
         v = v[:loud[-1] + 1]
-    b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned, 0x80 = silence
+    b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned
     return bytes(b)
+
+
+def pad_name(path):
+    base = os.path.splitext(os.path.basename(path))[0]
+    base = re.sub(r'^\s*\d+\s*', '', base)           # drop a leading "NN " index
+    return base[:8]
 
 
 def main():
@@ -55,23 +75,24 @@ def main():
             continue
         for i, wpath in enumerate(sorted(glob.glob(os.path.join(kdir, '*.wav')))[:NPADS]):
             data = load_wav_8bit(wpath)
-            if len(data) & 1:                 # even length (keeps the pool word-aligned)
+            if len(data) & 1:
                 data += b'\x80'
-            members[k][i] = (DIR_SIZE + len(pcm), len(data))
+            members[k][i] = (POOL_BASE + len(pcm), len(data), pad_name(wpath))
             pcm += data
 
     out_b = bytearray()
+    out_b += MAGIC + bytes([NKITS, NPADS]) + struct.pack('>H', DAC_RATE) + b'\x00' * 4
     for k in range(NKITS):
         for i in range(NPADS):
-            m = members[k][i] or (0, 0)
-            out_b += struct.pack('>II', m[0], m[1])
+            off, ln, nm = members[k][i] or (0, 0, '')
+            out_b += struct.pack('>II', off, ln) + nm.encode('ascii', 'replace').ljust(8, b'\x00')
     out_b += pcm
     open(out, 'wb').write(out_b)
 
-    print('samples: pool=%d bytes (dir %d + pcm %d)' % (len(out_b), DIR_SIZE, len(pcm)))
+    print('samples: pool=%d bytes (hdr+dir %d + pcm %d)' % (len(out_b), POOL_BASE, len(pcm)))
     for k in range(NKITS):
-        row = [members[k][i][1] if members[k][i] else 0 for i in range(NPADS)]
-        if any(row):
+        row = [(members[k][i][2] if members[k][i] else '-') for i in range(NPADS)]
+        if any(members[k]):
             print('  kit %d:' % k, row)
 
 
