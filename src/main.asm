@@ -3064,6 +3064,7 @@ play_context:                             ; C+B: toggle audition of the current 
     cmpi.b  #SCR_CHAIN, d0
     bne.s   .pc_ph
     move.b  #1, play_mode                 ; CHAIN: solo this track's chain
+    move.b  cur_row, play_from            ; ...starting at the step under the cursor
     bra.s   .pc_go
 .pc_ph:
     cmpi.b  #SCR_PHRASE, d0
@@ -3116,6 +3117,9 @@ engine_play_reset:
     cmpi.b  #1, play_mode
     bne.s   .phsolo
     move.b  cur_chain, c_chain(a6)         ; chain-solo
+    move.b  play_from, d0                  ; ...from the cursor's chain step
+    subq.b  #1, d0                         ; engine advances to play_from on tick 1
+    move.b  d0, c_cstep(a6)
     bra.s   .next
 .phsolo:                                  ; phrase-solo: load cur_phrase
     move.b  #0, c_chain(a6)               ; placeholder (non-$FF = active)
