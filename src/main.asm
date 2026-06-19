@@ -2020,22 +2020,24 @@ render_song_playing:
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    moveq   #0, d4                          ; no inverse highlight
     tst.b   playing
-    beq.s   .spblank                        ; stopped -> blank
+    beq.s   .spdash                         ; stopped -> "--"
     move.w  d5, d1                          ; channel = ch_state + track*CHSIZE
     mulu.w  #CHSIZE, d1
     lea     ch_state, a2
     adda.w  d1, a2
     cmpi.b  #$FF, c_chain(a2)
-    beq.s   .spblank                        ; idle track (no chain) -> blank
+    beq.s   .spdash                         ; idle track (no chain) -> "--"
     move.b  c_note(a2), d3
-    bsr     draw_note                       ; "C-4" / "---"
+    cmpi.b  #$FF, d3
+    beq.s   .spdash                         ; no current note -> "--"
+    bsr     draw_note_compact               ; "C4" / "C#4" (no dash for naturals)
     bra.s   .spnext
-.spblank:
-    move.w  #' ', d0                        ; three spaces
+.spdash:
+    move.w  #'-', d0                        ; "-- " (no note playing on this track)
     move.w  d0, VDP_DATA
     move.w  d0, VDP_DATA
+    move.w  #' ', d0
     move.w  d0, VDP_DATA
 .spnext:
     addq.b  #1, d5
@@ -2902,6 +2904,37 @@ draw_note:
     andi.w  #$00FF, d0
     addi.w  #'0', d0
     add.w   d4, d0
+    move.w  d0, VDP_DATA
+    rts
+
+; d3 = note (0-95) -> "<letter>[#]<octave>" padded to 3 cols at the VDP write pos.
+; like draw_note but with no '-' separator for naturals (so "C4" / "C#4").
+draw_note_compact:
+    moveq   #0, d0
+    move.b  d3, d0
+    divu.w  #12, d0
+    move.l  d0, d1
+    swap    d1
+    andi.w  #$000F, d1
+    add.w   d1, d1
+    lea     note_names, a1
+    move.b  (a1,d1.w), d2                   ; pitch letter
+    andi.w  #$00FF, d2
+    move.w  d2, VDP_DATA
+    move.b  (1,a1,d1.w), d2                 ; accidental ('-' natural / '#' sharp)
+    cmpi.b  #'#', d2
+    bne.s   .dncn
+    andi.w  #$00FF, d2                      ; sharp -> emit '#', then octave (3 chars)
+    move.w  d2, VDP_DATA
+    andi.w  #$00FF, d0
+    addi.w  #'0', d0
+    move.w  d0, VDP_DATA
+    rts
+.dncn:
+    andi.w  #$00FF, d0                      ; natural -> octave then a pad space (3 chars)
+    addi.w  #'0', d0
+    move.w  d0, VDP_DATA
+    move.w  #' ', d0
     move.w  d0, VDP_DATA
     rts
 
