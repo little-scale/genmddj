@@ -16,6 +16,10 @@ FONT     := $(BUILD)/font.bin
 NOTES    := $(BUILD)/notes.bin
 Z80SRC   := src/z80/driver.asm
 Z80BIN   := $(BUILD)/driver.z80.bin
+SAMPLES  := $(BUILD)/samples.bin
+
+$(SAMPLES): tools/makesamples.py | $(BUILD)
+	python3 tools/makesamples.py samples $(SAMPLES)
 
 $(FONT): tools/makefont.py | $(BUILD)
 	python3 tools/makefont.py $(FONT)
@@ -47,7 +51,7 @@ $(GITVER): FORCE | $(BUILD)
 	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
 FORCE:
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SPLASH) $(ALGOS) $(GITVER) | $(BUILD)
+$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py

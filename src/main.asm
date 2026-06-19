@@ -4426,5 +4426,9 @@ font_data:
 font_end:
     even
 
+sample_pool:                              ; kit directory (8x16 members) + 8-bit PCM (makesamples.py)
+    incbin "build/samples.bin"
+    even
+
     dcb.b $20000-*, $FF
 ROM_END:
