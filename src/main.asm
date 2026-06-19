@@ -509,6 +509,12 @@ VBlankInt:
     move.w  d0, VDP_DATA
     dbra    d3, .tk
     move.l  #$40900003, (a0)             ; screen number (2 hex digits) at row1 col8
+    cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens carry no number
+    blo.s   .pnnum
+    move.w  #' ', VDP_DATA
+    move.w  #' ', VDP_DATA
+    bra     .pntrack
+.pnnum:
     moveq   #0, d0
     move.b  cur_screen, d1
     beq.s   .pnph
@@ -543,6 +549,7 @@ VBlankInt:
     move.b  (a1,d0.w), d0
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
+.pntrack:
     move.b  cur_screen, d0                ; current track name
     beq.s   .tnshow                        ; PHRASE
     cmpi.b  #SCR_CHAIN, d0
@@ -785,14 +792,32 @@ input_tick:
     move.b  #1, env_dirty
 .ne:
     rts
-.cheld:                                   ; C = map navigation + (temp) selector
-    btst    #2, d5                         ; C+Left -> left on the map (toward SONG)
-    beq.s   .nsl
+.cheld:                                   ; C = 2D map navigation
+    btst    #0, d5                         ; C+Up -> up a column on the map
+    beq.s   .ncu
+    bsr     grid_up
+.ncu:
+    btst    #1, d5                         ; C+Down -> down a column
+    beq.s   .ncd
+    bsr     grid_down
+.ncd:
+    btst    #2, d5                         ; C+Left
+    beq.s   .ncl
+    cmpi.b  #SCR_ECHO, cur_screen          ; main row drills/steps; satellites just step
+    bhs.s   .clsat
     bsr     screen_left
-.nsl:
-    btst    #3, d5                         ; C+Right -> right on the map (drill in)
+    bra.s   .ncl
+.clsat:
+    bsr     grid_left
+.ncl:
+    btst    #3, d5                         ; C+Right
     beq.s   .nsr
+    cmpi.b  #SCR_ECHO, cur_screen
+    bhs.s   .crsat
     bsr     screen_right
+    bra.s   .nsr
+.crsat:
+    bsr     grid_right
 .nsr:
     bsr     clamp_col
 .done:
@@ -849,6 +874,69 @@ load_chan:
     beq.s   .lc_done
     move.b  d1, cur_phrase
 .lc_done:
+    rts
+
+; 2D grid move: step in one direction on scr_grid, skipping empty cells, wrapping.
+; entry deltas set the axis; preserves d5 (caller's d-pad bits).
+grid_up:
+    moveq   #-1, d1
+    moveq   #0, d2
+    bra.s   grid_nav
+grid_down:
+    moveq   #1, d1
+    moveq   #0, d2
+    bra.s   grid_nav
+grid_left:
+    moveq   #0, d1
+    moveq   #-1, d2
+    bra.s   grid_nav
+grid_right:
+    moveq   #0, d1
+    moveq   #1, d2
+grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
+    moveq   #0, d0
+    move.b  cur_screen, d0
+    lea     scr_vrow, a1
+    moveq   #0, d3
+    move.b  (a1,d0.w), d3                  ; current vrow (0-2)
+    lea     scr_hcol, a1
+    moveq   #0, d4
+    move.b  (a1,d0.w), d4                  ; current hcol (0-4)
+    moveq   #6, d7                         ; step bound (safety)
+.gn_step:
+    add.w   d1, d3                         ; step vrow, wrap [0,2]
+    bge.s   .gn_v1
+    moveq   #2, d3
+.gn_v1:
+    cmpi.w  #2, d3
+    ble.s   .gn_v2
+    moveq   #0, d3
+.gn_v2:
+    add.w   d2, d4                         ; step hcol, wrap [0,4]
+    bge.s   .gn_h1
+    moveq   #4, d4
+.gn_h1:
+    cmpi.w  #4, d4
+    ble.s   .gn_h2
+    moveq   #0, d4
+.gn_h2:
+    move.w  d3, d6                         ; cell = scr_grid[vrow*5 + hcol]
+    mulu.w  #5, d6
+    add.w   d4, d6
+    lea     scr_grid, a1
+    move.b  (a1,d6.w), d0
+    cmpi.b  #$FF, d0
+    beq.s   .gn_skip                       ; empty -> keep stepping
+    cmp.b   cur_screen, d0
+    beq.s   .gn_ret                        ; wrapped back to self -> no move
+    move.b  d0, cur_screen
+    move.b  #1, need_clear
+    move.b  #0, cur_row
+    move.b  #0, cur_col
+    rts
+.gn_skip:
+    dbra    d7, .gn_step
+.gn_ret:
     rts
 
 ; --- screen map navigation (positions: 0 SONG, 1 CHAIN, 2 PHRASE, 3 INSTR) ---
@@ -1030,11 +1118,16 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
 
 row_max:                                  ; -> d1 = highest row index for cur_screen/type
     move.b  cur_screen, d0
+    cmpi.b  #SCR_ECHO, d0
+    bhs.s   .zero                            ; placeholder screens: cursor locked at row 0
     cmpi.b  #SCR_FM, d0
     beq.s   .fm
     cmpi.b  #SCR_INSTR, d0
     beq.s   .fm
     moveq   #15, d1                          ; grid screens (PHRASE/CHAIN/SONG/TABLE): 16 rows
+    rts
+.zero:
+    moveq   #0, d1
     rts
 .fm:
     lea     instrum, a1                   ; max cursor row depends on instrument type
@@ -1068,6 +1161,9 @@ clamp_row:                                ; clamp cur_row into [0, row_max]
 
 col_max:                                  ; -> d1 = highest column index for cur_screen
     move.b  cur_screen, d1
+    cmpi.b  #SCR_ECHO, d1
+    bhs.s   .czero                           ; placeholder screens: cursor locked at col 0
+    tst.b   d1
     beq.s   .ph
     cmpi.b  #SCR_SONG, d1
     beq.s   .sg
@@ -1081,6 +1177,9 @@ col_max:                                  ; -> d1 = highest column index for cur
     rts
 .cmch:
     moveq   #1, d1                        ; CHAIN: PH,TR
+    rts
+.czero:
+    moveq   #0, d1
     rts
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
@@ -1119,6 +1218,10 @@ cur_phrase_addr:
     rts
 
 do_cut:                                   ; clear field under cursor
+    cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens have no fields
+    blo.s   .dc_go
+    rts
+.dc_go:
     bsr     get_field_addr
     move.b  cur_screen, d0
     cmpi.b  #SCR_INSTR, d0                  ; INSTR field -> 0
@@ -1431,6 +1534,10 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     rts
 
 edit_value:
+    cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens have no fields
+    blo.s   .ev_go
+    rts
+.ev_go:
     cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the cursor cell
     beq     edit_table
     cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: dispatch by instrument type
@@ -1567,6 +1674,10 @@ edit_instr:
     rts
 
 do_insert:
+    cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens have no fields
+    blo.s   .di_go
+    rts
+.di_go:
     bsr     get_field_addr
     move.b  cur_col, d0
     beq.s   .ins_note                      ; col 0 = NOT -> insert/audition note
@@ -4145,6 +4256,12 @@ ch_config:                                      ; type, p1, p2, p3 per channel
     dc.b 2, $E0, $F0, 0      ; NO = noise PSG ch3
 scr_order:  dc.b SCR_SONG, SCR_CHAIN, SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; map pos -> screen id
 scr_pos:    dc.b 2, 1, 0, 3, $FF, 4         ; screen id -> map pos ($FF = off the row, FM)
+; 2D map grid (3 rows x 5 cols): vrow*5 + hcol -> screen id ($FF = empty cell)
+scr_grid:   dc.b SCR_OPTS, SCR_PROJ,   $FF, SCR_WAVE, $FF   ; row 0 (above)
+            dc.b SCR_SONG, SCR_CHAIN,  SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; row 1 (main)
+            dc.b $FF,      SCR_GROOVE, $FF, SCR_ECHO, $FF    ; row 2 (below)
+scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2       ; screen id -> grid row (PH CH SG IN FM TB EC OP PR WV GR)
+scr_hcol:   dc.b 2,1,0,3,3,4,3,0,1,3,1       ; screen id -> grid col
     even
 scr_tabs:                                   ; {header, name} per screen, indexed by SCR_*
     dc.l str_hdr_ph, str_scr_ph             ; 0  PHRASE
