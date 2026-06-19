@@ -126,7 +126,7 @@ CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
 instrum    equ $00FFF700            ; instrument pool (INSTR_SIZE each)
-INSTR_SIZE equ 48                   ; type + algo/fb/pan + 4 ops x 10 params
+INSTR_SIZE equ 50                   ; type + algo/fb/pan + 4 ops x 10 params + i_tbl/i_tbs
 tbl_ram    equ $00FFE800            ; editable macro tables (boot-copied from psg_tables)
 NTABLE     equ 32
 TBL_ROWS   equ 16
@@ -150,10 +150,10 @@ ip_tsp     equ 12                   ; transpose, signed semitones
 ip_swp     equ 13                   ; pitch sweep (packed)
 ip_vib     equ 14                   ; vibrato (packed)
 ip_trm     equ 15                   ; tremolo (packed)
-ip_tbl     equ 16                   ; macro table # ($FF = none)
-ip_tbs     equ 17                   ; table speed (ticks per row)
-ip_mode    equ 18                   ; NOISE: 0 white, 1 periodic
+ip_mode    equ 18                   ; NOISE: 0 white, 1 periodic  (offsets 16/17 unused now)
 ip_rate    equ 19                   ; NOISE: 0-2 = clk/512,1024,2048; 3 = pitched (T3)
+i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
+i_tbs      equ 49                   ; table speed (ticks per row)
 NITYPE     equ 5
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
@@ -931,7 +931,7 @@ drill_down:                               ; set the next screen's target from th
     moveq   #0, d1
     move.b  cur_instr, d1
     mulu.w  #INSTR_SIZE, d1
-    move.b  (ip_tbl,a1,d1.w), d1
+    move.b  (i_tbl,a1,d1.w), d1
     cmpi.b  #NTABLE, d1
     bhs.s   .d_done                        ; $FF/out of range -> keep cur_table
     move.b  d1, cur_table
@@ -3058,7 +3058,7 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d3
     move.b  c_instr(a6), d3
     mulu.w  #INSTR_SIZE, d3
-    move.b  (ip_tbl,a4,d3.w), c_tbl(a6)
+    move.b  (i_tbl,a4,d3.w), c_tbl(a6)
     move.b  #0, c_trow(a6)
     move.b  #0, c_tctr(a6)
 .notbset:
@@ -3195,7 +3195,7 @@ env_ch:                                   ; a6 = channel
     addq.b  #1, c_tctr(a6)
     move.b  c_tctr(a6), d1
     moveq   #0, d2
-    move.b  (ip_tbs,a4), d2
+    move.b  (i_tbs,a4), d2
     bne.s   .tbsok
     moveq   #1, d2                          ; TBS 0 -> 1 (per-note advance deferred)
 .tbsok:
@@ -3800,7 +3800,7 @@ voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
-psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm, ip_tbl, ip_tbs, ip_mode, ip_rate
+psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm, i_tbl, i_tbs, ip_mode, ip_rate
 psg_max:    dc.b 15, 15, 15, 15, 255, 255, 255, 255, 31, 15, 1, 3
 psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE text, 3 RATE text
     even
@@ -3901,6 +3901,7 @@ default_fm:                        ; YM2612 grand-piano test patch (Sega manual)
     dc.b 13,0, 45, 2,25,0,5,2,1,1  ; slot1 S3 ($34=0D..$84=11)
     dc.b 3, 3, 38, 1,31,0,5,2,1,1  ; slot2 S2 ($38=33..$88=11)
     dc.b 1, 0, 0,  2,20,0,7,2,6,10 ; slot3 S4 carrier ($3C=01..$8C=A6)
+    dc.b $FF, 1                    ; i_tbl(none) i_tbs (offsets 48/49)
     even
 
 default_tone:                      ; a basic TONE (PSG square) instrument
@@ -3908,8 +3909,9 @@ default_tone:                      ; a basic TONE (PSG square) instrument
     dc.b 0,0,0,0,0,0,0              ; offsets 1-7 (FM voice bytes, unused by PSG)
     dc.b $F, 0, $F, 3              ; ip_vol ip_atk ip_hld ip_dcy (full, instant atk, sustain, decay on release)
     dc.b 0, 0, 0, 0                ; ip_tsp ip_swp ip_vib ip_trm
-    dc.b $FF, 1, 1, 0              ; ip_tbl(none) ip_tbs ip_mode(periodic) ip_rate
+    dc.b 0, 0, 1, 0                ; (offsets 16/17 unused) ip_mode(periodic) ip_rate
     dcb.b 28, 0                    ; offsets 20-47 unused
+    dc.b $FF, 1                    ; i_tbl(none) i_tbs (offsets 48/49)
     even
 
 ; carrier slots per algorithm (bit d6 set = record slot d6 is a carrier, in S1,S3,S2,S4
