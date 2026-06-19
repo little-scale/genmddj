@@ -24,8 +24,8 @@ IO_CTRL1   equ $A10009
 
 ; ---- channel struct ----
 NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
-CHSIZE     equ 34                  ; even (keeps the long c_phrase word-aligned)
-ch_state   equ $00FFE000           ; NCH * CHSIZE = 340 bytes ($FFE000-$FFE154)
+CHSIZE     equ 36                  ; even (keeps the long c_phrase word-aligned)
+ch_state   equ $00FFE000           ; NCH * CHSIZE = 360 bytes ($FFE000-$FFE168)
 c_note     equ 0
 c_period   equ 2                    ; word
 c_vol      equ 4
@@ -51,6 +51,7 @@ c_keyon    equ 30                   ; FM: desired key state
 c_kshadow  equ 31                   ; FM: last key state sent to the chip
 c_hold     equ 32                   ; gate countdown: $FF = held, else ticks until key-off
 c_instr    equ 33                   ; instrument this channel is playing (from the phrase IN col)
+c_modph    equ 34                   ; PSG vibrato/tremolo LFO phase
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -2645,6 +2646,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #0, c_kshadow(a6)
     move.b  #$FF, c_hold(a6)             ; gate inactive (no auto key-off until a note sets it)
     move.b  #0, c_instr(a6)
+    move.b  #0, c_modph(a6)
     move.l  #phrases, c_phrase(a6)
     move.b  #0, c_songpos(a6)            ; song row 0; chain = song[0][track]
     lea     song, a2
@@ -3138,6 +3140,7 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     moveq   #15, d1
     sub.b   c_vol(a6), d1                 ; attenuation
     move.w  c_period(a6), d2
+    bsr     psg_vibrato                   ; d2 += vibrato LFO (preserves d1)
     cmp.w   c_shadowp(a6), d2
     beq.s   .sp
     move.w  d2, c_shadowp(a6)
@@ -3187,6 +3190,36 @@ compose_noise:                            ; a6=ch; a3/d6=PSG buf
     addq.b  #1, d6
 .nd:
     rts
+
+; add the instrument's vibrato to a square period. VIB = (speed<<4)|depth; the LFO
+; phase (c_modph) advances by speed each tick, indexing a 16-step signed sine.
+psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves d1, a3
+    lea     instrum, a4
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a4
+    moveq   #0, d0
+    move.b  (ip_vib,a4), d0
+    beq.s   .vret                          ; VIB 0 = off
+    move.w  d0, d3
+    andi.w  #$0F, d3                        ; depth (low nibble)
+    lsr.b   #4, d0                          ; speed (high nibble)
+    add.b   d0, c_modph(a6)               ; advance LFO phase
+    moveq   #0, d0
+    move.b  c_modph(a6), d0
+    lsr.w   #4, d0
+    andi.w  #$0F, d0                        ; 0-15
+    lea     sine16, a4
+    move.b  (a4,d0.w), d0                  ; signed sine -7..+7
+    ext.w   d0
+    muls.w  d3, d0                          ; x depth
+    asr.w   #4, d0                          ; scale -> +-7 period units at full depth
+    add.w   d0, d2
+.vret:
+    rts
+sine16:     dc.b 0, 3, 5, 6, 7, 6, 5, 3, 0, -3, -5, -6, -7, -6, -5, -3
+    even
 
 ; FM compose: emit YM writes (part,reg,value triples) into a5, count in d5
 compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
