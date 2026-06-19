@@ -81,17 +81,37 @@ start:
     ld   a, $FF
     ld   (PSG), a
 
+    ld   a, $24                 ; YM2612 Timer A = DAC clock; 1024-TA=7 -> 7610 Hz
+    ld   (YM_A0), a             ; (highest step the Z80 paces cleanly; 6->8878 over-runs)
+    ld   a, $FE                 ; TA=$3F9 -> $24=$FE (bits 9-2), $25=$01 (bits 1-0)
+    ld   (YM_D0), a
+    ld   a, $25
+    ld   (YM_A0), a
+    ld   a, $01
+    ld   (YM_D0), a
+    ld   a, $27                 ; load + enable Timer A
+    ld   (YM_A0), a
+    ld   a, $05
+    ld   (YM_D0), a
+
 main:
     ld   a, (SCB_DAC)           ; new sample to start?
     cp   d
-    jr   z, +
+    jr   z, mn_dac
     ld   d, a
     call dac_arm
-+:
-    ld   a, (D_PLAY)            ; stream a byte if playing
+mn_dac:
+    ld   a, (YM_A0)             ; Timer A overflow -> time to feed one DAC sample
+    bit  0, a
+    jr   z, mn_scb
+    ld   a, $27                 ; reset Timer A flag (keep it loaded + enabled)
+    ld   (YM_A0), a
+    ld   a, $15
+    ld   (YM_D0), a
+    ld   a, (D_PLAY)
     or   a
     call nz, dac_feed
-
+mn_scb:
     ld   a, (SCB_SEQ)           ; new SCB write list?
     cp   b
     jr   z, main
@@ -180,11 +200,7 @@ df_end:
     xor  a
     ld   (YM_D0), a
 df_pace:
-    ld   a, 2                  ; pacing (gain/rate work uses part of the budget)
-df_pl:
-    dec  a
-    jr   nz, df_pl
-    ret
+    ret                        ; Timer A paces the feed now; no busy-wait needed
 
 ; ---- set the 9-bit window bank from hl (LSB first) ----
 set_bank:

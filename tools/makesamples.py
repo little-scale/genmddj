@@ -27,7 +27,7 @@ import numpy as np
 MAGIC = b'GMDJKIT1'
 NKITS = 16
 NPADS = 16
-DAC_RATE = 17756                 # k=3 Timer-A cadence (DESIGN Q2)
+DAC_RATE = 7610                  # YM2612 Timer-A DAC cadence (1024-TA=7); clock-defined, stable
 HEADER = 16
 MEMBER = 16
 DIR_SIZE = NKITS * NPADS * MEMBER
