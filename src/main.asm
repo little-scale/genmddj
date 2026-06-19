@@ -476,6 +476,7 @@ VBlankInt:
     bra.s   .gd
 .gch:
     bsr     render_chain
+    bsr     render_track_playing
     bra.s   .gd
 .gsg:
     bsr     render_song
@@ -483,6 +484,7 @@ VBlankInt:
     bra.s   .gd
 .gph:
     bsr     render_phrase
+    bsr     render_track_playing
 .gd:
     addq.w  #1, g_ticks                  ; tick counter (4 hex) at row1 col35
     move.l  #$40C60003, (a0)
@@ -2020,30 +2022,54 @@ render_song_playing:
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    tst.b   playing
-    beq.s   .spdash                         ; stopped -> "--"
     move.w  d5, d1                          ; channel = ch_state + track*CHSIZE
     mulu.w  #CHSIZE, d1
     lea     ch_state, a2
     adda.w  d1, a2
+    bsr     draw_play_slot
+    addq.b  #1, d5
+    cmpi.b  #NCH, d5
+    bne.s   .spl
+    movem.l (sp)+, d3-d7/a1-a2
+    rts
+
+; draw the compact now-playing note for channel a2 at the VDP write pos (3 chars),
+; or "-- " when stopped / idle / no current note.
+draw_play_slot:
+    tst.b   playing
+    beq.s   .psdash
     cmpi.b  #$FF, c_chain(a2)
-    beq.s   .spdash                         ; idle track (no chain) -> "--"
+    beq.s   .psdash
     move.b  c_note(a2), d3
     cmpi.b  #$FF, d3
-    beq.s   .spdash                         ; no current note -> "--"
-    bsr     draw_note_compact               ; "C4" / "C#4" (no dash for naturals)
-    bra.s   .spnext
-.spdash:
+    beq.s   .psdash
+    bra     draw_note_compact               ; tail-call: emits 3 chars + rts
+.psdash:
     move.w  #'-', d0                        ; "-- " (no note playing on this track)
     move.w  d0, VDP_DATA
     move.w  d0, VDP_DATA
     move.w  #' ', d0
     move.w  d0, VDP_DATA
-.spnext:
-    addq.b  #1, d5
-    cmpi.b  #NCH, d5
-    bne.s   .spl
-    movem.l (sp)+, d3-d7/a1-a2
+    rts
+
+; single now-playing note for the current track (cur_chan) -- PHRASE/CHAIN, row 23 col 4.
+render_track_playing:
+    movem.l d3/a1-a2, -(sp)
+    moveq   #0, d0                          ; VDP addr -> (row 23, col 4)
+    move.w  #23, d0
+    lsl.w   #6, d0
+    addq.w  #4, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #0, d1
+    move.b  cur_chan, d1
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a2
+    adda.w  d1, a2
+    bsr     draw_play_slot
+    movem.l (sp)+, d3/a1-a2
     rts
 
 render_sfield:                            ; d5=track col, d6=row, d4=cursor off
