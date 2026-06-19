@@ -10,8 +10,8 @@ Foreground pixels -> colour index 1 (renders in the palette's c1, like the font)
 """
 import sys
 
-ALGO_W, ALGO_H = 12, 5            # tiles per diagram
-W, H = ALGO_W * 8, ALGO_H * 8     # pixels (96 x 40)
+ALGO_W, ALGO_H = 24, 10           # tiles per diagram (2x: drawn at 1x, upscaled)
+W, H = (ALGO_W // 2) * 8, (ALGO_H // 2) * 8   # 1x render pixels (96 x 40)
 BW, BH = 13, 9                    # operator box size
 
 # 3x5 digit glyphs for the operator labels (1..4)
@@ -118,6 +118,7 @@ def main():
     uniq, index, maps = [], {}, []
     for algo in ALGOS:
         px = render(algo)
+        px = [[px[y // 2][x // 2] for x in range(W * 2)] for y in range(H * 2)]  # 2x upscale
         tmap = []
         for ty in range(ALGO_H):
             for tx in range(ALGO_W):

@@ -11,3 +11,4 @@ a.out
 tools/emu/*.dylib
 tools/emu/*.zip
 tools/emu/retroshot
+tools/__pycache__/

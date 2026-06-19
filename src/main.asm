@@ -701,16 +701,12 @@ input_tick:
 .done:
     rts
 
-.aheld:                                   ; A + Left/Right -> switch channel / instrument
-    move.b  cur_screen, d0
+.aheld:                                   ; A + Left/Right -> switch channel (CHAIN/PHRASE only;
+    move.b  cur_screen, d0                 ;   INSTR uses the INST field to pick the instrument)
     cmpi.b  #SCR_CHAIN, d0
     beq.s   .ado
     cmpi.b  #SCR_PHRASE, d0
     beq.s   .ado
-    cmpi.b  #SCR_INSTR, d0                 ; INSTR/FM: switch the edited instrument
-    beq.s   .ainst
-    cmpi.b  #SCR_FM, d0
-    beq.s   .ainst
     rts
 .ado:
     btst    #2, d5                         ; A+Left -> previous channel
@@ -730,27 +726,6 @@ input_tick:
     move.b  d0, cur_chan
     bsr     load_chan
 .adone:
-    rts
-.ainst:
-    btst    #2, d5                         ; A+Left -> previous instrument
-    beq.s   .ainr
-    move.b  cur_instr, d0
-    beq.s   .ainr
-    subq.b  #1, d0
-    move.b  d0, cur_instr
-    move.b  #1, need_clear
-    bsr     ym_setup                       ; apply the new instrument to F1's voice
-.ainr:
-    btst    #3, d5                         ; A+Right -> next instrument
-    beq.s   .aind
-    move.b  cur_instr, d0
-    cmpi.b  #NINSTR_ED, d0
-    bhs.s   .aind
-    addq.b  #1, d0
-    move.b  d0, cur_instr
-    move.b  #1, need_clear
-    bsr     ym_setup
-.aind:
     rts
 
 ; cur_chain/cur_phrase <- the chain/phrase channel cur_chan plays at cur_songrow
@@ -1062,14 +1037,14 @@ edit_fm:
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
     tst.b   cur_row
-    beq.s   .typeedit                      ; row 0 = instrument TYPE
+    beq     .instedit                      ; row 0 = INST selector
+    cmpi.b  #1, cur_row
+    beq.s   .typeedit                      ; row 1 = instrument TYPE
     cmpi.b  #NVOICE+2, cur_row
     bhs.s   .opedit
-    cmpi.b  #NVOICE+1, cur_row
-    beq.s   .lfoedit
-    moveq   #0, d0                         ; voice param (rows 1..NVOICE)
+    moveq   #0, d0                         ; voice param (rows 2..NVOICE+1)
     move.b  cur_row, d0
-    subq.b  #1, d0
+    subq.b  #2, d0
     lea     voice_off, a1
     moveq   #0, d1
     move.b  (a1,d0.w), d1
@@ -1082,10 +1057,24 @@ edit_fm:
     lea     (i_type,a3), a1
     moveq   #NITYPE-1, d3
     bra.s   .adj
-.lfoedit:
-    lea     g_lfo, a1                      ; row 6 = global LFO (0 off, 1-8 rate)
-    moveq   #8, d3
-    bra.s   .adj
+.instedit:                                ; row 0: select which instrument to edit
+    move.b  cur_instr, d0
+    btst    #2, d2                          ; Left -> previous
+    beq.s   .ie_r
+    tst.b   d0
+    beq.s   .ie_r
+    subq.b  #1, d0
+.ie_r:
+    btst    #3, d2                          ; Right -> next
+    beq.s   .ie_w
+    cmpi.b  #NINSTR_ED, d0
+    bhs.s   .ie_w
+    addq.b  #1, d0
+.ie_w:
+    move.b  d0, cur_instr
+    move.b  #1, need_clear                  ; re-render the whole instrument page
+    move.b  #1, env_dirty                   ; new instrument -> re-rasterise envelopes
+    rts
 .opedit:
     moveq   #0, d0                         ; op grid: i_op + (row-(NVOICE+2))*10 + col
     move.b  cur_row, d0
@@ -1475,7 +1464,7 @@ clear_grid:                               ; a0=VDP_CTRL; blank header + grid + e
     move.w  #' ', VDP_DATA
     dbra    d3, .col
     addq.w   #1, d2
-    cmpi.w  #23, d2                        ; rows 3..25 (canvas + OP labels)
+    cmpi.w  #24, d2                        ; rows 3..26 (canvas + OP labels)
     bne.s   .row
     rts
 
@@ -1682,13 +1671,13 @@ render_instr:
     move.w  d0, VDP_DATA
     rts
 
-FM_VHDR equ 5                             ; VOICE: header (top spacing for instrument page)
-FM_VTOP equ 6                             ; voice params, one per row, LFO at FM_VTOP+NVOICE
-FM_OHDR equ 14                            ; operator grid header
-FM_OTOP equ 15                            ; operator grid
+FM_VHDR equ 6                             ; VOICE: header (INST + TYPE above it)
+FM_VTOP equ 7                             ; voice params, one per row, LFO at FM_VTOP+NVOICE
+FM_OHDR equ 16                            ; operator grid header (INST + gaps, no LFO row)
+FM_OTOP equ 17                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
-ALGO_DIAG_ROW equ 6                       ; algorithm diagram (right of the voice list)
-ALGO_DIAG_COL equ 10
+ALGO_DIAG_ROW equ 5                       ; algorithm diagram (2x size; top-left up 1, left 1)
+ALGO_DIAG_COL equ 13
 ENV_TW  equ 32                            ; envelope canvas: 4 ops x 8 tiles wide, 4 tall
 ENV_TH  equ 4
 ENV_TILES equ ENV_TW*ENV_TH
@@ -1696,7 +1685,7 @@ ENV_W   equ ENV_TW*8                      ; canvas px (256 x 32), each op = 64px
 ENV_H   equ ENV_TH*8
 ENV_VRAM equ $3400                        ; canvas tiles -> VRAM (after the algo tiles)
 ENV_TILEBASE equ ENV_VRAM/$20
-ENV_ROW equ 21                            ; canvas nametable position (below the op grid)
+ENV_ROW equ 22                            ; canvas nametable position (below the op grid)
 ENV_COL equ 2
 ENV_LBLROW equ ENV_ROW+ENV_TH              ; OP labels centered below the boxes
 ENV_CHUNK equ 16                          ; canvas tiles uploaded per frame (~256 words)
@@ -1714,18 +1703,30 @@ render_fm:                                ; a0 = VDP_CTRL
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3                         ; a3 = instrum[cur_instr]
-    moveq   #3, d3                         ; TYPE field (cur_row 0)
+    moveq   #3, d3                         ; INST selector (cur_row 0)
+    moveq   #1, d4
+    lea     str_inst, a1
+    bsr     print_at
+    move.l  #$41900003, (a0)              ; instrument number at row 3, col 8
+    move.b  cur_instr, d3
+    moveq   #0, d4
+    tst.b   cur_row                        ; highlight when cur_row == 0
+    bne.s   .inh
+    moveq   #$60, d4
+.inh:
+    bsr     draw_hex2
+    moveq   #4, d3                         ; TYPE field (cur_row 1)
     moveq   #1, d4
     lea     str_type, a1
     bsr     print_at
-    move.l  #$41900003, (a0)              ; type name at row 3, col 8
+    move.l  #$42100003, (a0)              ; type name at row 4, col 8
     moveq   #0, d1
     move.b  (i_type,a3), d1
     andi.w  #$0003, d1
     add.w   d1, d1
     lea     type_names, a1
     moveq   #0, d4
-    tst.b   cur_row                        ; highlight when cur_row == 0
+    cmpi.b  #1, cur_row                    ; highlight when cur_row == 1
     bne.s   .tnh
     moveq   #$60, d4
 .tnh:
@@ -1745,6 +1746,10 @@ render_fm:                                ; a0 = VDP_CTRL
 .vrow:
     move.w  d6, d3                          ; label at (FM_VTOP+idx, col1)
     addi.w  #FM_VTOP, d3
+    cmpi.w  #3, d6                          ; blank row after PAN (groups ALGO/FB/PAN)
+    blo.s   .vng1
+    addq.w  #1, d3
+.vng1:
     moveq   #1, d4
     move.w  d6, d0
     lsl.w   #2, d0
@@ -1754,6 +1759,10 @@ render_fm:                                ; a0 = VDP_CTRL
     moveq   #0, d0                          ; value at (FM_VTOP+idx, col8)
     move.w  d6, d0
     addi.w  #FM_VTOP, d0
+    cmpi.w  #3, d6
+    blo.s   .vng2
+    addq.w  #1, d0
+.vng2:
     lsl.w   #6, d0
     addi.w  #8, d0
     add.w   d0, d0
@@ -1765,8 +1774,8 @@ render_fm:                                ; a0 = VDP_CTRL
     move.b  (a1,d6.w), d0
     move.b  (a3,d0.w), d3                  ; value
     moveq   #0, d4
-    move.b  cur_row, d1                    ; highlight if cur_row-1 == voice idx
-    subq.b  #1, d1
+    move.b  cur_row, d1                    ; highlight if cur_row-2 == voice idx
+    subq.b  #2, d1
     cmp.b   d6, d1
     bne.s   .vnh
     moveq   #$60, d4
@@ -1775,30 +1784,7 @@ render_fm:                                ; a0 = VDP_CTRL
     addq.w  #1, d6
     cmpi.w  #NVOICE, d6
     bne.s   .vrow
-    moveq   #FM_VTOP+NVOICE, d3            ; LFO row (chip-wide global)
-    moveq   #1, d4
-    lea     str_lfo, a1
-    bsr     print_at
-    moveq   #0, d0                          ; value at col8
-    move.w  #FM_VTOP+NVOICE, d0
-    lsl.w   #6, d0
-    addi.w  #8, d0
-    add.w   d0, d0
-    swap    d0
-    ori.l   #$40000003, d0
-    move.l  d0, (a0)
-    move.b  g_lfo, d3
-    moveq   #0, d4
-    cmpi.b  #NVOICE+1, cur_row             ; LFO cursor row (after TYPE + voice params)
-    bne.s   .lnh
-    moveq   #$60, d4
-.lnh:
-    bsr     draw_hex1
-    moveq   #FM_VTOP+NVOICE, d3            ; "(GLOBAL)" marker
-    moveq   #10, d4
-    lea     str_global, a1
-    bsr     print_at
-    moveq   #FM_OHDR, d3                    ; operator grid header
+    moveq   #FM_OHDR, d3                    ; operator grid header (LFO moved to PROJECT screen)
     moveq   #1, d4
     lea     str_hdr_fm, a1
     bsr     print_at
@@ -3178,6 +3164,7 @@ op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
     even
+str_inst:   dc.b "INST",0
 str_type:   dc.b "TYPE",0
 str_voice:  dc.b "VOICE:",0
 str_algo:   dc.b "ALGO",0
