@@ -3457,6 +3457,8 @@ psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves
 
 ; add the instrument's tremolo to a square attenuation (d1, 0=loud..15=silent).
 ; TRM = (speed<<4)|depth; own LFO phase (c_modph2). Preserves d2.
+; SMSGGDJ-style tremolo: a one-directional triangular volume DIP (never louder
+; than peak), phase += speed*4, 32 steps, dip = depth*tri(0..16..0)/16 (max = depth).
 psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
     lea     instrum, a4
     moveq   #0, d0
@@ -3465,27 +3467,27 @@ psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
     adda.w  d0, a4
     moveq   #0, d0
     move.b  (ip_trm,a4), d0
-    beq.s   .tret                          ; TRM 0 = off
     move.w  d0, d3
     andi.w  #$0F, d3                        ; depth
-    lsr.b   #4, d0                          ; speed
-    add.b   d0, c_modph2(a6)
+    beq.s   .tret                          ; depth 0 = off
+    andi.w  #$F0, d0
+    lsr.w   #2, d0                          ; speed * 4
+    add.b   d0, c_modph2(a6)              ; advance LFO phase
     moveq   #0, d0
     move.b  c_modph2(a6), d0
-    lsr.w   #4, d0
-    andi.w  #$0F, d0
-    lea     sine16, a4
-    move.b  (a4,d0.w), d0                  ; signed sine
-    ext.w   d0
-    muls.w  d3, d0
-    asr.w   #5, d0                          ; ~ +-3 attenuation units at full depth
-    add.w   d0, d1
-    bpl.s   .tnz
-    moveq   #0, d1                          ; clamp 0
-.tnz:
+    lsr.w   #3, d0
+    andi.w  #$1F, d0                        ; step 0-31
+    cmpi.w  #16, d0                        ; triangle 0 -> 16 -> 0 (peak dip at step 16)
+    blo.s   .tup
+    neg.w   d0
+    addi.w  #32, d0
+.tup:
+    mulu.w  d3, d0                          ; depth * tri
+    lsr.w   #4, d0                          ; dip = depth*tri/16  (0..depth)
+    add.w   d0, d1                          ; dip volume = raise attenuation
     cmpi.w  #15, d1
     bls.s   .tret
-    moveq   #15, d1                          ; clamp 15
+    moveq   #15, d1                          ; clamp to silent
 .tret:
     rts
 sine16:     dc.b 0, 3, 5, 6, 7, 6, 5, 3, 0, -3, -5, -6, -7, -6, -5, -3
