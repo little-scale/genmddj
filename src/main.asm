@@ -2419,6 +2419,7 @@ render_kit:
     adda.w  #16, a4                          ; skip the magic header -> directory
     moveq   #0, d2
     move.b  (i_kit,a3), d2
+    andi.w  #7, d2                           ; clamp kit 0..7
     lsl.w   #8, d2                          ; kit * 256 (16 members x 16 bytes)
     adda.w  d2, a4
     moveq   #15, d5
@@ -4045,6 +4046,7 @@ push_scb:
 ; window bank/pointer, and pushes the DAC command (own BUSREQ). Empty pad = no-op.
 dac_play:
     movem.l d2-d6/a0, -(sp)
+    andi.w  #7, d0                          ; clamp kit 0..7 (guards an uninitialised i_kit)
     move.w  d0, d2                         ; member = pool + 16 (header) + (kit*16+pad)*16
     lsl.w   #4, d2
     add.w   d1, d2

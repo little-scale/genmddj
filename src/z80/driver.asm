@@ -135,7 +135,11 @@ dac_feed:
     or   l
     jr   nz, +
     xor  a
-    ld   (D_PLAY), a            ; sample finished
+    ld   (D_PLAY), a            ; sample finished -> release ch6 back to its FM voice
+    ld   a, $2B
+    ld   (YM_A0), a
+    xor  a
+    ld   (YM_D0), a             ; clear DAC enable
 +:
     ld   a, 6                   ; pad the pass toward the ~17.7 kHz cadence
 -:
