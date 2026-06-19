@@ -9,6 +9,7 @@
 ; (M4) edits phrase 0, played live on channel 0.
 ; ============================================================
 
+ROM_SIZE   equ $400000           ; 4 MB ROM -> sample pool capacity ~3.9 MB
 VDP_DATA   equ $C00000
 VDP_CTRL   equ $C00004
 Z80_RAM    equ $A00000
@@ -4615,5 +4616,5 @@ sample_pool:                              ; kit directory (8x16 members) + 8-bit
     incbin "build/samples.bin"
     even
 
-    dcb.b $20000-*, $FF
+    dcb.b ROM_SIZE-*, $FF                  ; pad to the full ROM (errors if pool overflows it)
 ROM_END:
