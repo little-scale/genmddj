@@ -132,6 +132,11 @@ INSTR_SIZE equ 64                   ; type + algo/fb/pan + 4 ops x 10 + i_tbl/i_
 tbl_ram    equ $00FFE800            ; editable macro tables (boot-copied from psg_tables)
 NTABLE     equ 32
 TBL_ROWS   equ 16
+TROW       equ 4                    ; bytes per table row
+t_vol      equ 0                    ; volume column ($FF = no change)
+t_arp      equ 1                    ; transposition, signed semitones
+t_cmd      equ 2                    ; command
+t_prm      equ 3                    ; command parameter
 NINSTR     equ 32
 i_type     equ 0                    ; instrument type: 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE
 i_algo     equ 1                    ; FM algorithm 0-7
@@ -322,7 +327,7 @@ Start:
     dbra    d0, .cdt
     lea     tbl_ram, a2                   ; copy the ROM default macro tables into RAM
     lea     psg_tables, a1
-    move.w  #(NTABLE*TBL_ROWS)-1, d0
+    move.w  #(NTABLE*TBL_ROWS*TROW)-1, d0
 .cdtb:
     move.b  (a1)+, (a2)+
     dbra    d0, .cdtb
@@ -1336,11 +1341,13 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     lea     tbl_ram, a1
     moveq   #0, d0
     move.b  cur_table, d0
-    lsl.w   #4, d0
+    lsl.w   #6, d0
     moveq   #0, d1
     move.b  cur_row, d1
+    lsl.w   #2, d1
     add.w   d1, d0
     adda.w  d0, a1
+    addq.w  #t_arp, a1                      ; ARP column
     move.b  (a1), d0
     btst    #2, d2
     beq.s   .et1
@@ -1583,12 +1590,14 @@ render_table:
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    lea     tbl_ram, a1                    ; value = tbl_ram[cur_table*16 + row]
+    lea     tbl_ram, a1                    ; ARP = tbl_ram[cur_table*64 + row*4 + t_arp]
     moveq   #0, d0
     move.b  cur_table, d0
-    lsl.w   #4, d0
-    add.w   d6, d0
-    move.b  (a1,d0.w), d3
+    lsl.w   #6, d0
+    move.w  d6, d1
+    lsl.w   #2, d1
+    add.w   d1, d0
+    move.b  (t_arp,a1,d0.w), d3
     moveq   #0, d4
     move.b  cur_row, d0                    ; highlight the cursor row
     cmp.b   d6, d0
@@ -3209,12 +3218,13 @@ env_ch:                                   ; a6 = channel
     andi.b  #$0F, d1                        ; loop row 16 -> 0
     move.b  d1, c_trow(a6)
 .tapply:
-    lsl.w   #4, d3                          ; table# * 16 + row
+    lsl.w   #6, d3                          ; table# * 64  (TBL_ROWS*TROW)
     moveq   #0, d1
     move.b  c_trow(a6), d1
+    lsl.w   #2, d1                          ; row * TROW
     add.w   d1, d3
     lea     tbl_ram, a1                    ; editable RAM tables
-    move.b  (a1,d3.w), d3                  ; signed semitone offset
+    move.b  (t_arp,a1,d3.w), d3            ; signed ARP offset (column 1)
     ext.w   d3
     moveq   #0, d1
     move.b  c_note(a6), d1
@@ -3924,11 +3934,16 @@ carrier_mask:
     dc.b $08,$08,$08,$08,$0C,$0E,$0E,$0F
     even
 
-; macro tables: 32 tables x 16 rows of signed semitone (arp) offset. Table 0 is a
-; demo major arpeggio; the rest are empty until the TABLE editor screen lands.
+; macro tables: NTABLE tables x TBL_ROWS rows x TROW bytes (vol, arp, cmd, prm).
+; vol $FF = "no change". Table 0 is a demo major arpeggio; the rest are empty.
 psg_tables:
-    dc.b 0, 4, 7, 0, 4, 7, 0, 4, 7, 0, 4, 7, 0, 4, 7, 0
-    dcb.b 31*16, 0
+    dc.b $FF,0,0,0,  $FF,4,0,0,  $FF,7,0,0,  $FF,0,0,0
+    dc.b $FF,4,0,0,  $FF,7,0,0,  $FF,0,0,0,  $FF,4,0,0
+    dc.b $FF,7,0,0,  $FF,0,0,0,  $FF,4,0,0,  $FF,7,0,0
+    dc.b $FF,0,0,0,  $FF,4,0,0,  $FF,7,0,0,  $FF,0,0,0
+    rept (NTABLE-1)*TBL_ROWS       ; tables 1-31: empty rows (no change)
+    dc.b $FF, 0, 0, 0
+    endr
     even
 
 ; YM2612 F-numbers for one octave (C..B); block = note/12 selects the octave
