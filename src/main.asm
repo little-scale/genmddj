@@ -3105,7 +3105,8 @@ advance_ch:                               ; a6 = channel
     ext.w   d3
     add.w   d3, d2
 .notsp:
-    bmi     .ret
+    tst.w   d2                             ; test the NOTE (the gate above may have left
+    bmi     .ret                           ; cmpi flags -> would wrongly drop FM/KIT/WAVE)
     cmpi.w  #96, d2
     bhs     .ret
     move.b  d2, c_note(a6)
