@@ -50,6 +50,7 @@ c_trig     equ 29                   ; FM: 1 = retrigger (key-off, freq, key-on) 
 c_keyon    equ 30                   ; FM: desired key state
 c_kshadow  equ 31                   ; FM: last key state sent to the chip
 c_hold     equ 32                   ; gate countdown: $FF = held, else ticks until key-off
+c_instr    equ 33                   ; instrument this channel is playing (from the phrase IN col)
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -301,6 +302,12 @@ Start:
     move.b  (a1)+, (a2)+
     dbra    d0, .cdf
     dbra    d2, .cdfn
+    lea     instrum+INSTR_SIZE, a2        ; instrument 1 = a default TONE voice (demo PSG tracks)
+    lea     default_tone, a1
+    moveq   #INSTR_SIZE-1, d0
+.cdt:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .cdt
 
     bsr     engine_init
     bsr     ym_setup                     ; build YM ch0's patch from instrument 0
@@ -2637,6 +2644,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #0, c_keyon(a6)
     move.b  #0, c_kshadow(a6)
     move.b  #$FF, c_hold(a6)             ; gate inactive (no auto key-off until a note sets it)
+    move.b  #0, c_instr(a6)
     move.l  #phrases, c_phrase(a6)
     move.b  #0, c_songpos(a6)            ; song row 0; chain = song[0][track]
     lea     song, a2
@@ -2917,6 +2925,7 @@ advance_ch:                               ; a6 = channel
     cmpi.w  #96, d2
     bhs     .ret
     move.b  d2, c_note(a6)
+    move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
     move.b  c_type(a6), d3
     beq.s   .square
     cmpi.b  #2, d3
@@ -3020,46 +3029,81 @@ load_step:                                ; a6 = channel; d1 = chain step
     move.l  a1, c_phrase(a6)
     rts
 
+; software AHD volume envelope for PSG voices, driven by the playing instrument's
+; VOL/ATK/HLD/DCY (FM voices use the YM2612 hardware envelope instead).
 env_ch:                                   ; a6 = channel
-    cmpi.b  #1, c_type(a6)                 ; only FM uses the YM2612 hardware envelope
-    beq.s   .fmskip
+    cmpi.b  #1, c_type(a6)
+    beq     .e_done
     move.b  c_estate(a6), d0
-    bne.s   .on
-    rts
-.fmskip:
-    rts
-.on:
+    beq     .e_done                        ; state 0 = off
+    lea     instrum, a4                    ; a4 = instrum[c_instr]
+    moveq   #0, d1
+    move.b  c_instr(a6), d1
+    mulu.w  #INSTR_SIZE, d1
+    adda.w  d1, a4
     cmpi.b  #1, d0
-    bne.s   .nh
-    move.b  #I_VOL, c_vol(a6)
+    bne.s   .e_hold
+    move.b  (ip_atk,a4), d1               ; state 1 = attack
+    bne.s   .a_ramp
+    move.b  (ip_vol,a4), d1               ; ATK 0 -> instant to peak
+    move.b  d1, c_vol(a6)
     move.b  #2, c_estate(a6)
     move.b  #0, c_ectr(a6)
     rts
-.nh:
-    cmpi.b  #2, d0
-    bne.s   .dc
-    addq.b  #1, c_ectr(a6)
-    move.b  c_ectr(a6), d1
-    cmpi.b  #I_HLD, d1
-    blo.s   .h
-    move.b  #3, c_estate(a6)
-    move.b  #0, c_ectr(a6)
-.h:
-    rts
-.dc:
-    addq.b  #1, c_ectr(a6)
-    move.b  c_ectr(a6), d1
-    cmpi.b  #I_DCY, d1
-    blo.s   .d
+.a_ramp:
+    addq.b  #1, c_ectr(a6)                 ; one volume step per ATK ticks
+    move.b  c_ectr(a6), d2
+    cmp.b   d1, d2
+    blo     .e_done
     move.b  #0, c_ectr(a6)
     move.b  c_vol(a6), d1
-    beq.s   .off
+    addq.b  #1, d1
+    move.b  (ip_vol,a4), d2
+    cmp.b   d2, d1
+    blo.s   .a_set
+    move.b  d2, d1                          ; reached peak -> hold
+    move.b  #2, c_estate(a6)
+    move.b  #0, c_ectr(a6)
+.a_set:
+    move.b  d1, c_vol(a6)
+    rts
+.e_hold:
+    cmpi.b  #2, d0
+    bne.s   .e_decay
+    move.b  (ip_hld,a4), d1               ; state 2 = hold
+    cmpi.b  #$0F, d1
+    beq     .e_done                        ; F = infinite
+    tst.b   d1
+    beq.s   .h_end                         ; 0 = no hold
+    add.b   d1, d1                          ; HLD * 2 ticks
+    addq.b  #1, c_ectr(a6)
+    move.b  c_ectr(a6), d2
+    cmp.b   d1, d2
+    blo     .e_done
+.h_end:
+    move.b  #3, c_estate(a6)
+    move.b  #0, c_ectr(a6)
+    rts
+.e_decay:
+    move.b  (ip_dcy,a4), d1               ; state 3 = decay
+    bne.s   .d_ramp
+    move.b  #0, c_vol(a6)                 ; DCY 0 -> instant cut
+    move.b  #0, c_estate(a6)
+    rts
+.d_ramp:
+    addq.b  #1, c_ectr(a6)                 ; one step down per DCY ticks
+    move.b  c_ectr(a6), d2
+    cmp.b   d1, d2
+    blo.s   .e_done
+    move.b  #0, c_ectr(a6)
+    move.b  c_vol(a6), d1
+    beq.s   .d_off
     subq.b  #1, d1
     move.b  d1, c_vol(a6)
-    bne.s   .d
-.off:
+    bne.s   .e_done
+.d_off:
     move.b  #0, c_estate(a6)
-.d:
+.e_done:
     rts
 
 compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
@@ -3543,11 +3587,11 @@ demo_phrases:
     rept 15
     dc.b $FF,0,0,0
     endr
-    dc.b 52,0,0,0            ; phrase 1  E-4
+    dc.b 52,1,0,0            ; phrase 1  E-4 (instrument 1 = TONE, the PSG voice)
     rept 15
     dc.b $FF,0,0,0
     endr
-    dc.b 55,0,0,0            ; phrase 2  G-4
+    dc.b 55,1,0,0            ; phrase 2  G-4 (instrument 1 = TONE)
     rept 15
     dc.b $FF,0,0,0
     endr
@@ -3591,6 +3635,15 @@ default_fm:                        ; YM2612 grand-piano test patch (Sega manual)
     dc.b 13,0, 45, 2,25,0,5,2,1,1  ; slot1 S3 ($34=0D..$84=11)
     dc.b 3, 3, 38, 1,31,0,5,2,1,1  ; slot2 S2 ($38=33..$88=11)
     dc.b 1, 0, 0,  2,20,0,7,2,6,10 ; slot3 S4 carrier ($3C=01..$8C=A6)
+    even
+
+default_tone:                      ; a basic TONE (PSG square) instrument
+    dc.b 3                          ; i_type = TONE
+    dc.b 0,0,0,0,0,0,0              ; offsets 1-7 (FM voice bytes, unused by PSG)
+    dc.b $F, 0, $F, 3              ; ip_vol ip_atk ip_hld ip_dcy (full, instant atk, sustain, decay on release)
+    dc.b 0, 0, 0, 0                ; ip_tsp ip_swp ip_vib ip_trm
+    dc.b $FF, 1, 1, 0              ; ip_tbl(none) ip_tbs ip_mode(periodic) ip_rate
+    dcb.b 28, 0                    ; offsets 20-47 unused
     even
 
 ; carrier slots per algorithm (bit d6 set = record slot d6 is a carrier, in S1,S3,S2,S4
