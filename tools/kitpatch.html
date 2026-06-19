@@ -103,7 +103,7 @@
 <script>
 const MAGIC = "GMDJKIT1";
 const HEADER = 16, MEMBER = 16;
-let NKITS = 8, NPADS = 16, DAC_RATE = 17756;
+let NKITS = 16, NPADS = 16, DAC_RATE = 7610;   // defaults; overridden from the ROM header on load
 let DIR_SIZE = NKITS*NPADS*MEMBER, POOL_BASE = HEADER + DIR_SIZE;
 
 let rom = null, poolOffset = -1, poolAvail = 0;
@@ -179,6 +179,8 @@ function resample(s, srcRate, dst){
 }
 function to8bit(pad){
   const f = resample(processed(pad), pad.srcRate, DAC_RATE);
+  const nf = Math.min(24, f.length);             // declick: fade last 24 samples to centre
+  for (let i=0;i<nf;i++) f[f.length-nf+i] *= (nf-1-i)/Math.max(1,nf-1);  // (matches makesamples.py)
   let u = new Uint8Array(f.length);
   for (let i=0;i<f.length;i++) u[i] = Math.max(0,Math.min(255, Math.round(f[i]*127)+128));
   if (u.length & 1){ const e=new Uint8Array(u.length+1); e.set(u); e[u.length]=128; u=e; }
