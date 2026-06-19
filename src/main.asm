@@ -111,8 +111,15 @@ SCR_PHRASE equ 0
 SCR_CHAIN  equ 1
 SCR_SONG   equ 2
 SCR_INSTR  equ 3
-SCR_FM     equ 4                    ; FM editor (below INSTR on the map)
+SCR_FM     equ 4                    ; (vestigial: the FM editor now lives inside INSTR)
 SCR_TABLE  equ 5                    ; macro table editor (right of INSTR)
+; placeholder screens (>= SCR_ECHO have no editable grid) -- the map satellites
+SCR_ECHO   equ 6                    ; below INSTR
+SCR_OPTS   equ 7                    ; above SONG
+SCR_PROJ   equ 8                    ; above CHAIN
+SCR_WAVE   equ 9                    ; above INSTR
+SCR_GROOVE equ 10                   ; below CHAIN
+NSCR       equ 11
 SCR_MAXPOS equ 4                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
 scb_data   equ $00FFE221
@@ -449,6 +456,8 @@ VBlankInt:
     beq.s   .gsg
     cmpi.b  #SCR_TABLE, d0
     beq.s   .gtbl
+    cmpi.b  #SCR_ECHO, d0                  ; placeholder screens: header only, no grid body
+    bhs     .gd
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
     moveq   #0, d0
     move.b  cur_instr, d0
@@ -702,23 +711,11 @@ draw_map:                                 ; a0 = VDP_CTRL
 
 ; a1 -> {header_str, name_str} pair for the current screen
 screen_ptr:
-    lea     scr_ph_tab, a1
+    lea     scr_tabs, a1
+    moveq   #0, d0
     move.b  cur_screen, d0
-    beq.s   .r
-    lea     scr_ch_tab, a1
-    cmpi.b  #SCR_CHAIN, d0
-    beq.s   .r
-    lea     scr_sg_tab, a1
-    cmpi.b  #SCR_SONG, d0
-    beq.s   .r
-    lea     scr_in_tab, a1
-    cmpi.b  #SCR_INSTR, d0
-    beq.s   .r
-    lea     scr_tb_tab, a1
-    cmpi.b  #SCR_TABLE, d0
-    beq.s   .r
-    lea     scr_fm_tab, a1
-.r:
+    lsl.w   #3, d0                          ; 2 longs (8 bytes) per entry
+    adda.w  d0, a1
     rts
 
 ; ============================================================
@@ -4059,6 +4056,11 @@ str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
+str_scr_echo: dc.b "ECHO",0
+str_scr_opt:  dc.b "OPTIONS",0
+str_scr_proj: dc.b "PROJECT",0
+str_scr_wave: dc.b "WAVEFORM",0
+str_scr_grv:  dc.b "GROOVE",0
 str_scr_tb: dc.b "TABLE ",0
 str_hdr_tb: dc.b "   V  PIT CMD",0
     even
@@ -4144,12 +4146,18 @@ ch_config:                                      ; type, p1, p2, p3 per channel
 scr_order:  dc.b SCR_SONG, SCR_CHAIN, SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; map pos -> screen id
 scr_pos:    dc.b 2, 1, 0, 3, $FF, 4         ; screen id -> map pos ($FF = off the row, FM)
     even
-scr_ph_tab: dc.l str_hdr_ph, str_scr_ph    ; {header, name} per screen
-scr_ch_tab: dc.l str_hdr_ch, str_scr_ch
-scr_sg_tab: dc.l str_hdr_sg, str_scr_sg
-scr_in_tab: dc.l str_hdr_in, str_scr_in
-scr_fm_tab: dc.l str_hdr_in, str_scr_fm     ; row-3 header blank (render_fm draws its own)
-scr_tb_tab: dc.l str_hdr_tb, str_scr_tb
+scr_tabs:                                   ; {header, name} per screen, indexed by SCR_*
+    dc.l str_hdr_ph, str_scr_ph             ; 0  PHRASE
+    dc.l str_hdr_ch, str_scr_ch             ; 1  CHAIN
+    dc.l str_hdr_sg, str_scr_sg             ; 2  SONG
+    dc.l str_hdr_in, str_scr_in             ; 3  INSTR
+    dc.l str_hdr_in, str_scr_fm             ; 4  FM (vestigial)
+    dc.l str_hdr_tb, str_scr_tb             ; 5  TABLE
+    dc.l str_hdr_in, str_scr_echo           ; 6  ECHO
+    dc.l str_hdr_in, str_scr_opt            ; 7  OPTIONS
+    dc.l str_hdr_in, str_scr_proj           ; 8  PROJECT
+    dc.l str_hdr_in, str_scr_wave           ; 9  WAVEFORM
+    dc.l str_hdr_in, str_scr_grv            ; 10 GROOVE
 
 tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $00000000
