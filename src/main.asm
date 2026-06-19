@@ -1605,33 +1605,32 @@ pad_read:
 ; ============================================================
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
-render_table:                             ; 4 columns: VOL ARP CMD PRM at screen cols 4/8/12/16
+render_table:                             ; V(vol) PIT(arp) CMD(cmd+prm), SMSGGDJ-style
     moveq   #0, d6                         ; row 0-15
 .tr:
     bsr     draw_rowhdr                    ; row number + playhead at the left
-    moveq   #0, d5                         ; column 0-3
+    moveq   #0, d5                         ; column 0-3 (vol, arp, cmd, prm)
 .tc:
-    moveq   #0, d0                         ; VDP addr for (GRID_TOP+row, 4 + col*4)
+    lea     table_scol, a1                 ; VDP addr at (GRID_TOP+row, table_scol[col])
+    move.b  (a1,d5.w), d7
+    moveq   #0, d0
     move.w  d6, d0
     addi.w  #GRID_TOP, d0
     lsl.w   #6, d0
-    move.w  d5, d1
-    lsl.w   #2, d1
-    addi.w  #4, d1
-    add.w   d1, d0
+    andi.w  #$00FF, d7
+    add.w   d7, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    lea     tbl_ram, a1                    ; value = tbl_ram[cur_table*64 + row*4 + col]
+    lea     tbl_ram, a1                    ; a1 -> the row's 4 bytes (vol,arp,cmd,prm)
     moveq   #0, d0
     move.b  cur_table, d0
     lsl.w   #6, d0
     move.w  d6, d1
     lsl.w   #2, d1
     add.w   d1, d0
-    add.w   d5, d0
-    move.b  (a1,d0.w), d3
+    adda.w  d0, a1
     moveq   #0, d4                         ; highlight if cursor on this cell
     move.b  cur_row, d0
     cmp.b   d6, d0
@@ -1641,16 +1640,50 @@ render_table:                             ; 4 columns: VOL ARP CMD PRM at screen
     bne.s   .tnh
     moveq   #$60, d4
 .tnh:
-    cmpi.w  #t_cmd, d5                     ; CMD column = a command letter, not hex
-    bne.s   .thex
+    move.b  d5, d0
+    beq.s   .tvol                          ; col 0 = volume (1 char, "-" = no change)
+    cmpi.b  #t_arp, d0
+    beq.s   .tpit                          ; col 1 = PIT (2 hex)
+    cmpi.b  #t_cmd, d0
+    beq.s   .tcmd                          ; col 2 = command letter
+    tst.b   (t_cmd,a1)                     ; col 3 = PRM: dashes when no command
+    beq.s   .tdash2
+    move.b  (t_prm,a1), d3
+    bsr     draw_hex2
+    bra.s   .tadv
+.tvol:
+    move.b  (t_vol,a1), d3
+    cmpi.b  #$FF, d3
+    beq.s   .tdash1                        ; $FF = no change -> "-"
+    andi.w  #$000F, d3
+    lea     hexd, a2
+    move.b  (a2,d3.w), d0
+    andi.w  #$00FF, d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    bra.s   .tadv
+.tpit:
+    move.b  (t_arp,a1), d3
+    bsr     draw_hex2
+    bra.s   .tadv
+.tcmd:
+    move.b  (t_cmd,a1), d3
     bsr     draw_cmd
     bra.s   .tadv
-.thex:
-    bsr     draw_hex2
+.tdash2:
+    move.w  #'-', d0                       ; PRM: 2 dashes
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+    bra.s   .tadv
+.tdash1:
+    move.w  #'-', d0                       ; V: 1 dash
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
 .tadv:
     addq.w  #1, d5
     cmpi.w  #4, d5
-    bne.s   .tc
+    bne     .tc
     addq.w  #1, d6
     cmpi.w  #TBL_ROWS, d6
     bne     .tr
@@ -3881,7 +3914,9 @@ str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
 str_scr_tb: dc.b "TABLE ",0
-str_hdr_tb: dc.b "    VL  AR  CM  PR",0
+str_hdr_tb: dc.b "   V  PIT CMD",0
+    even
+table_scol: dc.b 4, 7, 11, 12             ; V(1) PIT(2) CMD-letter PRM(2) -> "A00" adjacent
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
