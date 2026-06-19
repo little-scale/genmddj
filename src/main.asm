@@ -169,6 +169,8 @@ ip_rate    equ 19                   ; NOISE: 0-2 = clk/512,1024,2048; 3 = pitche
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
+i_gain     equ 51                   ; reserved (real-time gain deferred; use kitpatch build-time gain)
+i_rate     equ 52                   ; KIT rate: 0=1x 1=2x 2=4x 3=0.5x (0 = default)
 NITYPE     equ 5
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
@@ -1161,7 +1163,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #1, d1                          ; WAVE: INST/TYPE only
     cmpi.b  #1, d0
     bne.s   .crkit
-    moveq   #2, d1                          ; KIT: + the kit-selector row
+    moveq   #3, d1                          ; KIT: + the kit-selector and rate rows
 .crkit:
     cmpi.b  #3, d0
     bne.s   .crk1
@@ -1485,8 +1487,15 @@ edit_psg:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
-    cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = the kit selector
+    cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = kit, row 3 = rate
     bne.s   .ep_psgf
+    cmpi.b  #3, cur_row
+    bne.s   .ep_ksel
+    lea     (i_rate,a3), a1                ; row 3 = RATE (0..3 -> .5x/1x/2x/4x)
+    moveq   #3, d3
+    moveq   #1, d4
+    bra     adj_field
+.ep_ksel:
     lea     (i_kit,a3), a1
     moveq   #7, d3                          ; 8 kits (0..7)
     moveq   #1, d4
@@ -2426,11 +2435,29 @@ render_kit:
     moveq   #$60, d4                         ; highlight the KIT field row
 .rk1:
     bsr     draw_hex2
-    moveq   #7, d3                          ; "PADS" + 16 fill markers at row 7
+    moveq   #6, d3                          ; "RATE" + value at row 6 (cur_row 3)
+    moveq   #1, d4
+    lea     str_rate, a1
+    bsr     print_at
+    moveq   #0, d2                           ; highlight the RATE field row?
+    cmpi.b  #3, cur_row
+    bne.s   .rk2
+    moveq   #$60, d2
+.rk2:
+    moveq   #0, d1
+    move.b  (i_rate,a3), d1
+    andi.w  #3, d1
+    lsl.w   #2, d1
+    lea     kit_rate_lbl, a1
+    move.l  (a1,d1.w), a1                    ; rate name (.5X / 1X / 2X / 4X)
+    moveq   #6, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #8, d3                          ; "PADS" + 16 fill markers at row 8
     moveq   #1, d4
     lea     str_pads, a1
     bsr     print_at
-    move.l  #$438C0003, (a0)               ; markers at row 7 col 6
+    move.l  #$440C0003, (a0)               ; markers at row 8 col 6
     lea     sample_pool, a4
     adda.w  #16, a4                          ; skip the magic header -> directory
     moveq   #0, d2
@@ -3551,6 +3578,7 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d1
     move.b  c_note(a6), d1
     andi.w  #$0F, d1                     ; pad = note % 16 (wraps every octave-ish)
+    lea     0(a4,d2.w), a1               ; a1 = the KIT instrument (for gain/rate)
     bsr     dac_play
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
     move.b  #0, c_trig(a6)
@@ -4072,7 +4100,7 @@ dac_play:
     move.l  (a0,d2.w), d3                  ; member offset (bytes from pool start)
     move.l  4(a0,d2.w), d4                 ; member length
     tst.l   d4
-    beq.s   .dpx                           ; empty pad -> nothing
+    beq     .dpx                           ; empty pad -> nothing
     adda.l  d3, a0                          ; a0 = absolute sample ROM address (A)
     move.l  a0, d3
     move.l  d3, d5                          ; bank = A >> 15
@@ -4095,11 +4123,21 @@ dac_play:
     move.w  d4, d5
     lsr.w   #8, d5
     move.b  d5, Z80_RAM+$1FB6
+    moveq   #0, d5                        ; rate -> window step + half-rate flag
+    move.b  (i_rate,a1), d5
+    andi.w  #3, d5
+    lea     rate_step, a0
+    move.b  (a0,d5.w), Z80_RAM+$1FB8
+    lea     rate_half, a0
+    move.b  (a0,d5.w), Z80_RAM+$1FB9
     addq.b  #1, Z80_RAM+$1FB0              ; bump the DAC trigger
     move.w  #$0000, Z80_BUSREQ
 .dpx:
     movem.l (sp)+, d2-d6/a0
     rts
+rate_step:  dc.b 1, 2, 4, 1               ; i_rate 0..3 = 1x/2x/4x/0.5x -> window step
+rate_half:  dc.b 0, 0, 0, 1               ; i_rate 3 (0.5x) feeds each byte twice
+    even
 
 ; push a YM2612 write list (part,reg,value triples) once: patch + key-on
 ; build YM ch0's patch from instrument 0's record and push it to the Z80.
@@ -4340,6 +4378,13 @@ str_wip:    dc.b "(WIP)",0
 str_type:   dc.b "TYPE",0
 str_kit:    dc.b "KIT",0
 str_pads:   dc.b "PADS",0
+    even
+kit_rate_lbl: dc.l krn_1, krn_2, krn_4, krn_h   ; i_rate 0..3 = 1x/2x/4x/0.5x
+krn_h:      dc.b ".5X",0
+krn_1:      dc.b "1X ",0
+krn_2:      dc.b "2X ",0
+krn_4:      dc.b "4X ",0
+    even
 str_voice:  dc.b "VOICE:",0
 str_algo:   dc.b "ALGO",0
 str_fb:     dc.b "FB",0

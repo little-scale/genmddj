@@ -50,6 +50,11 @@ BANKS 1
 .DEFINE D_PTR     $1FC1     ; current window read pointer
 .DEFINE D_REM     $1FC3     ; bytes remaining
 .DEFINE D_BANK    $1FC5     ; current window bank
+.DEFINE SCB_DSTEP $1FB8     ; window advance per feed (1/2/4 = 1x/2x/4x)
+.DEFINE SCB_DHALF $1FB9     ; 1 = 0.5x (feed each byte twice)
+.DEFINE D_STEP    $1FC8
+.DEFINE D_HALF    $1FC9
+.DEFINE D_HFLIP   $1FCA     ; half-rate toggle
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -107,44 +112,78 @@ dac_arm:
     ld   (D_PTR), hl
     ld   hl, (SCB_DLEN)
     ld   (D_REM), hl
-    ld   a, 1
+    ld   a, (SCB_DSTEP)
+    ld   (D_STEP), a
+    ld   a, (SCB_DHALF)
+    ld   (D_HALF), a
+    xor  a
+    ld   (D_HFLIP), a
+    inc  a
     ld   (D_PLAY), a
     ret
 
-; ---- feed one PCM byte to the DAC, advance, re-bank, stop at end ----
+; ---- feed one PCM byte (gained), advance by the rate step, re-bank, stop at end ----
 dac_feed:
     ld   hl, (D_PTR)
     ld   a, $2A                 ; ch6 DAC data register
     ld   (YM_A0), a
     ld   a, (hl)               ; PCM byte from the ROM window
     ld   (YM_D0), a
-    inc  hl
-    bit  7, h                   ; still inside $8000-$FFFF window?
-    jr   nz, +
-    ld   hl, (D_BANK)           ; crossed 32 KB -> next window bank
+    ld   a, (D_HALF)           ; advance amount c: D_STEP, or 0 on a half-rate skip
+    or   a
+    jr   z, df_full
+    ld   a, (D_HFLIP)
+    xor  1
+    ld   (D_HFLIP), a
+    jr   nz, df_full
+    ld   c, 0
+    jr   df_adv
+df_full:
+    ld   a, (D_STEP)
+    ld   c, a
+df_adv:
+    ld   a, l
+    add  a, c
+    ld   l, a
+    jr   nc, df_noc
+    inc  h
+df_noc:
+    bit  7, h                   ; still inside the $8000-$FFFF window?
+    jr   nz, df_nob
+    set  7, h                   ; wrapped -> next 32 KB bank, keep the overshoot
+    push hl
+    ld   hl, (D_BANK)
     inc  hl
     ld   (D_BANK), hl
     call set_bank
-    ld   hl, $8000
-+:
+    pop  hl
+df_nob:
     ld   (D_PTR), hl
-    ld   hl, (D_REM)
-    dec  hl
+    ld   hl, (D_REM)           ; D_REM -= c
+    ld   a, l
+    sub  c
+    ld   l, a
+    jr   nc, df_rem
+    dec  h
+df_rem:
     ld   (D_REM), hl
     ld   a, h
+    or   a
+    jp   m, df_end             ; underflowed past 0
     or   l
-    jr   nz, +
+    jr   nz, df_pace
+df_end:
     xor  a
-    ld   (D_PLAY), a            ; sample finished -> release ch6 back to its FM voice
+    ld   (D_PLAY), a           ; finished -> release ch6 back to its FM voice
     ld   a, $2B
     ld   (YM_A0), a
     xor  a
-    ld   (YM_D0), a             ; clear DAC enable
-+:
-    ld   a, 6                   ; pad the pass toward the ~17.7 kHz cadence
--:
+    ld   (YM_D0), a
+df_pace:
+    ld   a, 2                  ; pacing (gain/rate work uses part of the budget)
+df_pl:
     dec  a
-    jr   nz, -
+    jr   nz, df_pl
     ret
 
 ; ---- set the 9-bit window bank from hl (LSB first) ----
