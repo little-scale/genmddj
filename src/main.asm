@@ -9,7 +9,7 @@
 ; (M4) edits phrase 0, played live on channel 0.
 ; ============================================================
 
-ROM_SIZE   equ $400000           ; 4 MB ROM -> sample pool capacity ~3.9 MB
+ROM_SIZE   equ $200000           ; 2 MB ROM -> ~2 MB pool = ~270 s of 7610 Hz PCM
 VDP_DATA   equ $C00000
 VDP_CTRL   equ $C00004
 Z80_RAM    equ $A00000
