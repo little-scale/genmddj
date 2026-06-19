@@ -1697,29 +1697,44 @@ render_field:
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    lea     field_boff, a1
-    move.b  (a1,d5.w), d1
-    andi.w  #$00FF, d1
-    move.w  d6, d2
-    lsl.w   #2, d2
-    add.w   d1, d2
-    lea     phrases, a2                   ; + cur_phrase * 64
+    lea     phrases, a2                   ; a2 -> cur_phrase's row (note,instr,cmd,prm)
     moveq   #0, d0
     move.b  cur_phrase, d0
     lsl.w   #6, d0
     adda.w  d0, a2
-    move.b  (a2,d2.w), d3
+    move.w  d6, d2
+    lsl.w   #2, d2
+    adda.w  d2, a2
     move.b  d5, d0
     beq.s   .note
+    cmpi.b  #1, d0
+    beq.s   .instr
     cmpi.b  #2, d0
     beq.s   .cmd
+    tst.b   (2,a2)                         ; PRM: dashes when there's no command
+    beq.s   .dash2
+    move.b  (3,a2), d3
+    bsr     draw_hex2
+    bra.s   .done
+.instr:
+    cmpi.b  #$FF, (a2)                     ; IN: dashes on a rest row (no note)
+    beq.s   .dash2
+    move.b  (1,a2), d3
     bsr     draw_hex2
     bra.s   .done
 .note:
+    move.b  (a2), d3
     bsr     draw_note
     bra.s   .done
 .cmd:
+    move.b  (2,a2), d3
     bsr     draw_cmd
+    bra.s   .done
+.dash2:
+    move.w  #'-', d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
 .done:
     movem.l (sp)+, d5-d6/a1-a2
     rts
@@ -2732,7 +2747,7 @@ draw_hex2:
 draw_cmd:
     move.b  d3, d0
     bne.s   .v
-    moveq   #'.', d0                       ; 0 = no command
+    moveq   #'-', d0                       ; 0 = no command
     bra.s   .draw
 .v:
     addi.b  #$40, d0                       ; 1-26 -> 'A'-'Z' (H = HOP)
@@ -3855,7 +3870,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 ver_str:    dc.b "V0.01",0
-str_hdr_ph: dc.b "   NOT IN C PR",0
+str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
@@ -3926,7 +3941,7 @@ str_play:   dc.b "PLAY",0
 str_stop:   dc.b "STOP",0
 hexd:       dc.b "0123456789ABCDEF"
 note_names: dc.b "C-C#D-D#E-F-F#G-G#A-A#B-"
-field_scol: dc.b 4, 8, 11, 13
+field_scol: dc.b 4, 9, 12, 13
 field_boff: dc.b 0, 1, 2, 3
 chain_scol: dc.b 4, 8
 song_scol:  dc.b 4, 7, 10, 13, 16, 19, 22, 25, 28, 31
