@@ -55,6 +55,10 @@ def load_wav_8bit(path):
     loud = np.where(np.abs(v) > 0.02)[0]                      # trim trailing silence
     if len(loud):
         v = v[:loud[-1] + 1]
+    nf = min(24, len(v))                                     # declick: fade the last ~3 ms
+    if nf:                                                   # to centre so it ends at 0x80
+        v = v.copy()
+        v[-nf:] *= np.linspace(1.0, 0.0, nf)
     b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned
     return bytes(b)
 

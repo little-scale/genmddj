@@ -194,10 +194,10 @@ df_rem:
     jr   nz, df_pace
 df_end:
     xor  a
-    ld   (D_PLAY), a           ; finished -> release ch6 back to its FM voice
-    ld   a, $2B
+    ld   (D_PLAY), a           ; finished -> park the DAC at centre, leave it enabled
+    ld   a, $2A                 ; (disabling ch6 would step to the FM idle level = a click)
     ld   (YM_A0), a
-    xor  a
+    ld   a, $80
     ld   (YM_D0), a
 df_pace:
     ret                        ; Timer A paces the feed now; no busy-wait needed
