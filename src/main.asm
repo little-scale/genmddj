@@ -479,6 +479,7 @@ VBlankInt:
     bra.s   .gd
 .gsg:
     bsr     render_song
+    bsr     render_song_playing
     bra.s   .gd
 .gph:
     bsr     render_phrase
@@ -2001,6 +2002,46 @@ render_song:
     addq.b  #1, d6
     cmpi.b  #16, d6
     bne.s   .rl
+    rts
+
+; live "now playing" note readout under each SONG track (row 23). a0 = VDP_CTRL.
+render_song_playing:
+    movem.l d3-d7/a1-a2, -(sp)
+    moveq   #0, d5                          ; track 0-9
+.spl:
+    lea     song_scol, a1                  ; VDP addr -> (row 23, song_scol[track])
+    move.b  (a1,d5.w), d7
+    moveq   #0, d0
+    move.w  #23, d0
+    lsl.w   #6, d0
+    andi.w  #$00FF, d7
+    add.w   d7, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #0, d4                          ; no inverse highlight
+    tst.b   playing
+    beq.s   .spblank                        ; stopped -> blank
+    move.w  d5, d1                          ; channel = ch_state + track*CHSIZE
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a2
+    adda.w  d1, a2
+    cmpi.b  #$FF, c_chain(a2)
+    beq.s   .spblank                        ; idle track (no chain) -> blank
+    move.b  c_note(a2), d3
+    bsr     draw_note                       ; "C-4" / "---"
+    bra.s   .spnext
+.spblank:
+    move.w  #' ', d0                        ; three spaces
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+.spnext:
+    addq.b  #1, d5
+    cmpi.b  #NCH, d5
+    bne.s   .spl
+    movem.l (sp)+, d3-d7/a1-a2
     rts
 
 render_sfield:                            ; d5=track col, d6=row, d4=cursor off
