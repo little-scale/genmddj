@@ -81,6 +81,9 @@ splash_row equ $00FFE21C           ; splash incremental-draw progress (0..SPLASH
 g_lfo      equ $00FFE21D           ; global FM LFO: 0 = off, 1-8 = on at rate 0-7
 env_dirty  equ $00FFE21E           ; 1 = envelope needs rasterising (UI changed)
 env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progress
+last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entered (B-tap repeats it)
+scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
+scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -294,6 +297,7 @@ Start:
     move.b  #0, key_rpt
     move.b  #0, dpad_prev
     move.b  #48, last_note
+    move.b  #0, last_cmd
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -302,6 +306,11 @@ Start:
     move.b  #0, cur_instr
     move.b  #0, cur_chan
     move.b  #0, cur_songrow
+    lea     scr_row, a0                   ; per-screen saved cursors -> 0
+    moveq   #7, d0
+.clrscur:
+    clr.b   (a0)+
+    dbra    d0, .clrscur
     move.w  #0, g_ticks
     move.b  #0, play_mode
     move.b  #0, play_from
@@ -781,6 +790,12 @@ screen_left:
     lea     scr_order, a1
     move.b  (a1,d0.w), cur_screen
     move.b  #1, need_clear
+    moveq   #0, d1                          ; restore the parent screen's cursor (where we
+    move.b  cur_screen, d1                  ;   drilled down from) instead of jumping to 0,0
+    lea     scr_row, a1
+    move.b  (a1,d1.w), cur_row
+    lea     scr_col, a1
+    move.b  (a1,d1.w), cur_col
 .l_done:
     rts
 
@@ -792,6 +807,12 @@ screen_right:
     cmpi.b  #SCR_MAXPOS, d0
     bhs.s   .r_done                        ; already rightmost
     bsr     drill_down                     ; load the item under the cursor
+    moveq   #0, d1                          ; remember this screen's cursor so screen_left
+    move.b  cur_screen, d1                  ;   can bring us back to exactly this cell
+    lea     scr_row, a1
+    move.b  cur_row, (a1,d1.w)
+    lea     scr_col, a1
+    move.b  cur_col, (a1,d1.w)
     moveq   #0, d0
     move.b  cur_screen, d0
     lea     scr_pos, a1
@@ -1161,6 +1182,10 @@ edit_value:
     subq.b  #1, d0
 .cw:
     move.b  d0, (a1)
+    tst.b   d0                             ; remember the last real command for B-tap repeat
+    beq.s   .cwr
+    move.b  d0, last_cmd
+.cwr:
     rts
 .note:
     bsr     get_field_addr
@@ -1225,7 +1250,17 @@ edit_instr:
 do_insert:
     bsr     get_field_addr
     move.b  cur_col, d0
+    beq.s   .ins_note                      ; col 0 = NOT -> insert/audition note
+    cmpi.b  #2, d0                          ; col 2 = C (PHRASE command column)
     bne.s   .ret
+    tst.b   cur_screen                      ; PHRASE only
+    bne.s   .ret
+    tst.b   (a1)                            ; only drop into an empty command cell
+    bne.s   .ret
+    move.b  last_cmd, (a1)                  ; B-tap repeats the last command entered
+.ret:
+    rts
+.ins_note:
     move.b  (a1), d0
     cmpi.b  #$FF, d0
     bne.s   .audit
@@ -1234,7 +1269,6 @@ do_insert:
 .audit:
     move.b  d0, e_audnote
     bsr     prelisten
-.ret:
     rts
 
 prelisten:                                ; audition e_audnote on channel 0
