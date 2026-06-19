@@ -139,7 +139,7 @@ I_VOL      equ $F
 I_HLD      equ $FF
 I_DCY      equ 2
 GROOVE     equ 10
-GRID_TOP   equ 5
+GRID_TOP   equ 6
 
     org $000000
 
@@ -589,7 +589,7 @@ clear_splash:                             ; a0 = VDP_CTRL; blank the visible pla
 
 ; screen map widget: the screens in map order with the current one highlighted
 draw_map:                                 ; a0 = VDP_CTRL
-    move.l  #$42C60003, (a0)             ; "SCPI" at row 5, col 35
+    move.l  #$43460003, (a0)             ; "SCPI" at row 6, col 35
     moveq   #0, d0
     move.b  cur_screen, d0
     lea     scr_pos, a1
@@ -1676,8 +1676,8 @@ FM_VTOP equ 7                             ; voice params, one per row, LFO at FM
 FM_OHDR equ 16                            ; operator grid header (INST + gaps, no LFO row)
 FM_OTOP equ 17                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
-ALGO_DIAG_ROW equ 5                       ; algorithm diagram (2x size; top-left up 1, left 1)
-ALGO_DIAG_COL equ 13
+ALGO_DIAG_ROW equ 6                       ; algorithm diagram (2x size)
+ALGO_DIAG_COL equ 12
 ENV_TW  equ 32                            ; envelope canvas: 4 ops x 8 tiles wide, 4 tall
 ENV_TH  equ 4
 ENV_TILES equ ENV_TW*ENV_TH
@@ -3271,12 +3271,12 @@ demo_song_end:
 ; triples: part(0=ch1-3), reg, value. algorithm 7 (all ops are carriers),
 ; op1 loud, ops 2-4 muted -> a single sine-ish FM voice.
 ; default FM voice (instrument 0): algo 7 (all carriers), op1 loud, op2-4 muted
-default_fm:
-    dc.b 0, 7, 0, 3, 0,0,15,15     ; type, algo, fb, pan(L+R), ams, fms, HLD=hold, VOL=full
-    dc.b 1,0,0,  0,31,0,0,0,15,0   ; slot0 (loud): MUL DT TL RS AR AM D1 D2 RR SL
-    dc.b 1,0,127,0,31,0,0,0,15,0   ; slot1 (TL=127 = silent)
-    dc.b 1,0,127,0,31,0,0,0,15,0   ; slot2
-    dc.b 1,0,127,0,31,0,0,0,15,0   ; slot3
+default_fm:                        ; YM2612 grand-piano test patch (Sega manual)
+    dc.b 0, 2, 6, 3, 0,0,15,15     ; type, algo=2, fb=6, pan(L+R), ams, fms, HLD=hold, VOL=full
+    dc.b 1, 7, 35, 1,31,0,5,2,1,1  ; slot0 S1: MUL DT TL RS AR AM D1 D2 RR SL ($30=71..$80=11)
+    dc.b 13,0, 45, 2,25,0,5,2,1,1  ; slot1 S3 ($34=0D..$84=11)
+    dc.b 3, 3, 38, 1,31,0,5,2,1,1  ; slot2 S2 ($38=33..$88=11)
+    dc.b 1, 0, 0,  2,20,0,7,2,6,10 ; slot3 S4 carrier ($3C=01..$8C=A6)
     even
 
 ; carrier slots per algorithm (bit d6 set = record slot d6 is a carrier, in S1,S3,S2,S4
