@@ -367,7 +367,7 @@ Start:
     move.b  #1, need_clear               ; draw header/name on first frame
 
     lea     VDP_CTRL, a0                  ; splash parked (H40 corruption to revisit)
-    moveq   #1, d3
+    moveq   #0, d3                        ; GENMDDJ title at row0 col1
     moveq   #1, d4
     lea     str_title, a1
     bsr     print_at
@@ -427,8 +427,8 @@ VBlankInt:
     bsr     screen_ptr                     ; a1 = hdr table entry
     move.l  (a1), a1
     bsr     print_at
-    moveq   #1, d3                        ; screen name at row1 col12
-    moveq   #12, d4
+    moveq   #1, d3                        ; screen name at row1 col1 (left-aligned, SMSGGDJ-style)
+    moveq   #1, d4
     bsr     screen_ptr
     move.l  4(a1), a1
     bsr     print_at
@@ -496,8 +496,7 @@ VBlankInt:
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
     dbra    d3, .tk
-    move.l  #$40A60003, (a0)             ; screen number at row1 col19
-    move.w  #'0', VDP_DATA
+    move.l  #$40900003, (a0)             ; screen number (2 hex digits) at row1 col8
     moveq   #0, d0
     move.b  cur_screen, d1
     beq.s   .pnph
@@ -522,20 +521,26 @@ VBlankInt:
     move.b  cur_phrase, d0
 .pn:
     lea     hexd, a1
-    andi.w  #$000F, d0
+    move.w  d0, d1                        ; high nibble
+    lsr.w   #4, d1
+    andi.w  #$000F, d1
+    move.b  (a1,d1.w), d1
+    andi.w  #$00FF, d1
+    move.w  d1, VDP_DATA
+    andi.w  #$000F, d0                    ; low nibble
     move.b  (a1,d0.w), d0
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
-    move.b  cur_screen, d0                ; current track name at row1 col22
+    move.b  cur_screen, d0                ; current track name
     beq.s   .tnshow                        ; PHRASE
     cmpi.b  #SCR_CHAIN, d0
     beq.s   .tnshow                        ; CHAIN
-    move.l  #$40920003, (a0)              ; other screens: blank it
+    move.l  #$40980003, (a0)              ; other screens: blank it
     move.w  #' ', VDP_DATA
     move.w  #' ', VDP_DATA
     bra.s   .tndone
 .tnshow:
-    move.l  #$40920003, (a0)             ; row1 col22
+    move.l  #$40980003, (a0)             ; track name at row1 col12
     moveq   #0, d0
     move.b  cur_chan, d0
     add.w   d0, d0
@@ -608,7 +613,7 @@ splash_tick:                              ; a0 = VDP_CTRL; incremental draw + co
     addq.w  #1, d2
     cmpi.w  #14, d2
     bne.s   .ce
-    moveq   #1, d3                        ; restore GENMDDJ title at row1 col1
+    moveq   #0, d3                        ; restore GENMDDJ title at row0 col1
     moveq   #1, d4
     lea     str_title, a1
     bsr     print_at
