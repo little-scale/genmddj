@@ -3963,6 +3963,48 @@ push_scb:
     move.w  #$0000, Z80_BUSREQ
     rts
 
+; trigger a kit sample on the DAC: d0 = kit, d1 = pad (0..15).
+; resolves (kit,pad) -> sample ROM addr via the directory, computes the Z80
+; window bank/pointer, and pushes the DAC command (own BUSREQ). Empty pad = no-op.
+dac_play:
+    movem.l d2-d6/a0, -(sp)
+    move.w  d0, d2                         ; member index = (kit*16 + pad) * 8
+    lsl.w   #4, d2
+    add.w   d1, d2
+    lsl.w   #3, d2
+    lea     sample_pool, a0
+    move.l  (a0,d2.w), d3                  ; member offset (bytes from pool start)
+    move.l  4(a0,d2.w), d4                 ; member length
+    tst.l   d4
+    beq.s   .dpx                           ; empty pad -> nothing
+    adda.l  d3, a0                          ; a0 = absolute sample ROM address (A)
+    move.l  a0, d3
+    move.l  d3, d5                          ; bank = A >> 15
+    lsr.l   #8, d5
+    lsr.l   #7, d5
+    andi.l  #$7FFF, d3                      ; ptr = $8000 | (A & $7FFF)
+    ori.w   #$8000, d3
+    move.w  #$0100, Z80_BUSREQ
+.dpw:
+    btst    #0, Z80_BUSREQ
+    bne.s   .dpw
+    move.b  d5, Z80_RAM+$1FB1              ; dbank lo / hi (Z80 little-endian)
+    lsr.w   #8, d5
+    move.b  d5, Z80_RAM+$1FB2
+    move.b  d3, Z80_RAM+$1FB3              ; dptr lo / hi
+    move.w  d3, d5
+    lsr.w   #8, d5
+    move.b  d5, Z80_RAM+$1FB4
+    move.b  d4, Z80_RAM+$1FB5              ; dlen lo / hi
+    move.w  d4, d5
+    lsr.w   #8, d5
+    move.b  d5, Z80_RAM+$1FB6
+    addq.b  #1, Z80_RAM+$1FB0              ; bump the DAC trigger
+    move.w  #$0000, Z80_BUSREQ
+.dpx:
+    movem.l (sp)+, d2-d6/a0
+    rts
+
 ; push a YM2612 write list (part,reg,value triples) once: patch + key-on
 ; build YM ch0's patch from instrument 0's record and push it to the Z80.
 ; per op (n=0..3, reg offset n*4): $30=(DT<<4)|MUL $40=TL $50=AR $60=D1R
