@@ -1257,18 +1257,24 @@ edit_fm:
     moveq   #NITYPE-1, d3
     moveq   #1, d4
     bra.s   .adj
-.instedit:                                ; row 0: select which instrument to edit
+.instedit:                                ; row 0: select which instrument to edit (wraps)
     move.b  cur_instr, d0
     btst    #2, d2                          ; Left -> previous
     beq.s   .ie_r
     tst.b   d0
-    beq.s   .ie_r
+    bne.s   .ie_dec
+    move.b  #NINSTR_ED, d0
+    bra.s   .ie_r
+.ie_dec:
     subq.b  #1, d0
 .ie_r:
     btst    #3, d2                          ; Right -> next
     beq.s   .ie_w
     cmpi.b  #NINSTR_ED, d0
-    bhs.s   .ie_w
+    blo.s   .ie_inc
+    moveq   #0, d0
+    bra.s   .ie_w
+.ie_inc:
     addq.b  #1, d0
 .ie_w:
     move.b  d0, cur_instr
@@ -1298,17 +1304,23 @@ edit_fm:
 edit_psg:
     tst.b   cur_row
     bne.s   .ep_t
-    move.b  cur_instr, d0                  ; row 0 = INST selector
-    btst    #2, d2
+    move.b  cur_instr, d0                  ; row 0 = INST selector (wraps)
+    btst    #2, d2                          ; Left
     beq.s   .ep_ir
     tst.b   d0
-    beq.s   .ep_ir
+    bne.s   .ep_idec
+    move.b  #NINSTR_ED, d0
+    bra.s   .ep_ir
+.ep_idec:
     subq.b  #1, d0
 .ep_ir:
-    btst    #3, d2
+    btst    #3, d2                          ; Right
     beq.s   .ep_iw
     cmpi.b  #NINSTR_ED, d0
-    bhs.s   .ep_iw
+    blo.s   .ep_iinc
+    moveq   #0, d0
+    bra.s   .ep_iw
+.ep_iinc:
     addq.b  #1, d0
 .ep_iw:
     move.b  d0, cur_instr
