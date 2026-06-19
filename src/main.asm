@@ -3429,7 +3429,9 @@ compose_noise:                            ; a6=ch; a3/d6=PSG buf
 
 ; add the instrument's vibrato to a square period. VIB = (speed<<4)|depth; the LFO
 ; phase (c_modph) advances by speed each tick, indexing a 16-step signed sine.
-psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves d1, a3
+; SMSGGDJ-style vibrato: triangle LFO on the period, phase += speed*4, 32 steps,
+; depth -> exponential amplitude (vib_amp), delta = +-amp period units.
+psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves d1
     lea     instrum, a4
     moveq   #0, d0
     move.b  c_instr(a6), d0
@@ -3437,23 +3439,30 @@ psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves
     adda.w  d0, a4
     moveq   #0, d0
     move.b  (ip_vib,a4), d0
-    beq.s   .vret                          ; VIB 0 = off
     move.w  d0, d3
-    andi.w  #$0F, d3                        ; depth (low nibble)
-    lsr.b   #4, d0                          ; speed (high nibble)
+    andi.w  #$0F, d3                        ; depth index
+    beq.s   .vret                          ; depth 0 = off
+    lea     vib_amp, a1
+    move.b  (a1,d3.w), d3                  ; exponential amplitude 0..60
+    andi.w  #$F0, d0
+    lsr.w   #2, d0                          ; speed * 4
     add.b   d0, c_modph(a6)               ; advance LFO phase
     moveq   #0, d0
     move.b  c_modph(a6), d0
-    lsr.w   #4, d0
-    andi.w  #$0F, d0                        ; 0-15
-    lea     sine16, a4
-    move.b  (a4,d0.w), d0                  ; signed sine -7..+7
+    lsr.w   #3, d0
+    andi.w  #$1F, d0                        ; step 0-31
+    lea     vib_tri, a1
+    move.b  (a1,d0.w), d0                  ; signed triangle -16..+16
     ext.w   d0
-    muls.w  d3, d0                          ; x depth
-    asr.w   #4, d0                          ; scale -> +-7 period units at full depth
+    muls.w  d3, d0                          ; amp * tri
+    asr.w   #4, d0                          ; / 16 -> +-amp period units
     add.w   d0, d2
 .vret:
     rts
+vib_amp:    dc.b 0,1,2,3,4,5,6,8,10,13,17,22,28,36,46,60   ; SMSGGDJ exponential depth curve
+vib_tri:    dc.b 0,2,4,6,8,10,12,14,16,14,12,10,8,6,4,2     ; 32-step signed triangle (x16)
+            dc.b 0,-2,-4,-6,-8,-10,-12,-14,-16,-14,-12,-10,-8,-6,-4,-2
+    even
 
 ; add the instrument's tremolo to a square attenuation (d1, 0=loud..15=silent).
 ; TRM = (speed<<4)|depth; own LFO phase (c_modph2). Preserves d2.
@@ -3490,8 +3499,6 @@ psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
     moveq   #15, d1                          ; clamp to silent
 .tret:
     rts
-sine16:     dc.b 0, 3, 5, 6, 7, 6, 5, 3, 0, -3, -5, -6, -7, -6, -5, -3
-    even
 
 ; FM compose: emit YM writes (part,reg,value triples) into a5, count in d5
 compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
