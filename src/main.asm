@@ -3856,7 +3856,7 @@ Exception:
 str_title:  dc.b "GENMDDJ",0
 ver_str:    dc.b "V0.01",0
 str_hdr_ph: dc.b "   NOT IN C PR",0
-str_hdr_ch: dc.b "   PH TR      ",0
+str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
 str_hdr_fm: dc.b "OP  MU DT TL RS AR AM D1 D2 RR SL",0
@@ -3928,7 +3928,7 @@ hexd:       dc.b "0123456789ABCDEF"
 note_names: dc.b "C-C#D-D#E-F-F#G-G#A-A#B-"
 field_scol: dc.b 4, 8, 11, 13
 field_boff: dc.b 0, 1, 2, 3
-chain_scol: dc.b 4, 7
+chain_scol: dc.b 4, 8
 song_scol:  dc.b 4, 7, 10, 13, 16, 19, 22, 25, 28, 31
 track_names: dc.b "F1F2F3F4F5F6T1T2T3NO"      ; 2 chars per channel
 ch_config:                                      ; type, p1, p2, p3 per channel
