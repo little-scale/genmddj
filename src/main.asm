@@ -90,6 +90,7 @@ env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progre
 last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entered (B-tap repeats it)
 scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
+cur_table  equ $00FFE3A9           ; macro table shown/edited on the TABLE screen
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -111,7 +112,8 @@ SCR_CHAIN  equ 1
 SCR_SONG   equ 2
 SCR_INSTR  equ 3
 SCR_FM     equ 4                    ; FM editor (below INSTR on the map)
-SCR_MAXPOS equ 3                    ; rightmost horizontal map position
+SCR_TABLE  equ 5                    ; macro table editor (right of INSTR)
+SCR_MAXPOS equ 4                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
 scb_data   equ $00FFE221
 ym_count   equ $00FFE260           ; YM write count + buffer (triples)
@@ -125,6 +127,9 @@ song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF 
 NSONGROWS  equ 16
 instrum    equ $00FFF700            ; instrument pool (INSTR_SIZE each)
 INSTR_SIZE equ 48                   ; type + algo/fb/pan + 4 ops x 10 params
+tbl_ram    equ $00FFE800            ; editable macro tables (boot-copied from psg_tables)
+NTABLE     equ 32
+TBL_ROWS   equ 16
 NINSTR     equ 32
 i_type     equ 0                    ; instrument type: 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE
 i_algo     equ 1                    ; FM algorithm 0-7
@@ -313,6 +318,12 @@ Start:
 .cdt:
     move.b  (a1)+, (a2)+
     dbra    d0, .cdt
+    lea     tbl_ram, a2                   ; copy the ROM default macro tables into RAM
+    lea     psg_tables, a1
+    move.w  #(NTABLE*TBL_ROWS)-1, d0
+.cdtb:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .cdtb
 
     bsr     engine_init
     bsr     ym_setup                     ; build YM ch0's patch from instrument 0
@@ -329,6 +340,7 @@ Start:
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
     move.b  #0, cur_instr
+    move.b  #0, cur_table
     move.b  #0, cur_chan
     move.b  #0, cur_songrow
     lea     scr_row, a0                   ; per-screen saved cursors -> 0
@@ -428,6 +440,8 @@ VBlankInt:
     beq.s   .gch
     cmpi.b  #SCR_SONG, d0
     beq.s   .gsg
+    cmpi.b  #SCR_TABLE, d0
+    beq.s   .gtbl
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
     moveq   #0, d0
     move.b  cur_instr, d0
@@ -435,6 +449,9 @@ VBlankInt:
     tst.b   (i_type,a1,d0.w)
     bne.s   .gpsg
     bsr     render_fm                     ; FM = the FM editor
+    bra.s   .gd
+.gtbl:
+    bsr     render_table
     bra.s   .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
@@ -481,10 +498,15 @@ VBlankInt:
     beq.s   .pnch
     cmpi.b  #SCR_INSTR, d1
     beq.s   .pninst
+    cmpi.b  #SCR_TABLE, d1
+    beq.s   .pntb
     cmpi.b  #SCR_FM, d1
     bne.s   .pn                           ; SONG -> 0
 .pninst:
     move.b  cur_instr, d0                 ; INSTR/FM -> instrument number
+    bra.s   .pn
+.pntb:
+    move.b  cur_table, d0                 ; TABLE -> table number
     bra.s   .pn
 .pnch:
     move.b  cur_chain, d0
@@ -659,7 +681,7 @@ draw_map:                                 ; a0 = VDP_CTRL
 .nh:
     move.w  d0, VDP_DATA
     addq.w  #1, d2
-    cmpi.w  #4, d2
+    cmpi.w  #5, d2
     bne.s   .ml
     rts
 
@@ -676,6 +698,9 @@ screen_ptr:
     beq.s   .r
     lea     scr_in_tab, a1
     cmpi.b  #SCR_INSTR, d0
+    beq.s   .r
+    lea     scr_tb_tab, a1
+    cmpi.b  #SCR_TABLE, d0
     beq.s   .r
     lea     scr_fm_tab, a1
 .r:
@@ -870,7 +895,7 @@ drill_down:                               ; set the next screen's target from th
     bsr     get_field_addr                 ; SONG cell -> chain
     move.b  (a1), d1
     cmpi.b  #$FF, d1
-    beq.s   .d_done
+    beq     .d_done
     move.b  d1, cur_chain
     rts
 .d1:
@@ -886,18 +911,30 @@ drill_down:                               ; set the next screen's target from th
     add.w   d1, d1
     move.b  (a1,d1.w), d1
     cmpi.b  #$FF, d1
-    beq.s   .d_done
+    beq     .d_done
     move.b  d1, cur_phrase
     rts
 .d2:
     cmpi.b  #SCR_PHRASE, d0
-    bne.s   .d_done
+    bne.s   .d3
     bsr     cur_phrase_addr                ; PHRASE row's instrument (offset 1)
     moveq   #0, d1
     move.b  cur_row, d1
     lsl.w   #2, d1
     addq.w  #1, d1
     move.b  (a1,d1.w), cur_instr
+    rts
+.d3:
+    cmpi.b  #SCR_INSTR, d0                 ; INSTR -> TABLE: cur_table = the instrument's TBL
+    bne.s   .d_done
+    lea     instrum, a1
+    moveq   #0, d1
+    move.b  cur_instr, d1
+    mulu.w  #INSTR_SIZE, d1
+    move.b  (ip_tbl,a1,d1.w), d1
+    cmpi.b  #NTABLE, d1
+    bhs.s   .d_done                        ; $FF/out of range -> keep cur_table
+    move.b  d1, cur_table
 .d_done:
     rts
 
@@ -1002,6 +1039,11 @@ col_max:                                  ; -> d1 = highest column index for cur
     beq.s   .fm
     cmpi.b  #SCR_FM, d1
     beq.s   .fm
+    cmpi.b  #SCR_TABLE, d1
+    bne.s   .cmch
+    moveq   #0, d1                        ; TABLE: 1 column (ARP)
+    rts
+.cmch:
     moveq   #1, d1                        ; CHAIN: PH,TR
     rts
 .fm:
@@ -1288,7 +1330,38 @@ edit_psg:
     move.b  d0, (a1)
     rts
 
+edit_table:                               ; left/right = +-1, up/down = +-$10 on the arp cell
+    lea     tbl_ram, a1
+    moveq   #0, d0
+    move.b  cur_table, d0
+    lsl.w   #4, d0
+    moveq   #0, d1
+    move.b  cur_row, d1
+    add.w   d1, d0
+    adda.w  d0, a1
+    move.b  (a1), d0
+    btst    #2, d2
+    beq.s   .et1
+    subq.b  #1, d0
+.et1:
+    btst    #3, d2
+    beq.s   .et2
+    addq.b  #1, d0
+.et2:
+    btst    #0, d2
+    beq.s   .et3
+    addi.b  #$10, d0
+.et3:
+    btst    #1, d2
+    beq.s   .et4
+    subi.b  #$10, d0
+.et4:
+    move.b  d0, (a1)
+    rts
+
 edit_value:
+    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the arp cell
+    beq.s   edit_table
     cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: dispatch by instrument type
     beq.s   .instr
     cmpi.b  #SCR_INSTR, cur_screen
@@ -1490,6 +1563,40 @@ pad_read:
     beq.s   .s
     bset    #7, d0
 .s:
+    rts
+
+; ============================================================
+; render TABLE grid: 16 rows of cur_table's signed arp offset
+; ============================================================
+render_table:
+    moveq   #0, d6
+.tr:
+    bsr     draw_rowhdr                    ; row number + playhead at the left
+    moveq   #0, d0                         ; ARP cell at (GRID_TOP+row, col4)
+    move.w  d6, d0
+    addi.w  #GRID_TOP, d0
+    lsl.w   #6, d0
+    addi.w  #4, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     tbl_ram, a1                    ; value = tbl_ram[cur_table*16 + row]
+    moveq   #0, d0
+    move.b  cur_table, d0
+    lsl.w   #4, d0
+    add.w   d6, d0
+    move.b  (a1,d0.w), d3
+    moveq   #0, d4
+    move.b  cur_row, d0                    ; highlight the cursor row
+    cmp.b   d6, d0
+    bne.s   .tnh
+    moveq   #$60, d4
+.tnh:
+    bsr     draw_hex2
+    addq.w  #1, d6
+    cmpi.w  #TBL_ROWS, d6
+    bne.s   .tr
     rts
 
 ; ============================================================
@@ -3104,7 +3211,7 @@ env_ch:                                   ; a6 = channel
     moveq   #0, d1
     move.b  c_trow(a6), d1
     add.w   d1, d3
-    lea     psg_tables, a1
+    lea     tbl_ram, a1                    ; editable RAM tables
     move.b  (a1,d3.w), d3                  ; signed semitone offset
     ext.w   d3
     moveq   #0, d1
@@ -3643,6 +3750,8 @@ str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
+str_scr_tb: dc.b "TABLE ",0
+str_hdr_tb: dc.b "   ARP",0
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
@@ -3697,7 +3806,7 @@ psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE t
     even
 NVOICE     equ 7                            ; voice params before the (global) LFO row
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
-map_letters: dc.b "SCPI"                    ; map order: SONG CHAIN PHRASE INSTR
+map_letters: dc.b "SCPIT"                   ; map order: SONG CHAIN PHRASE INSTR TABLE
 str_play:   dc.b "PLAY",0
 str_stop:   dc.b "STOP",0
 hexd:       dc.b "0123456789ABCDEF"
@@ -3718,14 +3827,15 @@ ch_config:                                      ; type, p1, p2, p3 per channel
     dc.b 0, $A0, $B0, 0      ; T2 = square PSG ch1
     dc.b 0, $C0, $D0, 0      ; T3 = square PSG ch2
     dc.b 2, $E0, $F0, 0      ; NO = noise PSG ch3
-scr_order:  dc.b SCR_SONG, SCR_CHAIN, SCR_PHRASE, SCR_INSTR   ; map pos -> screen id
-scr_pos:    dc.b 2, 1, 0, 3, $FF            ; screen id -> map pos ($FF = off the row, FM)
+scr_order:  dc.b SCR_SONG, SCR_CHAIN, SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; map pos -> screen id
+scr_pos:    dc.b 2, 1, 0, 3, $FF, 4         ; screen id -> map pos ($FF = off the row, FM)
     even
 scr_ph_tab: dc.l str_hdr_ph, str_scr_ph    ; {header, name} per screen
 scr_ch_tab: dc.l str_hdr_ch, str_scr_ch
 scr_sg_tab: dc.l str_hdr_sg, str_scr_sg
 scr_in_tab: dc.l str_hdr_in, str_scr_in
 scr_fm_tab: dc.l str_hdr_in, str_scr_fm     ; row-3 header blank (render_fm draws its own)
+scr_tb_tab: dc.l str_hdr_tb, str_scr_tb
 
 tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $00000000
