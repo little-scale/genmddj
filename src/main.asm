@@ -1851,9 +1851,12 @@ get_playrow:                              ; shared single playhead (PHRASE/CHAIN
     lea     ch_state, a6
     moveq   #NCH-1, d2
 .pl:
+    cmpi.b  #$FF, c_chain(a6)             ; skip inactive channels (parked on phrase 0, row 15)
+    beq.s   .pnext
     movea.l c_phrase(a6), a2
     cmpa.l  a1, a2
     beq.s   .pf
+.pnext:
     lea     CHSIZE(a6), a6
     dbra    d2, .pl
     bra.s   .none
