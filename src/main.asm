@@ -168,6 +168,7 @@ ip_mode    equ 18                   ; NOISE: 0 white, 1 periodic  (offsets 16/17
 ip_rate    equ 19                   ; NOISE: 0-2 = clk/512,1024,2048; 3 = pitched (T3)
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
+i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
 NITYPE     equ 5
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
@@ -3459,9 +3460,24 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_tctr(a6)
 .notbset:
     move.b  c_type(a6), d3
-    beq.s   .square
+    beq     .square
     cmpi.b  #2, d3
-    beq.s   .noise
+    beq     .noise
+    lea     instrum, a4                  ; FM channel: a KIT instrument plays a DAC sample
+    moveq   #0, d2
+    move.b  c_instr(a6), d2
+    mulu.w  #INSTR_SIZE, d2
+    cmpi.b  #1, (i_type,a4,d2.w)         ; i_type 1 = KIT
+    bne.s   .fmtrig
+    move.b  (i_kit,a4,d2.w), d0          ; kit index
+    moveq   #0, d1
+    move.b  c_note(a6), d1
+    andi.w  #$0F, d1                     ; pad = note % 16 (wraps every octave-ish)
+    bsr     dac_play
+    move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
+    move.b  #0, c_trig(a6)
+    rts
+.fmtrig:
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
     lea     instrum, a4                  ; HLD: gate time from the channel's instrument
