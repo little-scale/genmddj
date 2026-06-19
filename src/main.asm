@@ -857,7 +857,9 @@ screen_left:
     move.b  cur_screen, d0
     lea     scr_pos, a1
     move.b  (a1,d0.w), d0                  ; current map position
-    beq.s   .l_done                        ; already leftmost
+    bne.s   .l_step                        ; leftmost -> wrap to rightmost (TABLE)
+    moveq   #SCR_MAXPOS+1, d0
+.l_step:
     subq.b  #1, d0
     lea     scr_order, a1
     move.b  (a1,d0.w), cur_screen
@@ -877,7 +879,7 @@ screen_right:
     lea     scr_pos, a1
     move.b  (a1,d0.w), d0
     cmpi.b  #SCR_MAXPOS, d0
-    bhs.s   .r_done                        ; already rightmost
+    bhs.s   .r_wrap                        ; rightmost -> wrap to leftmost (SONG)
     bsr     drill_down                     ; load the item under the cursor
     moveq   #0, d1                          ; remember this screen's cursor so screen_left
     move.b  cur_screen, d1                  ;   can bring us back to exactly this cell
@@ -896,6 +898,12 @@ screen_right:
     move.b  #0, cur_row                    ; descending resets cursor to top
     move.b  #0, cur_col
 .r_done:
+    rts
+.r_wrap:
+    move.b  #SCR_SONG, cur_screen          ; rightmost -> back to the top of the map
+    move.b  #1, need_clear
+    move.b  #0, cur_row
+    move.b  #0, cur_col
     rts
 
 drill_down:                               ; set the next screen's target from the cursor cell
