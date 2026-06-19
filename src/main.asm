@@ -125,8 +125,8 @@ chains     equ $00FFF400            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
-instrum    equ $00FFD000            ; instrument pool (INSTR_SIZE each); in the free RAM below
-                                    ; ch_state, clear of the stack (SP=$FFFE00 grows down)
+instrum    equ $00FFB000            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
+                                    ; ($FFC000) so a canvas overrun can't reach it, clear of the stack
 INSTR_SIZE equ 64                   ; type + algo/fb/pan + 4 ops x 10 + i_tbl/i_tbs + reserved
                                     ; (power of 2; 50-63 reserved headroom while the save format is soft)
 tbl_ram    equ $00FFE800            ; editable macro tables (boot-copied from psg_tables)
@@ -2575,6 +2575,10 @@ env_colpix:
 
 ; env_setpix: set colour-1 pixel at (d5=x,d6=y) in env_canvas; preserves all but flags
 env_setpix:
+    cmpi.w  #ENV_W, d5                     ; clamp: an off-canvas pixel would scribble
+    bhs.s   .spclip                        ; past the 4 KB bitmap into the instrument pool
+    cmpi.w  #ENV_H, d6
+    bhs.s   .spclip
     movem.l d0-d2/a1, -(sp)
     move.w  d6, d0
     lsr.w   #3, d0
@@ -2599,6 +2603,7 @@ env_setpix:
 .spw:
     or.b    d2, (a1,d0.w)
     movem.l (sp)+, d0-d2/a1
+.spclip:
     rts
 
 ; env_hl: horizontal line/dash. d2=x0, d3=x1, d4=y, d7=0 solid / 1 dashed. keeps d2-d4,d7.
