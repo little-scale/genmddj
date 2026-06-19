@@ -1187,10 +1187,14 @@ edit_fm:
     lea     voice_max, a2
     moveq   #0, d3
     move.b  (a2,d0.w), d3
+    lea     voice_step, a2
+    moveq   #0, d4
+    move.b  (a2,d0.w), d4
     bra.s   .adj
 .typeedit:
     lea     (i_type,a3), a1
     moveq   #NITYPE-1, d3
+    moveq   #1, d4
     bra.s   .adj
 .instedit:                                ; row 0: select which instrument to edit
     move.b  cur_instr, d0
@@ -1223,6 +1227,9 @@ edit_fm:
     lea     fm_pmax, a2
     moveq   #0, d3
     move.b  (a2,d1.w), d3
+    lea     fm_pstep, a2
+    moveq   #0, d4
+    move.b  (a2,d1.w), d4
 .adj:
     moveq   #0, d0
     move.b  (a1), d0
@@ -1234,22 +1241,27 @@ edit_fm:
     beq.s   .e2
     addq.w  #1, d0
 .e2:
-    btst    #0, d2
+    btst    #0, d2                          ; Up = +coarse step
     beq.s   .e3
-    addi.w  #$10, d0
+    add.w   d4, d0
 .e3:
-    btst    #1, d2
+    btst    #1, d2                          ; Down = -coarse step
     beq.s   .e4
-    subi.w  #$10, d0
+    sub.w   d4, d0
 .e4:
+    move.w  d3, d1                          ; wrap to [0,max] (top<->bottom), not clamp
+    addq.w  #1, d1                          ; modulus = max+1
+.adjlo:
     tst.w   d0
-    bpl.s   .nlo
-    moveq   #0, d0
-.nlo:
+    bpl.s   .adjhi
+    add.w   d1, d0
+    bra.s   .adjlo
+.adjhi:
     cmp.w   d3, d0
-    bls.s   .nhi
-    move.w  d3, d0
-.nhi:
+    bls.s   .adjwr
+    sub.w   d1, d0
+    bra.s   .adjhi
+.adjwr:
     move.b  d0, (a1)
 .efm_done:
     rts
@@ -3920,6 +3932,7 @@ table_scol: dc.b 4, 7, 11, 12             ; V(1) PIT(2) CMD-letter PRM(2) -> "A0
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
+fm_pstep:   dc.b 4, 4, 16, 1, 16, 1, 16, 4, 4, 4         ; B+U/D coarse step (<= range)
     even
 str_inst:   dc.b "INST",0
 str_wip:    dc.b "(WIP)",0
@@ -3962,6 +3975,7 @@ rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
 voice_lbl:  dc.l str_algo, str_fb, str_pan, str_ams, str_fms, str_hld, str_vol  ; 7
 voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms, i_hld, i_vol
 voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
+voice_step: dc.b 4, 4, 1, 1, 4, 4, 4                     ; ALGO FB (PAN AMS) FMS HLD VOL
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
