@@ -2785,6 +2785,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #0, c_modph(a6)
     move.b  #0, c_modph2(a6)
     move.b  #$FF, c_tbl(a6)
+    move.b  #$FF, c_trow(a6)             ; so the first per-note table step lands on row 0
     move.l  #phrases, c_phrase(a6)
     move.b  #0, c_songpos(a6)            ; song row 0; chain = song[0][track]
     lea     song, a2
@@ -2863,6 +2864,8 @@ engine_play_reset:
     move.b  #$FF, c_kshadow(a6)
     move.w  #$FFFF, c_shadowp(a6)
     move.b  #$FF, c_shadowa(a6)
+    move.b  #$FF, c_tbl(a6)              ; no table until the first note
+    move.b  #$FF, c_trow(a6)             ; per-note table starts at row 0
     move.l  #phrases, c_phrase(a6)
     tst.b   play_mode
     bne.s   .solo
@@ -3084,7 +3087,16 @@ advance_ch:                               ; a6 = channel
     move.b  c_instr(a6), d3
     mulu.w  #INSTR_SIZE, d3
     move.b  (i_tbl,a4,d3.w), c_tbl(a6)
-    move.b  #0, c_trow(a6)
+    tst.b   (i_tbs,a4,d3.w)               ; TBS 0 = per-note: step the playhead (don't restart)
+    bne.s   .tbreset
+    move.b  c_trow(a6), d1
+    addq.b  #1, d1
+    andi.b  #$0F, d1                       ; wrap 16 -> 0
+    move.b  d1, c_trow(a6)
+    bra.s   .tbctr
+.tbreset:
+    move.b  #0, c_trow(a6)               ; TBS>0 = per-tick: restart at row 0
+.tbctr:
     move.b  #0, c_tctr(a6)
 .notbset:
     move.b  c_type(a6), d3
@@ -3217,13 +3229,10 @@ env_ch:                                   ; a6 = channel
     move.b  c_tbl(a6), d3
     cmpi.b  #$FF, d3
     beq.s   .notbl
+    move.b  (i_tbs,a4), d2
+    beq.s   .tapply                         ; TBS 0 = per-note: no per-tick advance
     addq.b  #1, c_tctr(a6)
     move.b  c_tctr(a6), d1
-    moveq   #0, d2
-    move.b  (i_tbs,a4), d2
-    bne.s   .tbsok
-    moveq   #1, d2                          ; TBS 0 -> 1 (per-note advance deferred)
-.tbsok:
     cmp.b   d2, d1
     blo.s   .tapply
     move.b  #0, c_tctr(a6)

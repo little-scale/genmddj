@@ -86,7 +86,9 @@ static void write_wav(const char *base, unsigned rate) {
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: retroshot core rom out.ppm [frames] [btnmask_hex]\n"); return 1; }
     int frames = argc > 4 ? atoi(argv[4]) : 120;
-    if (argc > 5) g_buttons = (unsigned)strtoul(argv[5], NULL, 16);
+    const char *btn = argc > 5 ? argv[5] : NULL;
+    int scripted = btn && strchr(btn, '@');   /* input script: "maskHex@frames,maskHex@frames,..." */
+    if (btn && !scripted) g_buttons = (unsigned)strtoul(btn, NULL, 16);
 
     void *core = dlopen(argv[1], RTLD_NOW);
     if (!core) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 2; }
@@ -134,7 +136,20 @@ int main(int argc, char **argv) {
     retro_get_system_av_info(&av);
     unsigned arate = (unsigned)(av.timing.sample_rate ? av.timing.sample_rate : 44100);
 
-    for (int i = 0; i < frames; i++) retro_run();
+    if (scripted) {                             /* run "maskHex@frames,..." steps in order */
+        char sc[2048];
+        strncpy(sc, btn, sizeof sc - 1); sc[sizeof sc - 1] = 0;
+        char *save = NULL, *tok = strtok_r(sc, ",", &save);
+        while (tok) {
+            char *at = strchr(tok, '@');
+            g_buttons = (unsigned)strtoul(tok, NULL, 16);   /* strtoul stops at '@' */
+            int nf = at ? atoi(at + 1) : 1;
+            for (int i = 0; i < nf; i++) retro_run();
+            tok = strtok_r(NULL, ",", &save);
+        }
+    } else {
+        for (int i = 0; i < frames; i++) retro_run();
+    }
 
     write_wav(argv[3], arate);                  /* <out>.wav alongside the ppm */
     fprintf(stderr, "audio: %zu samples @ %u Hz -> %s.wav\n", g_aud_n / 2, arate, argv[3]);
