@@ -2393,6 +2393,22 @@ render_psg_stub:
 ; KIT instrument page: the kit selector + a fill map of its 16 pads.
 render_kit:
     bsr     render_inst_hdr
+    moveq   #5, d6                          ; blank the FM-page body (rows 5-27) before drawing,
+.rkclr:                                      ; else the algo diagram / op grid / env curves linger
+    moveq   #0, d0
+    move.w  d6, d0
+    lsl.w   #6, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #39, d5
+.rkclrc:
+    move.w  #' ', VDP_DATA
+    dbra    d5, .rkclrc
+    addq.w  #1, d6
+    cmpi.w  #28, d6
+    bne.s   .rkclr
     lea     instrum, a3
     moveq   #0, d0
     move.b  cur_instr, d0
