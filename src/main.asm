@@ -125,8 +125,10 @@ chains     equ $00FFF400            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
-instrum    equ $00FFF700            ; instrument pool (INSTR_SIZE each)
-INSTR_SIZE equ 50                   ; type + algo/fb/pan + 4 ops x 10 params + i_tbl/i_tbs
+instrum    equ $00FFD000            ; instrument pool (INSTR_SIZE each); in the free RAM below
+                                    ; ch_state, clear of the stack (SP=$FFFE00 grows down)
+INSTR_SIZE equ 64                   ; type + algo/fb/pan + 4 ops x 10 + i_tbl/i_tbs + reserved
+                                    ; (power of 2; 50-63 reserved headroom while the save format is soft)
 tbl_ram    equ $00FFE800            ; editable macro tables (boot-copied from psg_tables)
 NTABLE     equ 32
 TBL_ROWS   equ 16
@@ -3902,6 +3904,7 @@ default_fm:                        ; YM2612 grand-piano test patch (Sega manual)
     dc.b 3, 3, 38, 1,31,0,5,2,1,1  ; slot2 S2 ($38=33..$88=11)
     dc.b 1, 0, 0,  2,20,0,7,2,6,10 ; slot3 S4 carrier ($3C=01..$8C=A6)
     dc.b $FF, 1                    ; i_tbl(none) i_tbs (offsets 48/49)
+    dcb.b 14, 0                    ; offsets 50-63 reserved
     even
 
 default_tone:                      ; a basic TONE (PSG square) instrument
@@ -3912,6 +3915,7 @@ default_tone:                      ; a basic TONE (PSG square) instrument
     dc.b 0, 0, 1, 0                ; (offsets 16/17 unused) ip_mode(periodic) ip_rate
     dcb.b 28, 0                    ; offsets 20-47 unused
     dc.b $FF, 1                    ; i_tbl(none) i_tbs (offsets 48/49)
+    dcb.b 14, 0                    ; offsets 50-63 reserved
     even
 
 ; carrier slots per algorithm (bit d6 set = record slot d6 is a carrier, in S1,S3,S2,S4
