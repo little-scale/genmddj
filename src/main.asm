@@ -695,25 +695,41 @@ clear_splash:                             ; a0 = VDP_CTRL; blank the visible pla
     rts
 
 ; screen map widget: the screens in map order with the current one highlighted
-draw_map:                                 ; a0 = VDP_CTRL
-    move.l  #$43460003, (a0)             ; "SCPI" at row 6, col 35
+draw_map:                                 ; a0 = VDP_CTRL; 3x5 nav cross at rows 5-7, cols 35-39
+    lea     scr_grid, a1
+    lea     scr_letter, a2
+    moveq   #0, d2                          ; cell index 0..14
+.dm_loop:
     moveq   #0, d0
-    move.b  cur_screen, d0
-    lea     scr_pos, a1
-    move.b  (a1,d0.w), d1                 ; current map position
-    lea     map_letters, a2
-    moveq   #0, d2
-.ml:
-    moveq   #0, d0
-    move.b  (a2,d2.w), d0                 ; letter at this position
-    cmp.b   d1, d2
-    bne.s   .nh
-    addi.w  #$60, d0                       ; highlight current (inverse tile)
-.nh:
-    move.w  d0, VDP_DATA
+    move.b  (a1,d2.w), d0                  ; screen at this cell ($FF = empty)
+    cmpi.b  #$FF, d0
+    beq.s   .dm_next
+    moveq   #0, d3                          ; vrow = idx/5, hcol = idx%5
+    move.w  d2, d3
+    divu.w  #5, d3
+    move.l  d3, d4
+    swap    d4
+    andi.w  #$000F, d4                      ; hcol
+    andi.w  #$000F, d3                      ; vrow
+    addi.w  #5, d3                          ; row = 5 + vrow
+    lsl.w   #6, d3
+    addi.w  #35, d4                         ; col = 35 + hcol
+    add.w   d4, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    moveq   #0, d4
+    move.b  (a2,d0.w), d4                  ; scr_letter[screen] (ASCII)
+    cmp.b   cur_screen, d0
+    bne.s   .dm_draw
+    addi.w  #$60, d4                        ; highlight the current screen (inverse tile)
+.dm_draw:
+    move.w  d4, VDP_DATA
+.dm_next:
     addq.w  #1, d2
-    cmpi.w  #5, d2
-    bne.s   .ml
+    cmpi.w  #15, d2
+    bne.s   .dm_loop
     rts
 
 ; a1 -> {header_str, name_str} pair for the current screen
@@ -4262,6 +4278,7 @@ scr_grid:   dc.b SCR_OPTS, SCR_PROJ,   $FF, SCR_WAVE, $FF   ; row 0 (above)
             dc.b $FF,      SCR_GROOVE, $FF, SCR_ECHO, $FF    ; row 2 (below)
 scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2       ; screen id -> grid row (PH CH SG IN FM TB EC OP PR WV GR)
 scr_hcol:   dc.b 2,1,0,3,3,4,3,0,1,3,1       ; screen id -> grid col
+scr_letter: dc.b "PCSIFTEOPWG"              ; screen id -> map-cross letter
     even
 scr_tabs:                                   ; {header, name} per screen, indexed by SCR_*
     dc.l str_hdr_ph, str_scr_ph             ; 0  PHRASE
