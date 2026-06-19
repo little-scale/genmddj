@@ -2573,6 +2573,20 @@ advance_ch:                               ; a6 = channel
     movea.l c_phrase(a6), a1
     move.w  d0, d1                         ; d1 = row*4 (command/param offset)
     lsl.w   #2, d1
+    cmpi.b  #1, c_type(a6)                 ; per-note FM reset: a note-on this row reverts the
+    bne.s   .noreset                       ;   Q/X overrides to the instrument's stored patch
+    cmpi.b  #$FF, (a1,d1.w)               ;   (note byte at row offset 0; $FF = rest = no reset)
+    beq.s   .noreset                       ; the Q/X dispatch just below re-applies for this row
+    move.b  live_algo, d2                  ; ...but only when an override is actually live:
+    and.b   live_vol, d2                   ;   all three $FF = nothing changed = no patch re-push
+    and.b   live_fb, d2
+    cmpi.b  #$FF, d2
+    beq.s   .noreset
+    move.b  #$FF, live_algo
+    move.b  #$FF, live_vol
+    move.b  #$FF, live_fb
+    move.b  #1, repatch
+.noreset:
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
     beq.s   .cmd_hop
