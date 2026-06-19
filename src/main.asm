@@ -120,7 +120,7 @@ NSONGROWS  equ 16
 instrum    equ $00FFF700            ; instrument pool (INSTR_SIZE each)
 INSTR_SIZE equ 48                   ; type + algo/fb/pan + 4 ops x 10 params
 NINSTR     equ 32
-i_type     equ 0                    ; instrument field: type (0 FM, 1 SQ, 2 NO, 3 KIT)
+i_type     equ 0                    ; instrument type: 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE
 i_algo     equ 1                    ; FM algorithm 0-7
 i_fb       equ 2                    ; FM feedback 0-7
 i_pan      equ 3                    ; FM stereo pan: 0 off, 1 R, 2 L, 3 L+R
@@ -130,7 +130,20 @@ i_hld      equ 6                    ; gate time: note-off after HLD*2 ticks; $F 
 i_vol      equ 7                    ; instrument volume 0-15 (attenuates carriers); $F = full
 i_op       equ 8                    ; 4 ops x 10: MUL DT TL RS AR AM D1 D2 RR SL
 FM_NPARM   equ 10
-NITYPE     equ 4
+; PSG (TONE/NOISE) fields overlay the FM-op bytes (an instrument is FM or PSG, never both)
+ip_vol     equ 8                    ; PSG peak/hold volume 0-F
+ip_atk     equ 9                    ; attack: ticks per volume step up (0 = instant)
+ip_hld     equ 10                   ; hold at VOL: 0 none, 1-E nibble*2 ticks, F = inf
+ip_dcy     equ 11                   ; decay: ticks per volume step down
+ip_tsp     equ 12                   ; transpose, signed semitones
+ip_swp     equ 13                   ; pitch sweep (packed)
+ip_vib     equ 14                   ; vibrato (packed)
+ip_trm     equ 15                   ; tremolo (packed)
+ip_tbl     equ 16                   ; macro table # ($FF = none)
+ip_tbs     equ 17                   ; table speed (ticks per row)
+ip_mode    equ 18                   ; NOISE: 0 white, 1 periodic
+ip_rate    equ 19                   ; NOISE: 0-2 = clk/512,1024,2048; 3 = pitched (T3)
+NITYPE     equ 5
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
 NINSTR_ED  equ 31                   ; highest editable instrument
@@ -394,7 +407,16 @@ VBlankInt:
     beq.s   .gch
     cmpi.b  #SCR_SONG, d0
     beq.s   .gsg
-    bsr     render_fm                     ; INSTR (and FM) = the FM editor
+    lea     instrum, a1                   ; INSTR: dispatch by instrument type
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    tst.b   (i_type,a1,d0.w)
+    bne.s   .gpsg
+    bsr     render_fm                     ; FM = the FM editor
+    bra.s   .gd
+.gpsg:
+    bsr     render_psg_stub               ; KIT/WAVE/TONE/NOISE pages
     bra.s   .gd
 .gch:
     bsr     render_chain
@@ -905,6 +927,17 @@ clamp_row:                                ; INSTR/FM = 11 rows (TYPE, 6 voice, 4
     beq.s   .fm
     rts
 .fm:
+    lea     instrum, a1                   ; non-FM instrument pages: only INST/TYPE for now
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    tst.b   (i_type,a1,d0.w)
+    beq.s   .crfm
+    cmpi.b  #1, cur_row
+    bls.s   .cr_done
+    move.b  #1, cur_row
+    rts
+.crfm:
     move.b  cur_row, d0
     cmpi.b  #NVOICE+6, d0
     blo.s   .cr_done                      ; 0..NVOICE+5 ok; clamp to bottom op row
@@ -1697,12 +1730,13 @@ ENV_BOT equ ENV_BOXB-1                     ; curve/guide baseline: 1px inside th
 ENV_AMAX equ ENV_BOT-ENV_TOP               ; max amplitude in px (curve clears the borders)
 
 ; FM editor: VOICE section (one param per row) then the 4-operator grid
-render_fm:                                ; a0 = VDP_CTRL
+; shared INST + TYPE header for every instrument page; returns a3 = instrum[cur_instr]
+render_inst_hdr:
     lea     instrum, a3
     moveq   #0, d0
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
-    adda.w  d0, a3                         ; a3 = instrum[cur_instr]
+    adda.w  d0, a3
     moveq   #3, d3                         ; INST selector (cur_row 0)
     moveq   #1, d4
     lea     str_inst, a1
@@ -1722,7 +1756,7 @@ render_fm:                                ; a0 = VDP_CTRL
     move.l  #$42100003, (a0)              ; type name at row 4, col 8
     moveq   #0, d1
     move.b  (i_type,a3), d1
-    andi.w  #$0003, d1
+    andi.w  #$0007, d1                     ; up to 5 types
     add.w   d1, d1
     lea     type_names, a1
     moveq   #0, d4
@@ -1738,6 +1772,19 @@ render_fm:                                ; a0 = VDP_CTRL
     andi.w  #$00FF, d0
     add.w   d4, d0
     move.w  d0, VDP_DATA
+    rts
+
+; placeholder for KIT/WAVE/TONE/NOISE until their full editors land (next stage)
+render_psg_stub:
+    bsr     render_inst_hdr
+    moveq   #7, d3
+    moveq   #1, d4
+    lea     str_wip, a1
+    bsr     print_at
+    rts
+
+render_fm:                                ; a0 = VDP_CTRL
+    bsr     render_inst_hdr               ; INST + TYPE; a3 = instrum[cur_instr]
     moveq   #FM_VHDR, d3                   ; "VOICE:" header
     moveq   #1, d4
     lea     str_voice, a1
@@ -3165,6 +3212,7 @@ fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
     even
 str_inst:   dc.b "INST",0
+str_wip:    dc.b "(WIP)",0
 str_type:   dc.b "TYPE",0
 str_voice:  dc.b "VOICE:",0
 str_algo:   dc.b "ALGO",0
@@ -3182,7 +3230,7 @@ voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms, i_hld, i_vol
 voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
     even
 NVOICE     equ 7                            ; voice params before the (global) LFO row
-type_names: dc.b "FMSQNOKI"                 ; 2 chars per type (FM SQ NO KIt)
+type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
 map_letters: dc.b "SCPI"                    ; map order: SONG CHAIN PHRASE INSTR
 str_play:   dc.b "PLAY",0
 str_stop:   dc.b "STOP",0
