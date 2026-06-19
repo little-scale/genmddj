@@ -2918,9 +2918,20 @@ advance_ch:                               ; a6 = channel
     move.b  (a1,d0.w), d2                 ; note (0-95) or $FF
     cmpi.w  #$FF, d2
     beq     .ret
-    move.b  c_transp(a6), d3              ; + transpose (signed)
+    move.b  c_transp(a6), d3              ; + chain transpose (signed)
     ext.w   d3
     add.w   d3, d2
+    lea     instrum, a4                    ; + per-instrument TSP (TONE/NOISE only)
+    moveq   #0, d3
+    move.b  (1,a1,d0.w), d3               ; phrase IN column = instrument #
+    mulu.w  #INSTR_SIZE, d3
+    adda.w  d3, a4
+    cmpi.b  #3, (a4)                       ; i_type >= 3 (TONE/NOISE) has a TSP field
+    blo.s   .notsp
+    move.b  (ip_tsp,a4), d3
+    ext.w   d3
+    add.w   d3, d2
+.notsp:
     bmi     .ret
     cmpi.w  #96, d2
     bhs     .ret
@@ -2946,9 +2957,20 @@ advance_ch:                               ; a6 = channel
     addq.b  #1, d2
     move.b  d2, c_hold(a6)
     rts
-.noise:                                   ; noise: note -> mode (low 3 bits), AHD vol
-    andi.w  #$0007, d2
-    move.w  d2, c_period(a6)
+.noise:                                   ; noise: MODE/RATE from the instrument, AHD vol
+    lea     instrum, a4
+    moveq   #0, d2
+    move.b  c_instr(a6), d2
+    mulu.w  #INSTR_SIZE, d2
+    adda.w  d2, a4
+    moveq   #0, d2
+    move.b  (ip_rate,a4), d2              ; NF = rate (bits 0-1): 0/1/2 = clk/512/1024/2048, 3 = T3
+    andi.b  #3, d2
+    tst.b   (ip_mode,a4)                  ; mode 0 = RANDOM (white) -> FB feedback bit
+    bne.s   .n_per
+    ori.b   #4, d2
+.n_per:
+    move.w  d2, c_period(a6)              ; 3-bit SN76489 noise control
     move.b  #1, c_estate(a6)
     move.b  #0, c_ectr(a6)
     move.b  #0, c_vol(a6)
