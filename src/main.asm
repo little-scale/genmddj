@@ -972,46 +972,61 @@ dpad_fire:
     moveq   #0, d1
     rts
 
-move_cursor:
-    btst    #0, d2
+move_cursor:                              ; d-pad moves the cursor; edges WRAP (all screens)
+    bsr     row_max                       ; d1 = highest row for this screen/type
+    btst    #0, d2                         ; Up
     beq.s   .nu
     move.b  cur_row, d0
     subq.b  #1, d0
-    andi.b  #$0F, d0
+    bpl.s   .nuw
+    move.b  d1, d0                          ; off the top -> bottom
+.nuw:
     move.b  d0, cur_row
 .nu:
-    btst    #1, d2
+    btst    #1, d2                          ; Down
     beq.s   .nd
     move.b  cur_row, d0
     addq.b  #1, d0
-    andi.b  #$0F, d0
+    cmp.b   d1, d0
+    bls.s   .ndw
+    moveq   #0, d0                          ; off the bottom -> top
+.ndw:
     move.b  d0, cur_row
 .nd:
-    btst    #2, d2
+    bsr     col_max                       ; d1 = max col for the (now current) row
+    btst    #2, d2                          ; Left
     beq.s   .nl
     move.b  cur_col, d0
-    beq.s   .nl
     subq.b  #1, d0
+    bpl.s   .nlw
+    move.b  d1, d0                          ; off the left -> rightmost
+.nlw:
     move.b  d0, cur_col
 .nl:
-    btst    #3, d2
+    btst    #3, d2                          ; Right
     beq.s   .nr
-    bsr     col_max                       ; d1 = max col for this screen
     move.b  cur_col, d0
+    addq.b   #1, d0
     cmp.b   d1, d0
-    bge.s   .nr
-    addq.b  #1, d0
+    bls.s   .nrw
+    moveq   #0, d0                          ; off the right -> leftmost
+.nrw:
     move.b  d0, cur_col
 .nr:
-    bsr     clamp_row
+    move.b  cur_col, d0                    ; a row change may have shrunk the col range
+    cmp.b   d1, d0
+    bls.s   .mcdone
+    move.b  d1, cur_col
+.mcdone:
     rts
 
-clamp_row:                                ; INSTR/FM = 11 rows (TYPE, 6 voice, 4 ops)
+row_max:                                  ; -> d1 = highest row index for cur_screen/type
     move.b  cur_screen, d0
     cmpi.b  #SCR_FM, d0
     beq.s   .fm
     cmpi.b  #SCR_INSTR, d0
     beq.s   .fm
+    moveq   #15, d1                          ; grid screens (PHRASE/CHAIN/SONG/TABLE): 16 rows
     rts
 .fm:
     lea     instrum, a1                   ; max cursor row depends on instrument type
@@ -1026,20 +1041,21 @@ clamp_row:                                ; INSTR/FM = 11 rows (TYPE, 6 voice, 4
     moveq   #11, d1                         ; TONE: 1 + 10 fields
 .crk1:
     cmpi.b  #4, d0
-    bne.s   .crclamp
+    bne.s   .crd
     moveq   #13, d1                         ; NOISE: 1 + 12 fields
-.crclamp:
-    move.b  cur_row, d0
-    cmp.b   d1, d0
-    bls.s   .cr_done
-    move.b  d1, cur_row
+.crd:
     rts
 .crfm:
+    moveq   #NVOICE+5, d1                   ; FM: TYPE + voice + ops
+    rts
+
+clamp_row:                                ; clamp cur_row into [0, row_max]
+    bsr     row_max
     move.b  cur_row, d0
-    cmpi.b  #NVOICE+6, d0
-    blo.s   .cr_done                      ; 0..NVOICE+5 ok; clamp to bottom op row
-    move.b  #NVOICE+5, cur_row
-.cr_done:
+    cmp.b   d1, d0
+    bls.s   .crdone
+    move.b  d1, cur_row
+.crdone:
     rts
 
 col_max:                                  ; -> d1 = highest column index for cur_screen
