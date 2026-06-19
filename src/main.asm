@@ -347,6 +347,15 @@ Start:
     move.b  #0, env_dirty
     cmpi.b  #SCR_INSTR, cur_screen
     bne.s   .forever
+    lea     instrum, a1                   ; only FM instruments have envelope diagrams
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    tst.b   (i_type,a1,d0.w)
+    beq.s   .erfm
+    move.b  #0, env_ready                 ; PSG/KIT/WAVE: cancel any pending FM-env upload
+    bra.s   .forever
+.erfm:
     bsr     env_rasterize
     clr.w   env_upos                      ; (re)start the chunked upload from tile 0
     clr.b   env_ntdone                    ; nametable first, then tile chunks
@@ -416,7 +425,18 @@ VBlankInt:
     bsr     render_fm                     ; FM = the FM editor
     bra.s   .gd
 .gpsg:
-    bsr     render_psg_stub               ; KIT/WAVE/TONE/NOISE pages
+    move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
+    cmpi.b  #3, d1
+    beq.s   .gtone
+    cmpi.b  #4, d1
+    beq.s   .gnoise
+    bsr     render_psg_stub               ; KIT/WAVE
+    bra.s   .gd
+.gtone:
+    bsr     render_tone
+    bra.s   .gd
+.gnoise:
+    bsr     render_noise
     bra.s   .gd
 .gch:
     bsr     render_chain
@@ -704,6 +724,12 @@ input_tick:
     cmpi.b  #SCR_INSTR, cur_screen
     bne.s   .ne
 .reapply:
+    lea     instrum, a1                    ; only FM instruments re-push the YM patch
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    tst.b   (i_type,a1,d0.w)
+    bne.s   .ne                            ; TONE/NOISE/KIT/WAVE: no FM patch
     bsr     ym_setup
     cmpi.b  #NVOICE+2, cur_row            ; only an operator edit changes an envelope
     blo.s   .ne
@@ -927,15 +953,25 @@ clamp_row:                                ; INSTR/FM = 11 rows (TYPE, 6 voice, 4
     beq.s   .fm
     rts
 .fm:
-    lea     instrum, a1                   ; non-FM instrument pages: only INST/TYPE for now
+    lea     instrum, a1                   ; max cursor row depends on instrument type
     moveq   #0, d0
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
-    tst.b   (i_type,a1,d0.w)
-    beq.s   .crfm
-    cmpi.b  #1, cur_row
+    move.b  (i_type,a1,d0.w), d0
+    beq.s   .crfm                          ; FM
+    moveq   #1, d1                          ; KIT/WAVE: INST/TYPE only
+    cmpi.b  #3, d0
+    bne.s   .crk1
+    moveq   #11, d1                         ; TONE: 1 + 10 fields
+.crk1:
+    cmpi.b  #4, d0
+    bne.s   .crclamp
+    moveq   #13, d1                         ; NOISE: 1 + 12 fields
+.crclamp:
+    move.b  cur_row, d0
+    cmp.b   d1, d0
     bls.s   .cr_done
-    move.b  #1, cur_row
+    move.b  d1, cur_row
     rts
 .crfm:
     move.b  cur_row, d0
@@ -1152,11 +1188,108 @@ edit_fm:
 .efm_done:
     rts
 
+; TONE/NOISE/KIT/WAVE editor: INST (row 0), TYPE (row 1), PSG fields (row 2+)
+edit_psg:
+    tst.b   cur_row
+    bne.s   .ep_t
+    move.b  cur_instr, d0                  ; row 0 = INST selector
+    btst    #2, d2
+    beq.s   .ep_ir
+    tst.b   d0
+    beq.s   .ep_ir
+    subq.b  #1, d0
+.ep_ir:
+    btst    #3, d2
+    beq.s   .ep_iw
+    cmpi.b  #NINSTR_ED, d0
+    bhs.s   .ep_iw
+    addq.b  #1, d0
+.ep_iw:
+    move.b  d0, cur_instr
+    move.b  #1, need_clear
+    rts
+.ep_t:
+    cmpi.b  #1, cur_row
+    bne.s   .ep_field
+    lea     instrum, a3                    ; row 1 = TYPE
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3
+    move.b  (i_type,a3), d0
+    btst    #3, d2
+    beq.s   .ep_tl
+    addq.b  #1, d0
+    cmpi.b  #NITYPE, d0
+    blo.s   .ep_tw
+    moveq   #0, d0
+    bra.s   .ep_tw
+.ep_tl:
+    btst    #2, d2
+    beq.s   .ep_tw
+    tst.b   d0
+    bne.s   .ep_td
+    moveq   #NITYPE-1, d0
+    bra.s   .ep_tw
+.ep_td:
+    subq.b  #1, d0
+.ep_tw:
+    move.b  d0, (i_type,a3)
+    move.b  #1, need_clear
+    rts
+.ep_field:
+    lea     instrum, a3                    ; row 2+ = PSG field
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3
+    moveq   #0, d0
+    move.b  cur_row, d0
+    subq.b  #2, d0                          ; field index
+    lea     psg_off, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    lea     0(a3,d1.w), a1                  ; field address
+    lea     psg_max, a2
+    moveq   #0, d3
+    move.b  (a2,d0.w), d3                   ; field max
+    moveq   #0, d0
+    move.b  (a1), d0
+    btst    #2, d2                          ; Left -> -1 (wrap to max)
+    beq.s   .ep_f1
+    tst.b   d0
+    bne.s   .ep_fdec
+    move.b  d3, d0
+    bra.s   .ep_f1
+.ep_fdec:
+    subq.b  #1, d0
+.ep_f1:
+    btst    #3, d2                          ; Right -> +1 (wrap to 0)
+    beq.s   .ep_fw
+    cmp.b   d3, d0
+    blo.s   .ep_finc
+    moveq   #0, d0
+    bra.s   .ep_fw
+.ep_finc:
+    addq.b  #1, d0
+.ep_fw:
+    move.b  d0, (a1)
+    rts
+
 edit_value:
-    cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: edit the cell
-    beq     edit_fm
+    cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: dispatch by instrument type
+    beq.s   .instr
     cmpi.b  #SCR_INSTR, cur_screen
-    beq     edit_fm
+    bne.s   .notinstr
+.instr:
+    lea     instrum, a1
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    tst.b   (i_type,a1,d0.w)
+    beq     edit_fm                        ; FM -> the FM editor
+    bra     edit_psg                       ; TONE/NOISE/KIT/WAVE -> the PSG editor
+.notinstr:
     tst.b   cur_screen                    ; CHAIN/SONG: both cols are byte +-1/+-$10
     bne.s   .hexfield
     move.b  cur_col, d0
@@ -1774,13 +1907,65 @@ render_inst_hdr:
     move.w  d0, VDP_DATA
     rts
 
-; placeholder for KIT/WAVE/TONE/NOISE until their full editors land (next stage)
+; placeholder for KIT/WAVE until their editors land
 render_psg_stub:
     bsr     render_inst_hdr
     moveq   #7, d3
     moveq   #1, d4
     lea     str_wip, a1
     bsr     print_at
+    rts
+
+PSG_TOP equ 6                             ; PSG field list top row
+; TONE/NOISE instrument page: INST/TYPE header + a data-driven field list
+render_tone:
+    moveq   #10, d7                        ; VOL ATK HLD DCY TSP SWP VIB TRM TBL TBS
+    bra.s   render_psg
+render_noise:
+    moveq   #12, d7                        ; + MODE RATE
+render_psg:                               ; d7 = field count; a0 = VDP_CTRL
+    bsr     render_inst_hdr               ; a3 = instrum[cur_instr]
+    moveq   #0, d6                         ; field index
+.prow:
+    move.w  d6, d3                          ; label at (PSG_TOP+idx, col1)
+    addi.w  #PSG_TOP, d3
+    moveq   #1, d4
+    move.w  d6, d0
+    lsl.w   #2, d0
+    lea     psg_lbl, a1
+    move.l  (a1,d0.w), a1
+    bsr     print_at
+    moveq   #0, d0                          ; value cell at (PSG_TOP+idx, col8)
+    move.w  d6, d0
+    addi.w  #PSG_TOP, d0
+    lsl.w   #6, d0
+    addi.w  #8, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     psg_off, a1                    ; value from the record
+    moveq   #0, d0
+    move.b  (a1,d6.w), d0
+    move.b  (a3,d0.w), d3
+    moveq   #0, d4                          ; highlight if cur_row-2 == idx
+    move.b  cur_row, d1
+    subq.b  #2, d1
+    cmp.b   d6, d1
+    bne.s   .pnh
+    moveq   #$60, d4
+.pnh:
+    lea     psg_fmt, a1
+    tst.b   (a1,d6.w)
+    beq.s   .ph1
+    bsr     draw_hex2
+    bra.s   .pnext
+.ph1:
+    bsr     draw_hex1
+.pnext:
+    addq.w  #1, d6
+    cmp.w   d7, d6
+    bne.s   .prow
     rts
 
 render_fm:                                ; a0 = VDP_CTRL
@@ -3224,10 +3409,26 @@ str_hld:    dc.b "HLD",0
 str_vol:    dc.b "VOL",0
 str_lfo:    dc.b "LFO",0
 str_global: dc.b "(GLOBAL)",0
+str_atk:    dc.b "ATK",0
+str_dcy:    dc.b "DCY",0
+str_tsp:    dc.b "TSP",0
+str_swp:    dc.b "SWP",0
+str_vib:    dc.b "VIB",0
+str_trm:    dc.b "TRM",0
+str_tbl:    dc.b "TBL",0
+str_tbs:    dc.b "TBS",0
+str_mode:   dc.b "MODE",0
+str_rate:   dc.b "RATE",0
     even
 voice_lbl:  dc.l str_algo, str_fb, str_pan, str_ams, str_fms, str_hld, str_vol  ; 7
 voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms, i_hld, i_vol
 voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
+    even
+; PSG instrument field tables (TONE = first 10; NOISE = all 12)
+psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
+psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm, ip_tbl, ip_tbs, ip_mode, ip_rate
+psg_max:    dc.b 15, 15, 15, 15, 255, 255, 255, 255, 31, 15, 1, 3
+psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0   ; 0 = hex1, 1 = hex2
     even
 NVOICE     equ 7                            ; voice params before the (global) LFO row
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
