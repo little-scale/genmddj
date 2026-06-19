@@ -81,6 +81,13 @@ splash_row equ $00FFE21C           ; splash incremental-draw progress (0..SPLASH
 g_lfo      equ $00FFE21D           ; global FM LFO: 0 = off, 1-8 = on at rate 0-7
 env_dirty  equ $00FFE21E           ; 1 = envelope needs rasterising (UI changed)
 env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progress
+repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
+live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
+live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
+eff_algo   equ $00FFE3C6           ; ym_setup scratch: effective ALGO (override or stored)
+eff_vol    equ $00FFE3C7           ; ym_setup scratch: effective VOL
+live_fb    equ $00FFE3C8           ; transient FB override from a Q command ($FF = none)
+eff_fb     equ $00FFE3C9           ; ym_setup scratch: effective FB
 env_ntdone equ $00FFE3CA           ; 0 = canvas nametable still needs writing this upload
 env_slot   equ $00FFE3CB           ; envelope rasteriser: operator slot 0..3 being drawn
 env_upos   equ $00FFE3CC           ; (word) upload cursor: next canvas tile to push
@@ -299,6 +306,10 @@ Start:
     move.b  #0, play_mode
     move.b  #0, play_from
     move.b  #0, g_lfo                     ; FM LFO off by default
+    move.b  #$FF, live_algo               ; no transient Q/X command overrides yet
+    move.b  #$FF, live_vol
+    move.b  #$FF, live_fb
+    move.b  #0, repatch
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
@@ -2353,10 +2364,20 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #$FF, c_shadowa(a6)
     rts
 
+; drop any A/V transient overrides and revert F1's patch to the stored instrument
+clear_live_patch:
+    move.b  #$FF, live_algo
+    move.b  #$FF, live_vol
+    move.b  #$FF, live_fb
+    move.b  #1, repatch
+    rts
+
 toggle_play:
     move.b  playing, d0
     eori.b  #1, d0
     move.b  d0, playing
+    bsr     clear_live_patch              ; play/stop = clean slate for A/V overrides
+    move.b  playing, d0                   ; (ym_setup clobbered d0)
     tst.b   d0
     beq.s   .tp
     move.b  #0, play_mode                 ; Start = full song from the top
@@ -2369,7 +2390,7 @@ play_context:                             ; C+B: toggle audition of the current 
     tst.b   playing                        ; already playing -> stop
     beq.s   .pc_start
     move.b  #0, playing
-    rts
+    bra     clear_live_patch              ; drop A/V overrides on stop
 .pc_start:
     move.b  cur_screen, d0
     cmpi.b  #SCR_SONG, d0
@@ -2388,6 +2409,7 @@ play_context:                             ; C+B: toggle audition of the current 
     move.b  #2, play_mode                 ; PHRASE: solo this track's phrase
 .pc_go:
     move.b  #1, playing
+    bsr     clear_live_patch              ; fresh A/V override state each audition
     bsr     engine_play_reset
 .pc_done:
     rts
@@ -2468,6 +2490,7 @@ engine_tick:
     move.b  d5, ym_count
     move.b  d6, d0
     or.b    d5, d0
+    or.b    repatch, d0                   ; a pending patch re-push also needs a push
     beq.s   .sret
     bsr     push_scb
 .sret:
@@ -2504,6 +2527,7 @@ engine_tick:
     move.b  d5, ym_count
     move.b  d6, d0
     or.b    d5, d0
+    or.b    repatch, d0                   ; a pending patch re-push also needs a push
     beq.s   .nopush
     bsr     push_scb
 .nopush:
@@ -2552,10 +2576,10 @@ advance_ch:                               ; a6 = channel
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
     beq.s   .cmd_hop
-    cmpi.b  #1, d2                         ; A = set FM algorithm to PR
-    beq     .cmd_algo
-    cmpi.b  #22, d2                        ; V = set FM volume to PR
-    beq     .cmd_vol
+    cmpi.b  #17, d2                        ; Q xy = one-shot ALGO(x)+FB(y) override
+    beq     .cmd_q
+    cmpi.b  #24, d2                        ; X xx = volume (carrier TL)
+    beq     .cmd_x
     bra     .cmddone
 .cmd_hop:
     moveq   #0, d2
@@ -2564,33 +2588,25 @@ advance_ch:                               ; a6 = channel
     subq.b  #1, d2                         ; next advance does +1, landing on param
     move.b  d2, c_row(a6)
     bra     .cmddone
-.cmd_algo:
+.cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
     bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; PR = new algorithm 0-7
-    andi.b  #7, d2
-    lea     instrum, a4
-    moveq   #0, d3
-    move.b  cur_instr, d3
-    mulu.w  #INSTR_SIZE, d3
-    move.b  d2, (i_algo,a4,d3.w)
-    bsr     ym_setup                       ; re-push patch: carriers re-derived, no key-on
-    bra.s   .cmd_reload
-.cmd_vol:
+    move.b  (3,a1,d1.w), d2               ; PR = (ALGO<<4)|FB
+    move.b  d2, d3
+    lsr.b   #4, d3                         ; x nibble = ALGO 0-7
+    andi.b  #7, d3
+    move.b  d3, live_algo                  ; TRANSIENT overrides (reset on play/stop)
+    andi.b  #7, d2                         ; y nibble = FB 0-7
+    move.b  d2, live_fb
+    move.b  #1, repatch                    ; engine appends the patch to this tick's SCB push
+    bra     .cmddone
+.cmd_x:
     cmpi.b  #1, c_type(a6)
     bne     .cmddone
     move.b  (3,a1,d1.w), d2               ; PR = new volume 0-15
     andi.b  #$0F, d2
-    lea     instrum, a4
-    moveq   #0, d3
-    move.b  cur_instr, d3
-    mulu.w  #INSTR_SIZE, d3
-    move.b  d2, (i_vol,a4,d3.w)
-    bsr     ym_setup
-.cmd_reload:
-    moveq   #0, d0                         ; ym_setup clobbered d0/a1 -> restore for note read
-    move.b  c_row(a6), d0
-    movea.l c_phrase(a6), a1
+    move.b  d2, live_vol                   ; TRANSIENT override
+    move.b  #1, repatch
 .cmddone:
     lsl.w   #2, d0
     moveq   #0, d2
@@ -2892,18 +2908,25 @@ push_scb:
     move.b  (a4)+, (a3)+
     dbra    d0, .pcp
 .nopsg:
-    move.b  ym_count, d0                 ; --- YM section (triples) ---
-    move.b  d0, Z80_RAM+$1F20
-    beq.s   .noym
-    ext.w   d0
+    moveq   #0, d7                        ; --- YM section (triples) ---
+    move.b  ym_count, d7                 ; running triple count (composed note SCB)
+    lea     Z80_RAM+$1F21, a2            ; mailbox YM write pointer
+    tst.b   d7
+    beq.s   .ymap
+    move.w  d7, d0
     mulu.w  #3, d0
     subq.w  #1, d0
     lea     ym_data, a4
-    lea     Z80_RAM+$1F21, a3
 .ycp:
-    move.b  (a4)+, (a3)+
+    move.b  (a4)+, (a2)+
     dbra    d0, .ycp
+.ymap:
+    tst.b   repatch                       ; Q/X command or FM edit -> append the patch to THIS push
+    beq.s   .noym
+    move.b  #0, repatch
+    bsr     ym_build_patch                ; appends into (a2)+, d7 += patch count (no race)
 .noym:
+    move.b  d7, Z80_RAM+$1F20            ; final ym_count = notes + (maybe) patch
     addq.b  #1, g_seq
     move.b  g_seq, Z80_RAM+$1F00
     move.w  #$0000, Z80_BUSREQ
@@ -2913,19 +2936,48 @@ push_scb:
 ; build YM ch0's patch from instrument 0's record and push it to the Z80.
 ; per op (n=0..3, reg offset n*4): $30=(DT<<4)|MUL $40=TL $50=AR $60=D1R
 ; $70=D2R $80=(SL<<4)|RR; then $B0=(FB<<3)|ALGO, $B4=$C0 (L+R)
-ym_setup:
+ym_setup:                                 ; editor/boot path: own BUSREQ, build into the mailbox, push
     move.w  #$0100, Z80_BUSREQ
 .w:
     btst    #0, Z80_BUSREQ
     bne.s   .w
     move.b  #0, Z80_RAM+$1F01            ; psg_count = 0
-    lea     instrum, a3                   ; the instrument being edited -> F1's voice
+    lea     Z80_RAM+$1F21, a2            ; build straight into the YM mailbox
+    moveq   #0, d7
+    bsr     ym_build_patch
+    move.b  d7, Z80_RAM+$1F20            ; ym_count
+    addq.b  #1, g_seq
+    move.b  g_seq, Z80_RAM+$1F00
+    move.w  #$0000, Z80_BUSREQ
+    rts
+
+; build F1's patch (part,reg,value triples) into (a2)+, advancing d7 by the count.
+; caller sets a2 (dest) + d7 (running count). NO BUSREQ / push of its own, so it is
+; safe to call both standalone (ym_setup) and mid-SCB (push_scb's repatch append).
+ym_build_patch:
+    lea     instrum, a3                   ; the live instrument -> F1's voice
     moveq   #0, d0
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
-    lea     Z80_RAM+$1F21, a2
-    moveq   #0, d7                        ; triple count
+    move.b  live_algo, d0                ; effective ALGO = transient override or stored value
+    cmpi.b  #$FF, d0
+    bne.s   .haveal
+    move.b  (i_algo,a3), d0
+.haveal:
+    move.b  d0, eff_algo
+    move.b  live_vol, d0                 ; effective VOL = transient override or stored value
+    cmpi.b  #$FF, d0
+    bne.s   .havevl
+    move.b  (i_vol,a3), d0
+.havevl:
+    move.b  d0, eff_vol
+    move.b  live_fb, d0                  ; effective FB = transient override or stored value
+    cmpi.b  #$FF, d0
+    bne.s   .havefb
+    move.b  (i_fb,a3), d0
+.havefb:
+    move.b  d0, eff_fb
     moveq   #0, d4                        ; $22: global LFO (enable bit 3 | rate 0-2)
     moveq   #0, d0
     move.b  g_lfo, d0
@@ -2950,13 +3002,13 @@ ym_setup:
     bsr     .emit
     move.b  (2,a3,d5.w), d0               ; $40: TL (+ VOL attenuation if this op is a carrier)
     moveq   #0, d1
-    move.b  (i_algo,a3), d1
+    move.b  eff_algo, d1
     andi.w  #7, d1
     lea     carrier_mask, a4
     btst    d6, (a4,d1.w)                 ; slot d6 a carrier in this algorithm?
     beq.s   .novol
     moveq   #15, d1                       ; atten = (15 - VOL) * 8
-    sub.b   (i_vol,a3), d1
+    sub.b   eff_vol, d1
     lsl.b   #3, d1
     add.b   d1, d0
     cmpi.b  #127, d0                      ; clamp (unsigned)
@@ -2990,9 +3042,9 @@ ym_setup:
     cmpi.w  #4, d6
     bne     .op
     moveq   #0, d4                        ; $B0: (FB<<3)|ALGO
-    move.b  (i_fb,a3), d1
+    move.b  eff_fb, d1
     lsl.b   #3, d1
-    move.b  (i_algo,a3), d0
+    move.b  eff_algo, d0
     or.b    d1, d0
     move.b  #$B0, d2
     bsr     .emit
@@ -3007,10 +3059,6 @@ ym_setup:
     or.b    d1, d0
     move.b  #$B4, d2
     bsr     .emit
-    move.b  d7, Z80_RAM+$1F20            ; ym_count
-    addq.b  #1, g_seq
-    move.b  g_seq, Z80_RAM+$1F00
-    move.w  #$0000, Z80_BUSREQ
     rts
 .emit:                                    ; emit triple: part0, (d2+d4), d0
     move.b  #0, (a2)+
