@@ -1355,7 +1355,12 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     adda.w  d0, a1
     cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0-26, wrap)
     beq.s   .et_cmd
-    move.b  (a1), d0                         ; VOL/ARP/PRM: +-1 (L/R), +-$10 (U/D)
+    moveq   #$10, d4                         ; coarse step = high nibble...
+    cmpi.b  #t_arp, d0                       ; ...ARP = transpose -> octave
+    bne.s   .ets
+    moveq   #12, d4
+.ets:
+    move.b  (a1), d0                         ; VOL/ARP/PRM: +-1 (L/R), +-step (U/D)
     btst    #2, d2
     beq.s   .et1
     subq.b  #1, d0
@@ -1366,11 +1371,11 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
 .et2:
     btst    #0, d2
     beq.s   .et3
-    addi.b  #$10, d0
+    add.b   d4, d0
 .et3:
     btst    #1, d2
     beq.s   .et4
-    subi.b  #$10, d0
+    sub.b   d4, d0
 .et4:
     move.b  d0, (a1)
     rts
@@ -1418,6 +1423,13 @@ edit_value:
     beq.s   .cmd
 .hexfield:
     bsr     get_field_addr
+    moveq   #$10, d4                        ; coarse step = high nibble...
+    cmpi.b  #SCR_CHAIN, cur_screen
+    bne.s   .hxstep
+    cmpi.b  #1, cur_col                     ; ...but CHAIN col 1 = TSP transpose -> octave
+    bne.s   .hxstep
+    moveq   #12, d4
+.hxstep:
     move.b  (a1), d0
     btst    #2, d2
     beq.s   .h1
@@ -1429,11 +1441,11 @@ edit_value:
 .h2:
     btst    #0, d2
     beq.s   .h3
-    addi.b  #$10, d0
+    add.b   d4, d0
 .h3:
     btst    #1, d2
     beq.s   .h4
-    subi.b  #$10, d0
+    sub.b   d4, d0
 .h4:
     move.b  d0, (a1)
     rts
@@ -1486,12 +1498,16 @@ edit_value:
     beq.s   .n4
     subi.w  #12, d0
 .n4:
-    bpl.s   .nlo
-    moveq   #0, d0
-.nlo:
+.nwlo:                                     ; wrap to [0,95] (octave roll-over), not clamp
+    tst.w   d0
+    bpl.s   .nwhi
+    addi.w  #96, d0
+    bra.s   .nwlo
+.nwhi:
     cmpi.w  #95, d0
-    ble.s   .nhi
-    move.w  #95, d0
+    bls.s   .nhi
+    subi.w  #96, d0
+    bra.s   .nwhi
 .nhi:
     move.b  d0, (a1)
     move.b  d0, last_note
