@@ -51,7 +51,8 @@ c_keyon    equ 30                   ; FM: desired key state
 c_kshadow  equ 31                   ; FM: last key state sent to the chip
 c_hold     equ 32                   ; gate countdown: $FF = held, else ticks until key-off
 c_instr    equ 33                   ; instrument this channel is playing (from the phrase IN col)
-c_modph    equ 34                   ; PSG vibrato/tremolo LFO phase
+c_modph    equ 34                   ; PSG vibrato LFO phase
+c_modph2   equ 35                   ; PSG tremolo LFO phase (fits CHSIZE=36 padding)
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -2647,6 +2648,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #$FF, c_hold(a6)             ; gate inactive (no auto key-off until a note sets it)
     move.b  #0, c_instr(a6)
     move.b  #0, c_modph(a6)
+    move.b  #0, c_modph2(a6)
     move.l  #phrases, c_phrase(a6)
     move.b  #0, c_songpos(a6)            ; song row 0; chain = song[0][track]
     lea     song, a2
@@ -3065,6 +3067,20 @@ env_ch:                                   ; a6 = channel
     move.b  c_instr(a6), d1
     mulu.w  #INSTR_SIZE, d1
     adda.w  d1, a4
+    move.b  (ip_swp,a4), d3               ; SWP: per-tick pitch slide (signed period delta)
+    beq.s   .noswp
+    ext.w   d3
+    add.w   c_period(a6), d3
+    bgt.s   .swp1
+    moveq   #1, d3                          ; clamp period 1..1023
+    bra.s   .swpset
+.swp1:
+    cmpi.w  #1023, d3
+    bls.s   .swpset
+    move.w  #1023, d3
+.swpset:
+    move.w  d3, c_period(a6)
+.noswp:
     cmpi.b  #1, d0
     bne.s   .e_hold
     move.b  (ip_atk,a4), d1               ; state 1 = attack
@@ -3139,6 +3155,7 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
 .square:
     moveq   #15, d1
     sub.b   c_vol(a6), d1                 ; attenuation
+    bsr     psg_tremolo                   ; d1 += tremolo LFO
     move.w  c_period(a6), d2
     bsr     psg_vibrato                   ; d2 += vibrato LFO (preserves d1)
     cmp.w   c_shadowp(a6), d2
@@ -3217,6 +3234,40 @@ psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves
     asr.w   #4, d0                          ; scale -> +-7 period units at full depth
     add.w   d0, d2
 .vret:
+    rts
+
+; add the instrument's tremolo to a square attenuation (d1, 0=loud..15=silent).
+; TRM = (speed<<4)|depth; own LFO phase (c_modph2). Preserves d2.
+psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
+    lea     instrum, a4
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a4
+    moveq   #0, d0
+    move.b  (ip_trm,a4), d0
+    beq.s   .tret                          ; TRM 0 = off
+    move.w  d0, d3
+    andi.w  #$0F, d3                        ; depth
+    lsr.b   #4, d0                          ; speed
+    add.b   d0, c_modph2(a6)
+    moveq   #0, d0
+    move.b  c_modph2(a6), d0
+    lsr.w   #4, d0
+    andi.w  #$0F, d0
+    lea     sine16, a4
+    move.b  (a4,d0.w), d0                  ; signed sine
+    ext.w   d0
+    muls.w  d3, d0
+    asr.w   #5, d0                          ; ~ +-3 attenuation units at full depth
+    add.w   d0, d1
+    bpl.s   .tnz
+    moveq   #0, d1                          ; clamp 0
+.tnz:
+    cmpi.w  #15, d1
+    bls.s   .tret
+    moveq   #15, d1                          ; clamp 15
+.tret:
     rts
 sine16:     dc.b 0, 3, 5, 6, 7, 6, 5, 3, 0, -3, -5, -6, -7, -6, -5, -3
     even
