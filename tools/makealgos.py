@@ -110,6 +110,8 @@ def render(algo):
         connect(a, b)
     for n, d in algo['out'].items():
         output(n, d)
+    hline(0, W - 1, 0); hline(0, W - 1, H - 1)     # 1px frame around the diagram
+    vline(0, 0, H - 1); vline(W - 1, 0, H - 1)
     return px
 
 
