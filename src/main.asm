@@ -235,6 +235,7 @@ i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
 i_gain     equ 51                   ; reserved (real-time gain deferred; use kitpatch build-time gain)
 i_rate     equ 52                   ; KIT rate: 0=1x 1=2x 2=4x 3=0.5x (0 = default)
+i_tsp      equ 53                   ; FM per-instrument transpose, signed semitones (channel item)
 NITYPE     equ 5
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
@@ -1102,9 +1103,22 @@ grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
     beq.s   .gn_skip                       ; empty -> keep stepping
     cmp.b   cur_screen, d0
     beq.s   .gn_ret                        ; wrapped back to self -> no move
+    moveq   #0, d1                          ; target cursor row (0 = top of the new screen)
+    cmpi.b  #SCR_LFO, cur_screen           ; LFO -> INSTR on an FM instrument: land on OP1 MUL
+    bne.s   .gn_set
+    cmpi.b  #SCR_INSTR, d0
+    bne.s   .gn_set
+    lea     instrum, a1
+    moveq   #0, d2
+    move.b  cur_instr, d2
+    mulu.w  #INSTR_SIZE, d2
+    tst.b   (i_type,a1,d2.w)
+    bne.s   .gn_set
+    moveq   #NVOICE+2, d1                   ; first operator row
+.gn_set:
     move.b  d0, cur_screen
     move.b  #1, need_clear
-    move.b  #0, cur_row
+    move.b  d1, cur_row
     move.b  #0, cur_col
     rts
 .gn_skip:
@@ -2558,8 +2572,8 @@ render_instr:
     move.w  d0, VDP_DATA
     rts
 
-FM_VHDR equ 6                             ; VOICE: header (INST + TYPE above it)
-FM_VTOP equ 7                             ; voice params, one per row, LFO at FM_VTOP+NVOICE
+FM_VHDR equ 6                             ; (unused; the VOICE: label was removed)
+FM_VTOP equ 6                             ; voice params start here (no VOICE: label now)
 FM_OHDR equ 16                            ; operator grid header (INST + gaps, no LFO row)
 FM_OTOP equ 17                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
@@ -3543,15 +3557,11 @@ render_psg:                               ; d7 = field count; a0 = VDP_CTRL
 
 render_fm:                                ; a0 = VDP_CTRL
     bsr     render_inst_hdr               ; INST + TYPE; a3 = instrum[cur_instr]
-    moveq   #FM_VHDR, d3                   ; "VOICE:" header
-    moveq   #1, d4
-    lea     str_voice, a1
-    bsr     print_at
-    moveq   #0, d6                         ; voice param 0..4 (ALGO FB PAN AMS FMS)
+    moveq   #0, d6                         ; voice param: HLD VOL PAN TSP | ALGO FB AMS FMS
 .vrow:
     move.w  d6, d3                          ; label at (FM_VTOP+idx, col1)
     addi.w  #FM_VTOP, d3
-    cmpi.w  #3, d6                          ; blank row after PAN (groups ALGO/FB/PAN)
+    cmpi.w  #4, d6                          ; blank row after TSP (splits channel | FM items)
     blo.s   .vng1
     addq.w  #1, d3
 .vng1:
@@ -3564,7 +3574,7 @@ render_fm:                                ; a0 = VDP_CTRL
     moveq   #0, d0                          ; value at (FM_VTOP+idx, col8)
     move.w  d6, d0
     addi.w  #FM_VTOP, d0
-    cmpi.w  #3, d6
+    cmpi.w  #4, d6
     blo.s   .vng2
     addq.w  #1, d0
 .vng2:
@@ -3585,7 +3595,18 @@ render_fm:                                ; a0 = VDP_CTRL
     bne.s   .vnh
     moveq   #$60, d4
 .vnh:
+    lea     voice_fmt, a1                  ; TSP (fmt 1) draws 2 hex digits; the rest 1
+    tst.b   (a1,d6.w)
+    beq.s   .vh1
+    move.b  d3, d2
+    lsr.b   #4, d3
     bsr     draw_hex1
+    move.b  d2, d3
+    bsr     draw_hex1
+    bra.s   .vdone
+.vh1:
+    bsr     draw_hex1
+.vdone:
     addq.w  #1, d6
     cmpi.w  #NVOICE, d6
     bne.s   .vrow
@@ -4766,9 +4787,15 @@ advance_ch:                               ; a6 = channel
     move.b  (1,a1,d0.w), d3               ; phrase IN column = instrument #
     mulu.w  #INSTR_SIZE, d3
     adda.w  d3, a4
-    cmpi.b  #3, (a4)                       ; i_type >= 3 (TONE/NOISE) has a TSP field
-    blo.s   .notsp
+    cmpi.b  #3, (a4)                       ; TONE/NOISE (>=3) transpose -> ip_tsp
+    bhs.s   .psgtsp
+    tst.b   (a4)                            ; FM (type 0) transpose -> i_tsp; KIT/WAVE: none
+    bne.s   .notsp
+    move.b  (i_tsp,a4), d3
+    bra.s   .addtsp
+.psgtsp:
     move.b  (ip_tsp,a4), d3
+.addtsp:
     ext.w   d3
     add.w   d3, d2
 .notsp:
@@ -6350,7 +6377,7 @@ str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
-str_hdr_fm: dc.b "OP  MU DT TL RS AR AM D1 D2 RR SL",0
+str_hdr_fm: dc.b "OP  ML DT TL RS AR AM D1 D2 RR SL",0
 str_scr_ph: dc.b "PHRASE",0
 str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
@@ -6442,10 +6469,11 @@ str_pitch:  dc.b "PITCHED ",0
 type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
-voice_lbl:  dc.l str_algo, str_fb, str_pan, str_ams, str_fms, str_hld, str_vol  ; 7
-voice_off:  dc.b i_algo, i_fb, i_pan, i_ams, i_fms, i_hld, i_vol
-voice_max:  dc.b 7, 7, 3, 3, 7, 15, 15
-voice_step: dc.b 4, 4, 1, 1, 4, 4, 4                     ; ALGO FB (PAN AMS) FMS HLD VOL
+voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_algo, str_fb, str_ams, str_fms  ; 8
+voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_algo, i_fb, i_ams, i_fms
+voice_max:  dc.b 15, 15, 3, 255, 7, 7, 3, 7
+voice_step: dc.b 4, 4, 1, 12, 4, 4, 1, 4                 ; channel: HLD VOL PAN TSP | FM: ALGO FB AMS FMS
+voice_fmt:  dc.b 0, 0, 0, 1, 0, 0, 0, 0                  ; TSP = hex2 signed; rest hex1
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
@@ -6484,7 +6512,7 @@ str_drive:  dc.b "DRIVE",0
 str_fold:   dc.b "FOLD",0
 str_crush:  dc.b "CRUSH",0
     even
-NVOICE     equ 7                            ; voice params before the (global) LFO row
+NVOICE     equ 8                            ; channel items (HLD VOL PAN TSP) + FM items (ALGO FB AMS FMS)
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
 map_letters: dc.b "SCPIT"                   ; map order: SONG CHAIN PHRASE INSTR TABLE
 str_play:   dc.b "PLAY",0
