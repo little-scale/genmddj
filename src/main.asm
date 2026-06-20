@@ -127,7 +127,7 @@ wlfo_phase equ $00FFD268           ; 5 global wave LFO phases (vol/warp/fold/dri
 wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fold/drive/crush)
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
-lfo_phase  equ $00FFD2A8           ; 6 runtime LFO phases (past lfo_cfg's 36 bytes)
+lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -216,7 +216,7 @@ iw_pitch   equ 28                   ; PITCH detune: 8 = in tune, <8 flat, >8 sha
 iwl_pr     equ 29                   ; PITCH LFO rate / depth
 iwl_pd     equ 30
 ; FM LFO bank record (6 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE).
-NLFO       equ 6
+NLFO       equ 16
 LF_SIZE    equ 6
 LF_FLAGS   equ 0                    ; bit0 = on; bits 1-2 = resync mode
 LF_CHAN    equ 1                    ; target channel 0..NCH-1
@@ -436,7 +436,7 @@ Start:
     move.b  #0, wave_pidx                 ; preset cycle starts at sine
     move.b  #0, wave_on                   ; no wave note sounding yet
     lea     lfo_cfg, a2                   ; clear the FM LFO bank (no stray LFOs at boot)
-    moveq   #(lfo_phase+12-lfo_cfg-1), d0 ; through lfo_cfg records + the 12-byte phase array
+    moveq   #(lfo_phase+NLFO*2-lfo_cfg-1), d0 ; through lfo_cfg records + the phase array
 .linit:
     clr.b   (a2)+
     dbra    d0, .linit
@@ -2636,8 +2636,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     swap    d3
     ori.l   #$40000003, d3
     move.l  d3, (a0)
-    move.b  d6, d3
-    addq.b  #1, d3
+    move.b  d6, d3                          ; row label = LFO index 0..F (hex)
     moveq   #0, d4
     bsr     draw_hex1
     move.w  d6, d0                          ; a3 = lfo_cfg + r * LF_SIZE
@@ -2684,7 +2683,18 @@ render_lfo:                                ; a0 = VDP_CTRL
     beq.s   .lfprm
     cmpi.w  #5, d7                          ; col 5 SYNC -> 5-char resync name
     beq.s   .lfsyn
+    cmpi.w  #3, d7                          ; col 3 RATE -> 2 hex digits (full byte)
+    beq.s   .lfrate
     move.b  d2, d3                          ; else a single hex digit
+    move.b  d1, d4
+    bsr     draw_hex1
+    bra.s   .lfcn
+.lfrate:
+    move.b  d2, d3                          ; RATE high nibble (VDP auto-advances)
+    lsr.b   #4, d3
+    move.b  d1, d4
+    bsr     draw_hex1
+    move.b  d2, d3                          ; RATE low nibble
     move.b  d1, d4
     bsr     draw_hex1
     bra.s   .lfcn
@@ -2713,7 +2723,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     cmpi.w  #7, d7
     bne     .lfc
     addq.w  #1, d6
-    cmpi.w  #6, d6
+    cmpi.w  #NLFO, d6
     bne     .lfr
     rts
 lf_col:                                     ; per column: lfo_cfg field offset, kind
@@ -2783,17 +2793,21 @@ edit_lfo:
     move.b  d3, (LF_FLAGS,a3)
     rts
 .el_field:
-    lea     lf_emax, a1                     ; cols 1-4: CH/PM/RT/DP via adj_field
+    lea     lf_emax, a1                     ; cols 1-4 + 6 via adj_field
     moveq   #0, d3
     move.b  (a1,d0.w), d3                   ; column max
+    moveq   #1, d4                           ; U/D step: RATE (full byte) jumps 16, others 1
+    cmpi.b  #3, d0
+    bne.s   .elf1
+    moveq   #16, d4
+.elf1:
     add.w   d0, d0
     lea     lf_col, a1
     moveq   #0, d1
     move.b  (a1,d0.w), d1                   ; field offset
     lea     0(a3,d1.w), a1
-    moveq   #1, d4
     bra     adj_field
-lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 15, 15, 0, 15  ; max per col (CH=FM 0-5; PO 0-15)
+lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 255, 15, 0, 15  ; max per col (CH=FM 0-5; RATE full byte; PO 0-15)
     even
 
 ; WAVE instrument page: a row x col grid. Rows WAVE / ENV / VOL / FOLD / DRIVE /
@@ -4260,11 +4274,12 @@ fmlfo_tick:
     add.w   d3, d3
     move.w  d1, (a4,d3.w)
 .flnors:
-    moveq   #0, d1                           ; advance 16-bit phase += fmlfo_inc[rate]
-    move.b  (LF_RATE,a2), d1                 ; (curve: 0 frozen, 1-7 very slow, 9-F = old fast)
-    add.w   d1, d1
-    lea     fmlfo_inc, a4
-    move.w  (a4,d1.w), d1
+    moveq   #0, d1                           ; advance 16-bit phase by the rate curve (full byte):
+    move.b  (LF_RATE,a2), d1                 ; inc = (rate^2 >> 4) + rate -> fine at the slow end,
+    move.w  d1, d3                            ; ~0 (frozen) at 0, ~3.9 Hz at FF
+    mulu.w  d3, d3
+    lsr.w   #4, d3
+    add.w   d3, d1
     move.w  d6, d3
     add.w   d3, d3
     lea     lfo_phase, a4
@@ -4380,12 +4395,6 @@ fmlfo_ptab:
     dc.b i_op+3*10+9, $8C, 15, 4, i_op+3*10+8, 0    ; SL4
 FMLFO_NPARM equ 34
     even
-; FM LFO rate -> 16-bit phase increment per tick. 0 = frozen; 1-8 ramp up very slowly (song-
-; length sweeps); 9-F = rate*256 (the old fast end, ~2.1-3.5 Hz at 60 fps).
-fmlfo_inc:
-    dc.w 0, 16, 32, 64, 128, 256, 512, 1024
-    dc.w 1664, 2304, 2560, 2816, 3072, 3328, 3584, 3840
-
 engine_tick:
     tst.b   playing
     bne.s   .play
