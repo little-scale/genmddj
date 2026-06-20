@@ -141,12 +141,13 @@ SCR_INSTR  equ 3
 SCR_FM     equ 4                    ; (vestigial: the FM editor now lives inside INSTR)
 SCR_TABLE  equ 5                    ; macro table editor (right of INSTR)
 ; placeholder screens (>= SCR_ECHO have no editable grid) -- the map satellites
-SCR_ECHO   equ 6                    ; below INSTR
+SCR_ECHO   equ 6                    ; below TABLE
 SCR_OPTS   equ 7                    ; above SONG
 SCR_PROJ   equ 8                    ; above CHAIN
 SCR_WAVE   equ 9                    ; above INSTR
 SCR_GROOVE equ 10                   ; below CHAIN
-NSCR       equ 11
+SCR_LFO    equ 11                   ; below INSTR -- FM LFO bank editor
+NSCR       equ 12
 SCR_MAXPOS equ 4                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
 scb_data   equ $00FFE221
@@ -6029,10 +6030,10 @@ scr_pos:    dc.b 2, 1, 0, 3, $FF, 4         ; screen id -> map pos ($FF = off th
 ; 2D map grid (3 rows x 5 cols): vrow*5 + hcol -> screen id ($FF = empty cell)
 scr_grid:   dc.b SCR_OPTS, SCR_PROJ,   $FF, SCR_WAVE, $FF   ; row 0 (above)
             dc.b SCR_SONG, SCR_CHAIN,  SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; row 1 (main)
-            dc.b $FF,      SCR_GROOVE, $FF, SCR_ECHO, $FF    ; row 2 (below)
-scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2       ; screen id -> grid row (PH CH SG IN FM TB EC OP PR WV GR)
-scr_hcol:   dc.b 2,1,0,3,3,4,3,0,1,3,1       ; screen id -> grid col
-scr_letter: dc.b "PCSIFTEOPWG"              ; screen id -> map-cross letter
+            dc.b $FF,      SCR_GROOVE, $FF, SCR_LFO,  SCR_ECHO ; row 2 (below): LFO under INSTR, ECHO under TABLE
+scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2,2     ; screen id -> grid row (..GR LFO)
+scr_hcol:   dc.b 2,1,0,3,3,4,4,0,1,3,1,3     ; screen id -> grid col (ECHO now col 4, LFO col 3)
+scr_letter: dc.b "PCSIFTEOPWGL"             ; screen id -> map-cross letter (L = LFO)
     even
 scr_tabs:                                   ; {header, name} per screen, indexed by SCR_*
     dc.l str_hdr_ph, str_scr_ph             ; 0  PHRASE
