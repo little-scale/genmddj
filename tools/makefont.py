@@ -88,11 +88,11 @@ GLYPHS = {
     # theta: phase symbol (FM LFO phase-offset column header)
     '`': [".###.", "#...#", "#...#", "#####", "#...#", "#...#", ".###."],
     # LFO screen custom tiles
-    '{': [".....", "#####", "#...#", "#...#", "#...#", "#####", "....."],   # OFF: hollow box
-    '}': [".....", "#####", "##.##", "#.#.#", "##.##", "#####", "....."],   # ON: box with X
-    '~': ["..#..", ".###.", "#.#.#", "..#..", "..#..", "..#..", "....."],   # UP arrow
-    '|': [".....", "..#..", "..#..", "..#..", "#.#.#", ".###.", "..#.."],   # DOWN arrow
-    '\x7f': ["..#..", ".###.", "#.#.#", "..#..", "#.#.#", ".###.", "..#.."], # UP+DOWN arrow
+    '{': ["......", "######", "#....#", "#....#", "#....#", "#....#", "######"], # OFF: hollow box 6x6
+    '}': ["......", "######", "######", "######", "######", "######", "######"], # ON: solid 6x6
+    '~': [".....", ".....", "..#..", ".###.", "#####", ".....", "....."],   # UP triangle
+    '|': [".....", ".....", "#####", ".###.", "..#..", ".....", "....."],   # DOWN triangle
+    '\x7f': ["..#..", ".###.", "#####", ".....", "#####", ".###.", "..#.."], # double triangle
 }
 
 # visible marker for any glyph we forgot to draw
@@ -108,9 +108,9 @@ def glyph_rows(ch):
         rows = ["....."] * 7                     # undefined codes -> blank
     out = []
     for r in list(rows)[:7]:
-        r = r.ljust(5, '.')
+        r = r.ljust(6, '.')
         bits = 0
-        for col, c in enumerate(r[:5]):
+        for col, c in enumerate(r[:6]):
             if c == '#':
                 bits |= 1 << col                 # bit0 = leftmost pixel
         out.append(bits)

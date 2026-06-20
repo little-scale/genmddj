@@ -2773,7 +2773,7 @@ lf_pnames:                                  ; 34 FM-param names (4 chars), in fm
     even
 lf_snames: dc.b "NOTE PHRSEFREE "           ; resync modes (5 chars): NOTE / PHRASE / FREE
     even
-str_lfo_hdr: dc.b "ON CH PARAM RATE MOD SYNC  ` DIR",0
+str_lfo_hdr: dc.b "ON CH PARAM RATE MOD SYNC  ` ",$7F,0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
