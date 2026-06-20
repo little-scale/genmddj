@@ -128,6 +128,7 @@ wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fo
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
+phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES bytes) for the I command
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -156,6 +157,7 @@ ym_data    equ $00FFE261
 
 phrases    equ $00FFF000            ; phrases pool (PHRASE_SIZE each)
 PHRASE_SIZE equ 64
+NPHRASES   equ 16                   ; ($FFF400 chains - $FFF000 phrases) / 64
 chains     equ $00FFF400            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
@@ -4180,6 +4182,11 @@ play_context:                             ; C+B: toggle audition of the current 
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
     move.b  #GROOVE, g_gctr
+    lea     phrase_plays, a0               ; reset per-phrase I-command counts at play-start
+    moveq   #NPHRASES-1, d0
+.rpc:
+    clr.b   (a0)+
+    dbra    d0, .rpc
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .r:
@@ -4545,6 +4552,12 @@ advance_ch:                               ; a6 = channel
     tst.b   d0                              ; row 0 = a new phrase began on this track
     bne.s   .nophs
     bset    #1, c_lfosync(a6)              ; -> FM LFO phrase-resync flag
+    movea.l c_phrase(a6), a1               ; bump this phrase's play count (for the I command)
+    move.l  a1, d1
+    sub.l   #phrases, d1
+    lsr.l   #6, d1                          ; phrase number = offset / PHRASE_SIZE
+    lea     phrase_plays, a1
+    addq.b  #1, (a1,d1.w)
 .nophs:
     movea.l c_phrase(a6), a1
     move.w  d0, d1                         ; d1 = row*4 (command/param offset)
@@ -4570,7 +4583,23 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_q
     cmpi.b  #24, d2                        ; X xx = volume (carrier TL)
     beq     .cmd_x
+    cmpi.b  #9, d2                         ; I xx = iteration: gate the note by a repeat mask
+    beq     .cmd_i
     bra     .cmddone
+.cmd_i:
+    moveq   #0, d2
+    move.b  (3,a1,d1.w), d2              ; mask byte (one bit per repeat, mod 8)
+    move.l  a1, d3                         ; phrase number from c_phrase
+    sub.l   #phrases, d3
+    lsr.l   #6, d3
+    lea     phrase_plays, a4
+    moveq   #0, d1
+    move.b  (a4,d3.w), d1                 ; play count (bumped at row 0 this pass)
+    subq.b  #1, d1                         ; -> 0-based repeat index
+    andi.w  #7, d1                         ; mod 8 -> bit
+    btst    d1, d2
+    bne     .cmddone                       ; bit set -> play the note this repeat
+    bra     .ret                           ; bit clear -> suppress (rest)
 .cmd_hop:
     moveq   #0, d2
     move.b  (3,a1,d1.w), d2               ; param = destination row (low nibble)
