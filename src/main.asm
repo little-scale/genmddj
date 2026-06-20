@@ -57,6 +57,7 @@ c_modph2   equ 35                   ; PSG tremolo LFO phase
 c_tbl      equ 36                   ; active macro table ($FF = none)
 c_trow     equ 37                   ; macro table row 0-15
 c_tctr     equ 38                   ; macro table tick counter (advances at TBS speed)
+c_lfosync  equ 39                   ; FM LFO resync flags this tick: bit0 note-on, bit1 phrase-start
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -124,6 +125,9 @@ wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain out
 prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vol forced full)
 wlfo_phase equ $00FFD268           ; 5 global wave LFO phases (vol/warp/fold/drive/crush, 1 wave)
 wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fold/drive/crush)
+; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
+lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth)
+lfo_phase  equ $00FFD2A0           ; 6 runtime LFO phases
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -210,6 +214,17 @@ iwl_cd     equ 27
 iw_pitch   equ 28                   ; PITCH detune: 8 = in tune, <8 flat, >8 sharp (LFO -> vibrato)
 iwl_pr     equ 29                   ; PITCH LFO rate / depth
 iwl_pd     equ 30
+; FM LFO bank record (6 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE).
+NLFO       equ 6
+LF_SIZE    equ 5
+LF_FLAGS   equ 0                    ; bit0 = on; bits 1-2 = resync mode
+LF_CHAN    equ 1                    ; target channel 0..NCH-1
+LF_PARM    equ 2                    ; target FM parameter (see fmlfo param table)
+LF_RATE    equ 3
+LF_DEPTH   equ 4
+LFRS_NOTE  equ 0                    ; resync: reset phase on each note-on of the target channel
+LFRS_PHRASE equ 1                   ; reset phase when the target channel enters a new phrase
+LFRS_FREE  equ 2                    ; never reset (free-running)
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
