@@ -2473,21 +2473,83 @@ render_wave:
     bge.s   .wput
     moveq   #$80, d2
 .wput:
+    cmpi.w  #7, d7                          ; centre line: dash through blank cells at R=7
+    bne.s   .wputw
+    cmpi.b  #$20, d2
+    bne.s   .wputw
+    moveq   #'_', d2
+.wputw:
     move.b  d2, (a2)+                      ; append cell to the row string
     addq.w  #1, d5
     cmpi.w  #32, d5
     bne.s   .ws
     clr.b   (a2)                            ; NUL-terminate
-    move.w  d7, d3                          ; print row at (screen row 6+R, col 2)
+    move.w  d7, d3                          ; print row at (screen row 6+R, col 1)
     addi.w  #6, d3
-    moveq   #2, d4
+    moveq   #1, d4
     lea     wave_rowbuf, a1
     bsr     print_at                        ; preserves d7/a3; clobbers d0,d1,a1
     addq.w  #1, d7
     cmpi.w  #16, d7
     bne.s   .wr
+    ; cursor marker row (row 5): blank except the current step's column
+    lea     wave_rowbuf, a2
+    moveq   #0, d6
+    move.b  cur_wstep, d6
+    moveq   #0, d5
+.wcm:
+    moveq   #$20, d1
+    cmp.w   d5, d6
+    bne.s   .wcm2
+    moveq   #$80, d1                        ; solid block above the current step
+.wcm2:
+    move.b  d1, (a2)+
+    addq.w  #1, d5
+    cmpi.w  #32, d5
+    bne.s   .wcm
+    clr.b   (a2)
+    moveq   #5, d3
+    moveq   #1, d4
+    lea     wave_rowbuf, a1
+    bsr     print_at
+    ; status line (row 23): WAVE n   STEP ss   LVL vv
+    moveq   #23, d3
+    moveq   #1, d4
+    lea     str_w_wave, a1
+    bsr     print_at
+    move.l  #$4B8C0003, (a0)               ; (23,6) wave number
+    move.b  cur_wave, d3
+    moveq   #0, d4
+    bsr     draw_hex1
+    moveq   #23, d3
+    moveq   #8, d4
+    lea     str_w_step, a1
+    bsr     print_at
+    move.l  #$4B9A0003, (a0)               ; (23,13) step
+    move.b  cur_wstep, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+    moveq   #23, d3
+    moveq   #16, d4
+    lea     str_w_lvl, a1
+    bsr     print_at
+    move.l  #$4BA80003, (a0)               ; (23,20) level = value at cursor
+    lea     wave_ram, a1
+    moveq   #0, d0
+    move.b  cur_wave, d0
+    lsl.w   #5, d0
+    moveq   #0, d1
+    move.b  cur_wstep, d1
+    add.w   d1, d0
+    move.b  (a1,d0.w), d3
+    moveq   #0, d4
+    bsr     draw_hex2
     move.b  #1, vdirty                    ; re-render next frame (entry frame overruns)
     rts
+str_w_wave: dc.b "WAVE",0
+str_w_step: dc.b "STEP",0
+str_w_lvl:  dc.b "LVL",0
+    even
 
 ; KIT instrument page: the kit selector + a fill map of its 16 pads.
 render_kit:
