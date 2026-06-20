@@ -4019,6 +4019,112 @@ engine_play_reset:
     dbra    d7, .r
     rts
 
+; ---- per tick: fold the 6 FM LFOs into the SCB's YM write list. a5 = YM ptr, d5 = count
+; (both in/out). Each on-LFO modulates its target channel's FM param additively around the
+; channel's patch value and appends one YM write; the diff isn't needed because we only emit
+; when the LFO is on. Resync resets the phase on note-on / phrase-start per the c_lfosync flag.
+fmlfo_tick:
+    movem.l d0-d4/d6-d7/a1-a4, -(sp)
+    lea     lfo_cfg, a2
+    moveq   #0, d6                          ; LFO index = phase index 0..NLFO-1
+.flt:
+    move.b  (LF_FLAGS,a2), d0
+    btst    #0, d0                          ; LFO enabled?
+    beq     .fltn
+    moveq   #0, d1                          ; a3 = target channel
+    move.b  (LF_CHAN,a2), d1
+    cmpi.b  #NCH, d1
+    bhs     .fltn
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a3
+    adda.w  d1, a3
+    cmpi.b  #1, c_type(a3)                  ; only FM channels carry these registers
+    bne     .fltn
+    move.b  (LF_FLAGS,a2), d0               ; resync mode (bits 1-2): 0 note / 1 phrase / 2 free
+    lsr.b   #1, d0
+    andi.w  #3, d0
+    cmpi.b  #LFRS_FREE, d0
+    beq.s   .flnors
+    move.b  c_lfosync(a3), d1               ; mode 0 -> bit0 (note), 1 -> bit1 (phrase)
+    btst    d0, d1
+    beq.s   .flnors
+    lea     lfo_phase, a4                    ; resync: restart this LFO's phase
+    clr.b   (a4,d6.w)
+.flnors:
+    moveq   #0, d1                           ; advance phase += rate
+    move.b  (LF_RATE,a2), d1
+    lea     lfo_phase, a4
+    move.b  (a4,d6.w), d2
+    add.b   d1, d2
+    move.b  d2, (a4,d6.w)
+    andi.w  #$FF, d2                          ; triangle fold -> -64..63
+    cmpi.w  #128, d2
+    blo.s   .flt1
+    move.w  #255, d3
+    sub.w   d2, d3
+    move.w  d3, d2
+.flt1:
+    subi.w  #64, d2
+    moveq   #0, d1
+    move.b  (LF_DEPTH,a2), d1
+    muls.w  d2, d1                           ; depth * tri
+    asr.w   #5, d1                           ; >> 5 -> swing ~ +/- 2*depth
+    moveq   #0, d0                           ; param table entry -> a4 = {patch_off, reg, max}
+    move.b  (LF_PARM,a2), d0
+    cmpi.w  #FMLFO_NPARM, d0
+    bhs     .fltn
+    mulu.w  #3, d0
+    lea     fmlfo_ptab, a4
+    adda.w  d0, a4
+    lea     instrum, a1                      ; the target channel's instrument
+    moveq   #0, d2
+    move.b  c_instr(a3), d2
+    mulu.w  #INSTR_SIZE, d2
+    adda.w  d2, a1
+    moveq   #0, d3                           ; base = patch param value
+    move.b  (a4), d3
+    moveq   #0, d2
+    move.b  (a1,d3.w), d2
+    add.w   d1, d2                           ; + LFO delta
+    bpl.s   .flc0
+    moveq   #0, d2
+.flc0:
+    moveq   #0, d3
+    move.b  (2,a4), d3                       ; clamp to the param's max
+    cmp.w   d3, d2
+    bls.s   .flc1
+    move.w  d3, d2
+.flc1:
+    move.b  c_ympart(a3), (a5)+             ; append YM write: part, reg+chreg, value
+    move.b  (1,a4), d3
+    add.b   c_ymchreg(a3), d3
+    move.b  d3, (a5)+
+    move.b  d2, (a5)+
+    addq.w  #1, d5
+.fltn:
+    lea     LF_SIZE(a2), a2
+    addq.w  #1, d6
+    cmpi.w  #NLFO, d6
+    bne     .flt
+    lea     ch_state+c_lfosync, a3          ; consume the resync flags for next tick
+    moveq   #NCH-1, d7
+.flclr:
+    clr.b   (a3)
+    lea     CHSIZE(a3), a3
+    dbra    d7, .flclr
+    movem.l (sp)+, d0-d4/d6-d7/a1-a4
+    rts
+
+; FM LFO param table: {patch offset within the instrument, YM register base, value max}.
+; v1 exposes the four operators' TL (output/level -> tremolo + timbre). More params follow.
+fmlfo_ptab:
+    dc.b i_op+0*10+2, $40, 127              ; TL S1
+    dc.b i_op+1*10+2, $44, 127              ; TL S3
+    dc.b i_op+2*10+2, $48, 127              ; TL S2
+    dc.b i_op+3*10+2, $4C, 127              ; TL S4
+FMLFO_NPARM equ 4
+    even
+
 engine_tick:
     tst.b   playing
     bne.s   .play
@@ -4074,6 +4180,7 @@ engine_tick:
     bsr     compose_ch
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
+    bsr     fmlfo_tick                    ; fold the 6 FM LFOs into the YM write list (a5/d5)
     move.b  d6, scb_count
     move.b  d5, ym_count
     move.b  d6, d0
@@ -4159,6 +4266,10 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d0
 .gotrow:
     move.b  d0, c_row(a6)
+    tst.b   d0                              ; row 0 = a new phrase began on this track
+    bne.s   .nophs
+    bset    #1, c_lfosync(a6)              ; -> FM LFO phrase-resync flag
+.nophs:
     movea.l c_phrase(a6), a1
     move.w  d0, d1                         ; d1 = row*4 (command/param offset)
     lsl.w   #2, d1
@@ -4235,6 +4346,7 @@ advance_ch:                               ; a6 = channel
     cmpi.w  #96, d2
     bhs     .ret
     move.b  d2, c_note(a6)
+    bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
     cmpi.b  #1, c_type(a6)               ; PSG: (re)start the instrument's macro table
     beq.s   .notbset
