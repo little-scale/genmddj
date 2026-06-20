@@ -105,6 +105,13 @@ env_upos   equ $00FFE3CC           ; (word) upload cursor: next canvas tile to p
 env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connector)
 env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
 env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
+opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
+opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=IN 2=OUT
+opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
+proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
+proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
+proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
+proj_slot  equ $00FFE3EA           ; PROJECT: save slot 1..8
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -285,36 +292,7 @@ Start:
 
     bsr     z80_load
 
-    ; clear phrase pool to rests ($FF,0,0,0 per row), 16 phrases
-    lea     phrases, a2
-    move.w  #16*16-1, d0
-.clr:
-    move.b  #$FF, (a2)+
-    move.b  #0, (a2)+
-    move.b  #0, (a2)+
-    move.b  #0, (a2)+
-    dbra    d0, .clr
-    ; copy demo phrases over 0-3
-    lea     demo_phrases, a1
-    lea     phrases, a2
-    move.w  #(demo_end-demo_phrases)-1, d0
-.cp:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .cp
-    ; copy demo chains
-    lea     demo_chains, a1
-    lea     chains, a2
-    move.w  #(demo_chains_end-demo_chains)-1, d0
-.cc:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .cc
-    ; copy demo song
-    lea     demo_song, a1
-    lea     song, a2
-    move.w  #(demo_song_end-demo_song)-1, d0
-.cs:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .cs
+    bsr     load_demo                     ; phrases -> rests + copy demo phrases/chains/song
     ; clear instrument pool (all type 0 = FM)
     lea     instrum, a2
     move.w  #(NINSTR*INSTR_SIZE)-1, d0
@@ -374,6 +352,13 @@ Start:
     move.b  #$FF, live_vol
     move.b  #$FF, live_fb
     move.b  #0, repatch
+    move.b  #2, opt_vid                   ; OPTIONS defaults: region AUTO
+    move.b  #0, opt_sync                  ;   sync OFF
+    move.b  #0, opt_pal                   ;   UI palette 0
+    move.b  #125, proj_tmpo               ; PROJECT defaults: 125 BPM
+    move.b  #0, proj_tsp                  ;   no master transpose
+    move.b  #0, proj_mode                 ;   SONG mode
+    move.b  #1, proj_slot                 ;   save slot 1
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
@@ -453,14 +438,18 @@ VBlankInt:
     tst.b   d7
     beq     .gd                           ; unchanged -> skip the grid redraw
     move.b  cur_screen, d0                ; render active grid
-    beq.s   .gph
+    beq     .gph
     cmpi.b  #SCR_CHAIN, d0
-    beq.s   .gch
+    beq     .gch
     cmpi.b  #SCR_SONG, d0
-    beq.s   .gsg
+    beq     .gsg
     cmpi.b  #SCR_TABLE, d0
     beq.s   .gtbl
-    cmpi.b  #SCR_ECHO, d0                  ; placeholder screens: header only, no grid body
+    cmpi.b  #SCR_OPTS, d0                  ; OPTIONS / PROJECT placeholders now have a field body
+    beq     .gopts
+    cmpi.b  #SCR_PROJ, d0
+    beq     .gproj
+    cmpi.b  #SCR_ECHO, d0                  ; other placeholder screens: header only, no grid body
     bhs     .gd
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
     moveq   #0, d0
@@ -473,6 +462,12 @@ VBlankInt:
 .gtbl:
     bsr     render_table
     bra.s   .gd
+.gopts:
+    bsr     render_opts
+    bra     .gd
+.gproj:
+    bsr     render_proj
+    bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
     cmpi.b  #3, d1
@@ -1143,8 +1138,12 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
 
 row_max:                                  ; -> d1 = highest row index for cur_screen/type
     move.b  cur_screen, d0
+    cmpi.b  #SCR_OPTS, d0
+    beq.s   .rmopts
+    cmpi.b  #SCR_PROJ, d0
+    beq.s   .rmproj
     cmpi.b  #SCR_ECHO, d0
-    bhs.s   .zero                            ; placeholder screens: cursor locked at row 0
+    bhs.s   .zero                            ; other placeholder screens: cursor locked at row 0
     cmpi.b  #SCR_FM, d0
     beq.s   .fm
     cmpi.b  #SCR_INSTR, d0
@@ -1153,6 +1152,12 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     rts
 .zero:
     moveq   #0, d1
+    rts
+.rmopts:
+    moveq   #2, d1                          ; VID SYNC PAL
+    rts
+.rmproj:
+    moveq   #7, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD
     rts
 .fm:
     lea     instrum, a1                   ; max cursor row depends on instrument type
@@ -1577,7 +1582,11 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     rts
 
 edit_value:
-    cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens have no fields
+    cmpi.b  #SCR_OPTS, cur_screen
+    beq     edit_opts
+    cmpi.b  #SCR_PROJ, cur_screen
+    beq     edit_proj
+    cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
     blo.s   .ev_go
     rts
 .ev_go:
@@ -1717,7 +1726,9 @@ edit_instr:
     rts
 
 do_insert:
-    cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens have no fields
+    cmpi.b  #SCR_PROJ, cur_screen          ; PROJECT: B-tap triggers NEW/DEMO/SAVE/LOAD
+    beq     proj_action
+    cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
     blo.s   .di_go
     rts
 .di_go:
@@ -4342,6 +4353,398 @@ print_hl:                                 ; a1=str, d3=row, d4=col, d2=char offs
 .phd:
     rts
 
+; ============================================================
+; OPTIONS / PROJECT pages (SMSGGDJ-style field lists)
+; ============================================================
+draw_dec3:                                ; d3=0..255, d4=char offset; (a0) addr preset
+    moveq   #0, d0
+    move.b  d3, d0
+    divu.w  #100, d0
+    move.w  d0, d1
+    add.w   #'0', d1
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    clr.w   d0
+    swap    d0
+    divu.w  #10, d0
+    move.w  d0, d1
+    add.w   #'0', d1
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    clr.w   d0
+    swap    d0
+    add.w   #'0', d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    rts
+
+draw_dec_s:                               ; d3=signed byte, d4=offset; addr preset -> sign + 2 digits
+    move.b  d3, d0
+    ext.w   d0
+    ext.l   d0                              ; clean 32-bit signed (divu uses the full long)
+    moveq   #'+', d1
+    tst.l   d0
+    bpl.s   .ds
+    moveq   #'-', d1
+    neg.l   d0
+.ds:
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    divu.w  #10, d0
+    move.w  d0, d1
+    andi.w  #$0F, d1
+    add.w   #'0', d1
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    clr.w   d0
+    swap    d0
+    add.w   #'0', d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    rts
+
+; NB: no per-render body clear -- clear_grid wipes on entry, and these fields are
+; fixed-width so they self-overwrite; clearing rows 5-16 every render overran VBlank.
+render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit idiom
+    moveq   #5, d3
+    moveq   #1, d4
+    lea     str_o_vid, a1
+    bsr     print_at
+    moveq   #0, d2
+    tst.b   cur_row
+    bne.s   .ov
+    moveq   #$60, d2
+.ov:
+    moveq   #0, d1
+    move.b  opt_vid, d1
+    cmpi.w  #2, d1
+    bls.s   .ovc
+    moveq   #2, d1
+.ovc:
+    lsl.w   #2, d1
+    lea     vid_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #5, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #6, d3
+    moveq   #1, d4
+    lea     str_o_sync, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #1, cur_row
+    bne.s   .os
+    moveq   #$60, d2
+.os:
+    moveq   #0, d1
+    move.b  opt_sync, d1
+    cmpi.w  #2, d1
+    bls.s   .osc
+    moveq   #2, d1
+.osc:
+    lsl.w   #2, d1
+    lea     sync_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #6, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #7, d3
+    moveq   #1, d4
+    lea     str_o_pal, a1
+    bsr     print_at
+    move.l  #$43900003, (a0)
+    move.b  opt_pal, d3
+    moveq   #0, d4
+    cmpi.b  #2, cur_row
+    bne.s   .op
+    moveq   #$60, d4
+.op:
+    bra     draw_hex1
+
+render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SAVE LOAD
+    moveq   #5, d3
+    moveq   #1, d4
+    lea     str_p_tmpo, a1
+    bsr     print_at
+    move.l  #$42900003, (a0)
+    move.b  proj_tmpo, d3
+    moveq   #0, d4
+    tst.b   cur_row
+    bne.s   .pt
+    moveq   #$60, d4
+.pt:
+    bsr     draw_dec3
+    moveq   #6, d3
+    moveq   #1, d4
+    lea     str_tsp, a1
+    bsr     print_at
+    move.l  #$43100003, (a0)
+    move.b  proj_tsp, d3
+    moveq   #0, d4
+    cmpi.b  #1, cur_row
+    bne.s   .ps
+    moveq   #$60, d4
+.ps:
+    bsr     draw_dec_s
+    moveq   #7, d3
+    moveq   #1, d4
+    lea     str_mode, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #2, cur_row
+    bne.s   .pm
+    moveq   #$60, d2
+.pm:
+    moveq   #0, d1
+    move.b  proj_mode, d1
+    cmpi.w  #2, d1
+    bls.s   .pmc
+    moveq   #2, d1
+.pmc:
+    lsl.w   #2, d1
+    lea     pmode_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #7, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #9, d3
+    moveq   #1, d4
+    lea     str_p_new, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #3, cur_row
+    bne.s   .pn
+    moveq   #$60, d2
+.pn:
+    lea     str_go, a1
+    moveq   #9, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #11, d3
+    moveq   #1, d4
+    lea     str_p_demo, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #4, cur_row
+    bne.s   .pd
+    moveq   #$60, d2
+.pd:
+    lea     str_go, a1
+    moveq   #11, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #13, d3
+    moveq   #1, d4
+    lea     str_p_slot, a1
+    bsr     print_at
+    move.l  #$46900003, (a0)
+    move.b  proj_slot, d3
+    moveq   #0, d4
+    cmpi.b  #5, cur_row
+    bne.s   .psl
+    moveq   #$60, d4
+.psl:
+    bsr     draw_hex1
+    moveq   #15, d3
+    moveq   #1, d4
+    lea     str_p_save, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #6, cur_row
+    bne.s   .pv
+    moveq   #$60, d2
+.pv:
+    lea     str_go, a1
+    moveq   #15, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #16, d3
+    moveq   #1, d4
+    lea     str_p_load, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #7, cur_row
+    bne.s   .pl
+    moveq   #$60, d2
+.pl:
+    lea     str_go, a1
+    moveq   #16, d3
+    moveq   #8, d4
+    bra     print_hl
+
+edit_opts:                                ; B+dpad on OPTIONS: adjust the current field
+    move.b  cur_row, d0
+    beq.s   .eo_vid
+    cmpi.b  #1, d0
+    beq.s   .eo_sync
+    lea     opt_pal, a1                     ; PAL 0..3
+    moveq   #3, d3
+    moveq   #1, d4
+    bra     adj_field
+.eo_vid:
+    lea     opt_vid, a1
+    moveq   #2, d3
+    moveq   #1, d4
+    bra     adj_field
+.eo_sync:
+    lea     opt_sync, a1
+    moveq   #2, d3
+    moveq   #1, d4
+    bra     adj_field
+
+edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/MODE/SLOT
+    move.b  cur_row, d0
+    beq.s   .ep_tmpo
+    cmpi.b  #1, d0
+    beq     .ep_tsp
+    cmpi.b  #2, d0
+    beq.s   .ep_mode
+    cmpi.b  #5, d0
+    beq.s   .ep_slot
+    rts                                     ; NEW/DEMO/SAVE/LOAD: no dpad value
+.ep_mode:
+    lea     proj_mode, a1
+    moveq   #2, d3
+    moveq   #1, d4
+    bra     adj_field
+.ep_slot:
+    lea     proj_slot, a1
+    moveq   #8, d3
+    moveq   #1, d4
+    bsr     adj_field
+    tst.b   proj_slot                       ; clamp to [1,8]
+    bne.s   .eps
+    move.b  #1, proj_slot
+.eps:
+    rts
+.ep_tmpo:                                 ; L/R +-1, U/D +-10, clamp [32,255]
+    moveq   #0, d0
+    move.b  proj_tmpo, d0
+    btst    #2, d2
+    beq.s   .et1
+    subq.w  #1, d0
+.et1:
+    btst    #3, d2
+    beq.s   .et2
+    addq.w  #1, d0
+.et2:
+    btst    #0, d2
+    beq.s   .et3
+    addi.w  #10, d0
+.et3:
+    btst    #1, d2
+    beq.s   .et4
+    subi.w  #10, d0
+.et4:
+    cmpi.w  #32, d0
+    bge.s   .et5
+    moveq   #32, d0
+.et5:
+    cmpi.w  #255, d0
+    ble.s   .et6
+    move.w  #255, d0
+.et6:
+    move.b  d0, proj_tmpo
+    rts
+.ep_tsp:                                  ; L/R +-1, U/D +-12, clamp [-48,48]
+    move.b  proj_tsp, d0
+    ext.w   d0
+    btst    #2, d2
+    beq.s   .ts1
+    subq.w  #1, d0
+.ts1:
+    btst    #3, d2
+    beq.s   .ts2
+    addq.w  #1, d0
+.ts2:
+    btst    #0, d2
+    beq.s   .ts3
+    addi.w  #12, d0
+.ts3:
+    btst    #1, d2
+    beq.s   .ts4
+    subi.w  #12, d0
+.ts4:
+    cmpi.w  #-48, d0
+    bge.s   .ts5
+    moveq   #-48, d0
+.ts5:
+    cmpi.w  #48, d0
+    ble.s   .ts6
+    moveq   #48, d0
+.ts6:
+    move.b  d0, proj_tsp
+    rts
+
+proj_action:                              ; B-tap on PROJECT: trigger the GO fields
+    move.b  cur_row, d0
+    cmpi.b  #3, d0
+    beq.s   .pa_new
+    cmpi.b  #4, d0
+    beq.s   .pa_demo
+    rts                                     ; SAVE/LOAD stubbed until the save system (M8)
+.pa_new:
+    bsr     clear_song
+    bra.s   .pa_done
+.pa_demo:
+    bsr     load_demo
+.pa_done:
+    move.b  #0, cur_phrase
+    move.b  #0, cur_chain
+    move.b  #0, cur_songrow
+    move.b  #1, need_clear
+    rts
+
+load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
+    lea     phrases, a2
+    move.w  #16*16-1, d0
+.ld_clr:
+    move.b  #$FF, (a2)+
+    move.b  #0, (a2)+
+    move.b  #0, (a2)+
+    move.b  #0, (a2)+
+    dbra    d0, .ld_clr
+    lea     demo_phrases, a1
+    lea     phrases, a2
+    move.w  #(demo_end-demo_phrases)-1, d0
+.ld_cp:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .ld_cp
+    lea     demo_chains, a1
+    lea     chains, a2
+    move.w  #(demo_chains_end-demo_chains)-1, d0
+.ld_cc:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .ld_cc
+    lea     demo_song, a1
+    lea     song, a2
+    move.w  #(demo_song_end-demo_song)-1, d0
+.ld_cs:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .ld_cs
+    rts
+
+clear_song:                               ; blank project: phrases -> rests, chains + song empty ($FF)
+    lea     phrases, a2
+    move.w  #16*16-1, d0
+.cz_p:
+    move.b  #$FF, (a2)+
+    move.b  #0, (a2)+
+    move.b  #0, (a2)+
+    move.b  #0, (a2)+
+    dbra    d0, .cz_p
+    lea     chains, a2
+    move.w  #(song-chains)-1, d0
+.cz_c:
+    move.b  #$FF, (a2)+
+    dbra    d0, .cz_c
+    lea     song, a2
+    move.w  #(NSONGROWS*10)-1, d0
+.cz_s:
+    move.b  #$FF, (a2)+
+    dbra    d0, .cz_s
+    rts
+
 Exception:
     bra.s   Exception
 
@@ -4385,6 +4788,31 @@ krn_h:      dc.b ".5X",0
 krn_1:      dc.b "1X ",0
 krn_2:      dc.b "2X ",0
 krn_4:      dc.b "4X ",0
+    even
+; OPTIONS / PROJECT page labels + enum tables (TSP/MODE reuse the FM/PSG strings)
+str_o_vid:  dc.b "VID",0
+str_o_sync: dc.b "SYNC",0
+str_o_pal:  dc.b "PAL",0
+str_p_tmpo: dc.b "TMPO",0
+str_p_new:  dc.b "NEW",0
+str_p_demo: dc.b "DEMO",0
+str_p_slot: dc.b "SLOT",0
+str_p_save: dc.b "SAVE",0
+str_p_load: dc.b "LOAD",0
+str_go:     dc.b "GO",0
+str_vid_n:  dc.b "NTSC",0
+str_vid_p:  dc.b "PAL ",0
+str_vid_a:  dc.b "AUTO",0
+str_syn_o:  dc.b "OFF",0
+str_syn_i:  dc.b "IN ",0
+str_syn_u:  dc.b "OUT",0
+str_md_s:   dc.b "SONG  ",0
+str_md_c:   dc.b "CHAIN ",0
+str_md_p:   dc.b "PHRASE",0
+    even
+vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
+sync_lbl:   dc.l str_syn_o, str_syn_i, str_syn_u
+pmode_lbl:  dc.l str_md_s, str_md_c, str_md_p
     even
 str_voice:  dc.b "VOICE:",0
 str_algo:   dc.b "ALGO",0
