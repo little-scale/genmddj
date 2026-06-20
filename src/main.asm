@@ -4775,19 +4775,23 @@ bake_wave:
     move.b  c_vol(a6), d2                 ; amplitude = current AHD env level (0-15)
     moveq   #0, d6
     move.b  (iw_fold,a1), d6
+    andi.w  #15, d6                         ; clamp (a stale/foreign byte must not run wild)
     lsl.w   #3, d6                          ; FOLD * 8
     move.w  #128, d3
     sub.w   d6, d3                          ; d3 = fold threshold T = 128 - FOLD*8
     moveq   #0, d5
     move.b  (iw_crush,a1), d5
+    andi.w  #15, d5
     lsr.w   #1, d5                          ; crush: drop = CRUSH>>1 low bits (0-7)
     moveq   #0, d7                          ; DRIVE: a3 = drivetab + DRIVE*256
     move.b  (iw_drive,a1), d7
+    andi.w  #15, d7                         ; clamp -> drivetab index stays in the 16-entry table
     lsl.w   #8, d7
     lea     drivetab, a3
     adda.w  d7, a3
     moveq   #0, d7                          ; WARP: d7 = pivot p = 16 + WARP (16..31)
     move.b  (iw_warp,a1), d7
+    andi.w  #15, d7
     addi.w  #16, d7
     moveq   #0, d6                          ; d6 = output step i
     lea     wave_bake, a2
