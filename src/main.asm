@@ -534,6 +534,12 @@ VBlankInt:
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
     dbra    d3, .tk
+    cmpi.b  #SCR_WAVE, cur_screen          ; WAVEFORM is an 8-char name: keep col8 (the M),
+    bne.s   .pnnotw                        ; blank only col9
+    move.l  #$40920003, (a0)
+    move.w  #' ', VDP_DATA
+    bra     .pntrack
+.pnnotw:
     move.l  #$40900003, (a0)             ; screen number (2 hex digits) at row1 col8
     cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens carry no number
     blo.s   .pnnum
@@ -844,6 +850,26 @@ input_tick:
     beq.s   .ncd
     bsr     grid_down
 .ncd:
+    cmpi.b  #SCR_WAVE, cur_screen          ; WAVE: C+Left/Right select the wave 0-15 (the map
+    bne.s   .ncdmap                         ; blocks horizontal nav anyway), not screen nav
+    btst    #2, d5                          ; C+Left -> wave--
+    beq.s   .wvr
+    move.b  cur_wave, d0
+    beq.s   .wvr
+    subq.b  #1, d0
+    move.b  d0, cur_wave
+    move.b  #1, vdirty
+.wvr:
+    btst    #3, d5                          ; C+Right -> wave++
+    beq.s   .done
+    move.b  cur_wave, d0
+    cmpi.b  #15, d0
+    bhs.s   .done
+    addq.b  #1, d0
+    move.b  d0, cur_wave
+    move.b  #1, vdirty
+    bra     .done
+.ncdmap:
     btst    #2, d5                         ; C+Left
     beq.s   .ncl
     cmpi.b  #SCR_ECHO, cur_screen          ; main row drills/steps; satellites just step
@@ -2484,8 +2510,8 @@ render_wave:
     cmpi.w  #32, d5
     bne.s   .ws
     clr.b   (a2)                            ; NUL-terminate
-    move.w  d7, d3                          ; print row at (screen row 6+R, col 1)
-    addi.w  #6, d3
+    move.w  d7, d3                          ; print row at (screen row 8+R, col 1)
+    addi.w  #8, d3
     moveq   #1, d4
     lea     wave_rowbuf, a1
     bsr     print_at                        ; preserves d7/a3; clobbers d0,d1,a1
@@ -2508,32 +2534,32 @@ render_wave:
     cmpi.w  #32, d5
     bne.s   .wcm
     clr.b   (a2)
-    moveq   #5, d3
+    moveq   #6, d3                          ; cursor marker on row 6 (above the canvas)
     moveq   #1, d4
     lea     wave_rowbuf, a1
     bsr     print_at
-    ; status line (row 23): WAVE n   STEP ss   LVL vv
-    moveq   #23, d3
+    ; status line (row 3, just below the WAVEFORM title): WAVE n   STEP ss   LVL vv
+    moveq   #3, d3
     moveq   #1, d4
     lea     str_w_wave, a1
     bsr     print_at
-    move.l  #$4B8C0003, (a0)               ; (23,6) wave number
+    move.l  #$418C0003, (a0)               ; (3,6) wave number
     move.b  cur_wave, d3
     moveq   #0, d4
     bsr     draw_hex1
-    moveq   #23, d3
+    moveq   #3, d3
     moveq   #8, d4
     lea     str_w_step, a1
     bsr     print_at
-    move.l  #$4B9A0003, (a0)               ; (23,13) step
+    move.l  #$419A0003, (a0)               ; (3,13) step
     move.b  cur_wstep, d3
     moveq   #0, d4
     bsr     draw_hex2
-    moveq   #23, d3
+    moveq   #3, d3
     moveq   #16, d4
     lea     str_w_lvl, a1
     bsr     print_at
-    move.l  #$4BA80003, (a0)               ; (23,20) level = value at cursor
+    move.l  #$41A80003, (a0)               ; (3,20) level = value at cursor
     lea     wave_ram, a1
     moveq   #0, d0
     move.b  cur_wave, d0
