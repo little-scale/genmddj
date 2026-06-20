@@ -4682,9 +4682,10 @@ dac_play:
     rts
 
 ; ---- bake the base wave (a5) through the shaper chain into wave_bake (32 B).
-; a1 = WAVE instrument. v1 chain (per DESIGN.md $10.6): FOLD -> CRUSH -> x VOL.
-; (DRIVE tanh table, WARP index skew, and the dynamic AHD env are layered in next.)
-; Preserves a1/a4/a5/a6; clobbers a0/a2/d0-d6 (wave_play reloads d0-d7 from wave_bake after).
+; a1 = WAVE instrument. Chain (DESIGN.md $10.6): WARP -> DRIVE -> FOLD -> CRUSH -> x VOL.
+; WARP skews the source index (pivot p=16+WARP); DRIVE is a tanh ROM table; FOLD reflects
+; past +/-T; CRUSH drops low bits; VOL scales the deviation. (Dynamic AHD env-vol: next.)
+; Preserves a1/a4/a5/a6; clobbers a2/a3/d0-d7 (wave_play reloads d0-d7 from wave_bake after).
 bake_wave:
     moveq   #0, d2
     move.b  (ip_vol,a1), d2               ; VOL 0-15
@@ -4701,12 +4702,34 @@ bake_wave:
     lsl.w   #8, d7
     lea     drivetab, a3
     adda.w  d7, a3
-    movea.l a5, a0                          ; base read ptr (keep a5 intact)
+    moveq   #0, d7                          ; WARP: d7 = pivot p = 16 + WARP (16..31)
+    move.b  (iw_warp,a1), d7
+    addi.w  #16, d7
+    moveq   #0, d6                          ; d6 = output step i
     lea     wave_bake, a2
     moveq   #32-1, d4
 .bkl:
+    cmpi.w  #16, d6                         ; WARP: skew the source index over 0..31
+    bhs.s   .bw2
+    move.w  d6, d1                          ; i<16: j = (i * p) >> 4
+    mulu.w  d7, d1
+    lsr.w   #4, d1
+    bra.s   .bwd
+.bw2:
+    move.w  d6, d1                          ; i>=16: j = p + ((i-16)*(32-p)) >> 4
+    subi.w  #16, d1
+    moveq   #32, d0
+    sub.w   d7, d0
+    mulu.w  d0, d1
+    lsr.w   #4, d1
+    add.w   d7, d1
+.bwd:
+    cmpi.w  #31, d1                          ; clamp j to 0..31
+    bls.s   .bw3
+    moveq   #31, d1
+.bw3:
     moveq   #0, d0
-    move.b  (a0)+, d0
+    move.b  (a5,d1.w), d0                  ; s = base[j] (warped read)
     move.b  (a3,d0.w), d0                  ; DRIVE: tanh soft-clip (sample -> sample)
     subi.w  #128, d0                       ; d = deviation -128..127
     cmp.w   d3, d0                          ; FOLD: reflect past +/- T
@@ -4741,6 +4764,7 @@ bake_wave:
     move.w  #255, d0
 .bp2:
     move.b  d0, (a2)+
+    addq.w  #1, d6                          ; next output step
     dbra    d4, .bkl
     rts
 
