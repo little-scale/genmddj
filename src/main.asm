@@ -4497,9 +4497,9 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
 .pm:
     moveq   #0, d1
     move.b  proj_mode, d1
-    cmpi.w  #2, d1
+    cmpi.w  #1, d1
     bls.s   .pmc
-    moveq   #2, d1
+    moveq   #1, d1
 .pmc:
     lsl.w   #2, d1
     lea     pmode_lbl, a1
@@ -4604,7 +4604,7 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     rts                                     ; NEW/DEMO/SAVE/LOAD: no dpad value
 .ep_mode:
     lea     proj_mode, a1
-    moveq   #2, d3
+    moveq   #1, d3
     moveq   #1, d4
     bra     adj_field
 .ep_slot:
@@ -4806,13 +4806,12 @@ str_vid_a:  dc.b "AUTO",0
 str_syn_o:  dc.b "OFF",0
 str_syn_i:  dc.b "IN ",0
 str_syn_u:  dc.b "OUT",0
-str_md_s:   dc.b "SONG  ",0
-str_md_c:   dc.b "CHAIN ",0
-str_md_p:   dc.b "PHRASE",0
+str_md_s:   dc.b "SONG",0
+str_md_live: dc.b "LIVE",0
     even
 vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
 sync_lbl:   dc.l str_syn_o, str_syn_i, str_syn_u
-pmode_lbl:  dc.l str_md_s, str_md_c, str_md_p
+pmode_lbl:  dc.l str_md_s, str_md_live
     even
 str_voice:  dc.b "VOICE:",0
 str_algo:   dc.b "ALGO",0
