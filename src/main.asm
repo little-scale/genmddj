@@ -530,6 +530,8 @@ VBlankInt:
     beq     .gproj
     cmpi.b  #SCR_WAVE, d0
     beq     .gwavescr
+    cmpi.b  #SCR_LFO, d0                   ; FM LFO bank editor
+    beq     .glfo
     cmpi.b  #SCR_ECHO, d0                  ; other placeholder screens: header only, no grid body
     bhs     .gd
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
@@ -551,6 +553,9 @@ VBlankInt:
     bra     .gd
 .gwavescr:
     bsr     render_wave
+    bra     .gd
+.glfo:
+    bsr     render_lfo
     bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
@@ -1269,6 +1274,8 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     beq.s   .rmopts
     cmpi.b  #SCR_PROJ, d0
     beq.s   .rmproj
+    cmpi.b  #SCR_LFO, d0
+    beq.s   .rmlfo                           ; FM LFO bank: 6 rows
     cmpi.b  #SCR_ECHO, d0
     bhs.s   .zero                            ; other placeholder screens: cursor locked at row 0
     cmpi.b  #SCR_FM, d0
@@ -1285,6 +1292,9 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     rts
 .rmproj:
     moveq   #7, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD
+    rts
+.rmlfo:
+    moveq   #NLFO-1, d1                     ; 6 LFO rows
     rts
 .fm:
     lea     instrum, a1                   ; max cursor row depends on instrument type
@@ -1322,6 +1332,8 @@ clamp_row:                                ; clamp cur_row into [0, row_max]
 
 col_max:                                  ; -> d1 = highest column index for cur_screen
     move.b  cur_screen, d1
+    cmpi.b  #SCR_LFO, d1
+    beq.s   .clfo                            ; FM LFO bank: 6 columns ON/CH/PM/RT/DP/SY
     cmpi.b  #SCR_ECHO, d1
     bhs.s   .czero                           ; placeholder screens: cursor locked at col 0
     tst.b   d1
@@ -1338,6 +1350,9 @@ col_max:                                  ; -> d1 = highest column index for cur
     rts
 .cmch:
     moveq   #1, d1                        ; CHAIN: PH,TR
+    rts
+.clfo:
+    moveq   #5, d1                        ; 6 LFO columns
     rts
 .czero:
     moveq   #0, d1
@@ -1769,6 +1784,8 @@ edit_value:
     beq     edit_opts
     cmpi.b  #SCR_PROJ, cur_screen
     beq     edit_proj
+    cmpi.b  #SCR_LFO, cur_screen           ; FM LFO bank editor
+    beq     edit_lfo
     cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
     blo.s   .ev_go
     rts
@@ -2594,7 +2611,150 @@ render_psg_stub:
     bsr     print_at
     rts
 
-; WAVE instrument page: a row x col grid. Rows WAVE / ENV / VOL / WARP / FOLD / DRIVE /
+; FM LFO bank editor (SCR_LFO): 6 LFO rows x 6 columns ON/CH/PM/RT/DP/SY. Cursor = (cur_row
+; 0..5, cur_col 0..5). Reads the lfo_cfg records; ON and SY share the flags byte.
+render_lfo:                                ; a0 = VDP_CTRL
+    moveq   #4, d3                          ; column header at row 4
+    moveq   #4, d4
+    lea     str_lfo_hdr, a1
+    bsr     print_at
+    moveq   #0, d6                          ; LFO row r = 0..5
+.lfr:
+    move.w  d6, d5                          ; screen row = 6 + r
+    addi.w  #6, d5
+    moveq   #0, d3                          ; row label: the LFO number (r+1) at col 1
+    move.w  d5, d3
+    lsl.w   #6, d3
+    addi.w  #1, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    move.b  d6, d3
+    addq.b  #1, d3
+    moveq   #0, d4
+    bsr     draw_hex1
+    move.w  d6, d0                          ; a3 = lfo_cfg + r * LF_SIZE
+    mulu.w  #LF_SIZE, d0
+    lea     lfo_cfg, a3
+    adda.w  d0, a3
+    lea     lf_col, a2
+    moveq   #0, d7                          ; column c = 0..5
+.lfc:
+    move.w  d7, d0
+    add.w   d0, d0
+    move.b  (a2,d0.w), d1                  ; field offset within the record
+    moveq   #0, d2
+    move.b  (a3,d1.w), d2                  ; raw byte
+    move.b  (1,a2,d0.w), d1               ; kind: 0 hex, 1 ON bit, 2 SY bits
+    beq.s   .lfk0
+    cmpi.b  #1, d1
+    bne.s   .lfk2
+    andi.w  #1, d2                          ; ON = bit0
+    bra.s   .lfk0
+.lfk2:
+    lsr.w   #1, d2                          ; SY = bits 1-2
+    andi.w  #3, d2
+.lfk0:
+    moveq   #0, d1                          ; highlight the cursor cell
+    cmp.b   cur_row, d6
+    bne.s   .lfnh
+    cmp.b   cur_col, d7
+    bne.s   .lfnh
+    moveq   #$60, d1
+.lfnh:
+    move.w  d7, d4                          ; cell column = 4 + c*4
+    lsl.w   #2, d4
+    addi.w  #4, d4
+    moveq   #0, d3
+    move.w  d5, d3
+    lsl.w   #6, d3
+    add.w   d4, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    move.b  d2, d3                          ; value
+    move.b  d1, d4                          ; highlight
+    bsr     draw_hex1
+    addq.w  #1, d7
+    cmpi.w  #6, d7
+    bne     .lfc
+    addq.w  #1, d6
+    cmpi.w  #6, d6
+    bne     .lfr
+    rts
+lf_col:                                     ; per column: lfo_cfg field offset, kind
+    dc.b LF_FLAGS, 1                        ; ON  (bit 0)
+    dc.b LF_CHAN,  0                        ; CH  target channel
+    dc.b LF_PARM,  0                        ; PM  target FM parameter
+    dc.b LF_RATE,  0                        ; RT
+    dc.b LF_DEPTH, 0                        ; DP
+    dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
+    even
+str_lfo_hdr: dc.b "ON  CH  PM  RT  DP  SY",0
+    even
+
+; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
+edit_lfo:
+    moveq   #0, d0
+    move.b  cur_row, d0
+    mulu.w  #LF_SIZE, d0
+    lea     lfo_cfg, a3
+    adda.w  d0, a3
+    moveq   #0, d0
+    move.b  cur_col, d0
+    bne.s   .el_nc0
+    btst    #2, d2                          ; col 0 ON: Left/Down off, Right/Up on
+    bne.s   .el_off
+    btst    #1, d2
+    bne.s   .el_off
+    bset    #0, (LF_FLAGS,a3)
+    rts
+.el_off:
+    bclr    #0, (LF_FLAGS,a3)
+    rts
+.el_nc0:
+    cmpi.b  #5, d0
+    bne.s   .el_field
+    move.b  (LF_FLAGS,a3), d3               ; col 5 SYNC: cycle bits 1-2 over 0..2
+    move.b  d3, d1
+    lsr.b   #1, d1
+    andi.b  #3, d1
+    btst    #2, d2
+    bne.s   .el_sdec
+    btst    #1, d2
+    bne.s   .el_sdec
+    addq.b  #1, d1
+    cmpi.b  #3, d1
+    blo.s   .el_sset
+    moveq   #0, d1
+    bra.s   .el_sset
+.el_sdec:
+    subq.b  #1, d1
+    bpl.s   .el_sset
+    moveq   #2, d1
+.el_sset:
+    andi.b  #$F9, d3
+    lsl.b   #1, d1
+    or.b    d1, d3
+    move.b  d3, (LF_FLAGS,a3)
+    rts
+.el_field:
+    lea     lf_emax, a1                     ; cols 1-4: CH/PM/RT/DP via adj_field
+    moveq   #0, d3
+    move.b  (a1,d0.w), d3                   ; column max
+    add.w   d0, d0
+    lea     lf_col, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1                   ; field offset
+    lea     0(a3,d1.w), a1
+    moveq   #1, d4
+    bra     adj_field
+lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 15, 15, 0   ; max per column (CH = FM channels 0-5)
+    even
+
+; WAVE instrument page: a row x col grid. Rows WAVE / ENV / VOL / FOLD / DRIVE /
 ; CRUSH / PITCH; the 6 LFO rows have OFFSET/RATE/DEPTH columns (WAVE = wave#, ENV = the
 ; AHD ATK/HLD/DCY). Cursor = (cur_row 0..7, cur_col 0..2). Plus the live shape preview.
 render_wave_inst:                          ; a0 = VDP_CTRL
@@ -5876,6 +6036,7 @@ str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
 str_scr_echo: dc.b "ECHO",0
+str_scr_lfo: dc.b "FM LFO",0
 str_scr_opt:  dc.b "OPTIONS",0
 str_scr_proj: dc.b "PROJECT",0
 str_scr_wave: dc.b "WAVFORM",0
@@ -6047,6 +6208,7 @@ scr_tabs:                                   ; {header, name} per screen, indexed
     dc.l str_hdr_in, str_scr_proj           ; 8  PROJECT
     dc.l str_hdr_in, str_scr_wave           ; 9  WAVEFORM
     dc.l str_hdr_in, str_scr_grv            ; 10 GROOVE
+    dc.l str_hdr_in, str_scr_lfo            ; 11 LFO
 
 tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $00000000
