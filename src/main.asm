@@ -129,6 +129,7 @@ wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fo
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
 phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES bytes) for the I command
+lfo_amp    equ $00FFD310           ; NLFO current-amplitude bytes (0-7) for the live AMP bar
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -325,6 +326,12 @@ Start:
 .wtl:
     move.w  (a1)+, VDP_DATA
     dbra    d0, .wtl
+    move.l  #$5D200000, (a0)            ; AMP bar tiles -> tile $E9 (VRAM $1D20)
+    lea     bar_tiles, a1
+    move.w  #(8*16)-1, d0
+.btl:
+    move.w  (a1)+, VDP_DATA
+    dbra    d0, .btl
     move.l  #$43E00000, (a0)            ; playhead triangle -> tile $1F
     lea     tri_tile, a1
     moveq   #16-1, d0
@@ -2688,33 +2695,48 @@ render_lfo:                                ; a0 = VDP_CTRL
     ori.l   #$40000003, d3
     move.l  d3, (a0)
     tst.w   d7                              ; col 0 ON -> box tile
-    beq.s   .lfon
+    beq     .lfon
     cmpi.w  #2, d7                          ; col 2 PARAM -> 4-char param name
-    beq.s   .lfprm
+    beq     .lfprm
     cmpi.w  #5, d7                          ; col 5 SYNC -> 5-char resync name
-    beq.s   .lfsyn
+    beq     .lfsyn
     cmpi.w  #3, d7                          ; col 3 RATE -> 2 hex digits (full byte)
-    beq.s   .lfrate
+    beq     .lfrate
     cmpi.w  #7, d7                          ; col 7 DIR -> arrow tile
-    beq.s   .lfdir
+    beq     .lfdir
+    cmpi.w  #8, d7                          ; col 8 AMP -> live bar tile
+    beq     .lfamp
     move.b  d2, d3                          ; else a single hex digit
     move.b  d1, d4
     bsr     draw_hex1
-    bra.s   .lfcn
+    bra     .lfcn
 .lfon:
     move.w  d2, d3                          ; 0/1 -> $7B off-box / $7D on-box
     add.w   d3, d3
     addi.w  #$7B, d3
     add.w   d1, d3                          ; + highlight (inverse-tile offset)
     move.w  d3, VDP_DATA
-    bra.s   .lfcn
+    bra     .lfcn
 .lfdir:
     lea     dir_glyph, a1                   ; DIR 0/1/2 -> arrow tile
     moveq   #0, d3
     move.b  (a1,d2.w), d3
     add.w   d1, d3
     move.w  d3, VDP_DATA
-    bra.s   .lfcn
+    bra     .lfcn
+.lfamp:
+    move.w  #$20, d3                        ; AMP: blank unless playing and this LFO is on
+    tst.b   playing
+    beq.s   .lfaw
+    btst    #0, (LF_FLAGS,a3)
+    beq.s   .lfaw
+    lea     lfo_amp, a1                     ; amplitude 0-7 -> bar tile $E9..$F0
+    moveq   #0, d3
+    move.b  (a1,d6.w), d3
+    addi.w  #$E9, d3
+.lfaw:
+    move.w  d3, VDP_DATA
+    bra     .lfcn
 .lfrate:
     move.b  d2, d3                          ; RATE high nibble (VDP auto-advances)
     lsr.b   #4, d3
@@ -2723,7 +2745,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     move.b  d2, d3                          ; RATE low nibble
     move.b  d1, d4
     bsr     draw_hex1
-    bra.s   .lfcn
+    bra     .lfcn
 .lfprm:
     lea     lf_pnames, a1                   ; a1 += value * 4
     lsl.w   #2, d2
@@ -2746,7 +2768,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     dbra    d3, .lf3
 .lfcn:
     addq.w  #1, d7
-    cmpi.w  #8, d7
+    cmpi.w  #9, d7
     bne     .lfc
     addq.w  #1, d6
     cmpi.w  #NLFO, d6
@@ -2760,9 +2782,10 @@ lf_col:                                     ; per column: lfo_cfg field offset, 
     dc.b LF_DEPTH, 0                        ; DP
     dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
     dc.b LF_POFF,  0                        ; PO  phase offset
-    dc.b LF_FLAGS, 3                        ; DIR resync... shape (bits 3-4)
+    dc.b LF_FLAGS, 3                        ; DIR  shape (bits 3-4)
+    dc.b LF_FLAGS, 0                        ; AMP  display-only live bar (value ignored)
     even
-lf_colx: dc.b 3, 6, 9, 15, 20, 24, 30, 32  ; screen column per LFO grid column (shifted +1)
+lf_colx: dc.b 3, 6, 9, 15, 18, 20, 26, 28, 30 ; 9 cols: ON CH PARAM R % SYNC PO DIR AMP
     even
 dir_glyph: dc.b $7F, $7E, $7C              ; DIR 0 BOTH=updown, 1 UP, 2 DOWN -> arrow tiles
     even
@@ -2773,7 +2796,7 @@ lf_pnames:                                  ; 34 FM-param names (4 chars), in fm
     even
 lf_snames: dc.b "NOTE PHRSEFREE "           ; resync modes (5 chars): NOTE / PHRASE / FREE
     even
-str_lfo_hdr: dc.b "ON CH PARAM RATE MOD SYNC  ` ",$7F,0
+str_lfo_hdr: dc.b "ON CH PARAM R  % SYNC  ` ",$7F," A",0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
@@ -4219,8 +4242,8 @@ play_context:                             ; C+B: toggle audition of the current 
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
     move.b  #GROOVE, g_gctr
-    lea     phrase_plays, a0               ; reset per-phrase I-command counts at play-start
-    moveq   #NPHRASES-1, d0
+    lea     phrase_plays, a0               ; reset I-command counts + AMP shadow at play-start
+    moveq   #NPHRASES+NLFO-1, d0           ; phrase_plays (16) + lfo_amp (16) are contiguous
 .rpc:
     clr.b   (a0)+
     dbra    d0, .rpc
@@ -4354,6 +4377,17 @@ fmlfo_tick:
     move.b  (LF_DEPTH,a2), d1
     muls.w  d2, d1                           ; depth * tri
     asr.w   #5, d1                           ; >> 5 -> swing ~ +/- 2*depth
+    move.w  d1, d0                           ; AMP bar: stash |delta|>>2 (cap 7) for this LFO
+    bpl.s   .fmapos
+    neg.w   d0
+.fmapos:
+    lsr.w   #2, d0
+    cmpi.w  #7, d0
+    bls.s   .fmacap
+    moveq   #7, d0
+.fmacap:
+    lea     lfo_amp, a4
+    move.b  d0, (a4,d6.w)
     moveq   #0, d0                           ; param table entry -> a4 = {patch_off, reg, max}
     move.b  (LF_PARM,a2), d0
     cmpi.w  #FMLFO_NPARM, d0
@@ -6549,6 +6583,17 @@ wave_tiles:
     dc.l 0,0,0,0,0,0,$11000000,$01000000           ; $E6 top-right corner
     dc.l $10,$11,0,0,0,0,0,0                        ; $E7 bottom-left corner
     dc.l $01000000,$11000000,0,0,0,0,0,0           ; $E8 bottom-right corner
+
+; AMP live bar: 8 height tiles ($E9..$F0), a 4px-wide column filling from the bottom (1..8px)
+bar_tiles:
+    dc.l 0,0,0,0,0,0,0,$00111100
+    dc.l 0,0,0,0,0,0,$00111100,$00111100
+    dc.l 0,0,0,0,0,$00111100,$00111100,$00111100
+    dc.l 0,0,0,0,$00111100,$00111100,$00111100,$00111100
+    dc.l 0,0,0,$00111100,$00111100,$00111100,$00111100,$00111100
+    dc.l 0,0,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
+    dc.l 0,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
+    dc.l $00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
 
 sample_pool:                              ; kit directory (8x16 members) + 8-bit PCM (makesamples.py)
     incbin "build/samples.bin"
