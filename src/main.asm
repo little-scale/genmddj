@@ -1360,7 +1360,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #1, d1                        ; CHAIN: PH,TR
     rts
 .clfo:
-    moveq   #6, d1                        ; 7 LFO columns (ON CH PM RT DP SY PO)
+    moveq   #7, d1                        ; 8 LFO columns (ON CH PARAM RATE MOD SYNC PO DIR)
     rts
 .czero:
     moveq   #0, d1
@@ -2622,8 +2622,8 @@ render_psg_stub:
 ; FM LFO bank editor (SCR_LFO): 6 LFO rows x 6 columns ON/CH/PM/RT/DP/SY. Cursor = (cur_row
 ; 0..5, cur_col 0..5). Reads the lfo_cfg records; ON and SY share the flags byte.
 render_lfo:                                ; a0 = VDP_CTRL
-    moveq   #4, d3                          ; column header at row 4, col 2
-    moveq   #2, d4
+    moveq   #4, d3                          ; column header at row 4, col 3
+    moveq   #3, d4
     lea     str_lfo_hdr, a1
     bsr     print_at
     moveq   #0, d6                          ; LFO row r = 0..5
@@ -2660,7 +2660,13 @@ render_lfo:                                ; a0 = VDP_CTRL
     andi.w  #1, d2                          ; ON = bit0
     bra.s   .lfk0
 .lfk2:
+    cmpi.b  #2, d1
+    bne.s   .lfk3
     lsr.w   #1, d2                          ; SY = bits 1-2
+    andi.w  #3, d2
+    bra.s   .lfk0
+.lfk3:
+    lsr.w   #3, d2                          ; DIR = bits 3-4
     andi.w  #3, d2
 .lfk0:
     moveq   #0, d1                          ; highlight the cursor cell
@@ -2681,15 +2687,33 @@ render_lfo:                                ; a0 = VDP_CTRL
     swap    d3
     ori.l   #$40000003, d3
     move.l  d3, (a0)
+    tst.w   d7                              ; col 0 ON -> box tile
+    beq.s   .lfon
     cmpi.w  #2, d7                          ; col 2 PARAM -> 4-char param name
     beq.s   .lfprm
     cmpi.w  #5, d7                          ; col 5 SYNC -> 5-char resync name
     beq.s   .lfsyn
     cmpi.w  #3, d7                          ; col 3 RATE -> 2 hex digits (full byte)
     beq.s   .lfrate
+    cmpi.w  #7, d7                          ; col 7 DIR -> arrow tile
+    beq.s   .lfdir
     move.b  d2, d3                          ; else a single hex digit
     move.b  d1, d4
     bsr     draw_hex1
+    bra.s   .lfcn
+.lfon:
+    move.w  d2, d3                          ; 0/1 -> $7B off-box / $7D on-box
+    add.w   d3, d3
+    addi.w  #$7B, d3
+    add.w   d1, d3                          ; + highlight (inverse-tile offset)
+    move.w  d3, VDP_DATA
+    bra.s   .lfcn
+.lfdir:
+    lea     dir_glyph, a1                   ; DIR 0/1/2 -> arrow tile
+    moveq   #0, d3
+    move.b  (a1,d2.w), d3
+    add.w   d1, d3
+    move.w  d3, VDP_DATA
     bra.s   .lfcn
 .lfrate:
     move.b  d2, d3                          ; RATE high nibble (VDP auto-advances)
@@ -2722,7 +2746,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     dbra    d3, .lf3
 .lfcn:
     addq.w  #1, d7
-    cmpi.w  #7, d7
+    cmpi.w  #8, d7
     bne     .lfc
     addq.w  #1, d6
     cmpi.w  #NLFO, d6
@@ -2736,8 +2760,11 @@ lf_col:                                     ; per column: lfo_cfg field offset, 
     dc.b LF_DEPTH, 0                        ; DP
     dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
     dc.b LF_POFF,  0                        ; PO  phase offset
+    dc.b LF_FLAGS, 3                        ; DIR resync... shape (bits 3-4)
     even
-lf_colx: dc.b 2, 5, 8, 14, 19, 23, 29      ; screen column per LFO grid column
+lf_colx: dc.b 3, 6, 9, 15, 20, 24, 30, 32  ; screen column per LFO grid column (shifted +1)
+    even
+dir_glyph: dc.b $7F, $7E, $7C              ; DIR 0 BOTH=updown, 1 UP, 2 DOWN -> arrow tiles
     even
 lf_pnames:                                  ; 34 FM-param names (4 chars), in fmlfo_ptab order
     dc.b "TL1 TL3 TL2 TL4 DT1 DT3 DT2 DT4 MUL1MUL3MUL2MUL4FB  ALGO"
@@ -2746,7 +2773,7 @@ lf_pnames:                                  ; 34 FM-param names (4 chars), in fm
     even
 lf_snames: dc.b "NOTE PHRSEFREE "           ; resync modes (5 chars): NOTE / PHRASE / FREE
     even
-str_lfo_hdr: dc.b "ON CH PARAM RATE MOD SYNC  `",0
+str_lfo_hdr: dc.b "ON CH PARAM RATE MOD SYNC  ` DIR",0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
@@ -2770,10 +2797,17 @@ edit_lfo:
     rts
 .el_nc0:
     cmpi.b  #5, d0
+    beq.s   .el_cyc1                        ; col 5 SYNC -> 2-bit field at bit 1
+    cmpi.b  #7, d0
     bne.s   .el_field
-    move.b  (LF_FLAGS,a3), d3               ; col 5 SYNC: cycle bits 1-2 over 0..2
+    moveq   #3, d0                          ; col 7 DIR -> 2-bit field at bit 3
+    bra.s   .el_cyc
+.el_cyc1:
+    moveq   #1, d0
+.el_cyc:
+    move.b  (LF_FLAGS,a3), d3               ; cycle the 2-bit field (shift d0) over 0..2
     move.b  d3, d1
-    lsr.b   #1, d1
+    lsr.b   d0, d1
     andi.b  #3, d1
     btst    #2, d2
     bne.s   .el_sdec
@@ -2789,8 +2823,11 @@ edit_lfo:
     bpl.s   .el_sset
     moveq   #2, d1
 .el_sset:
-    andi.b  #$F9, d3
-    lsl.b   #1, d1
+    moveq   #3, d4                          ; clear the field (3 << shift), then insert
+    lsl.b   d0, d4
+    not.b   d4
+    and.b   d4, d3
+    lsl.b   d0, d1
     or.b    d1, d3
     move.b  d3, (LF_FLAGS,a3)
     rts
@@ -2809,7 +2846,7 @@ edit_lfo:
     move.b  (a1,d0.w), d1                   ; field offset
     lea     0(a3,d1.w), a1
     bra     adj_field
-lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 255, 15, 0, 15  ; max per col (CH=FM 0-5; RATE full byte; PO 0-15)
+lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 255, 15, 0, 15, 0  ; max per col (CH=FM 0-5; RATE byte; PO 0-15; DIR special)
     even
 
 ; WAVE instrument page: a row x col grid. Rows WAVE / ENV / VOL / FOLD / DRIVE /
@@ -4293,8 +4330,20 @@ fmlfo_tick:
     move.w  (a4,d3.w), d2
     add.w   d1, d2
     move.w  d2, (a4,d3.w)
-    lsr.w   #8, d2                            ; integer part -> triangle input 0-255
-    cmpi.w  #128, d2                          ; triangle fold -> -64..63
+    lsr.w   #8, d2                            ; integer part 0-255 -> shape per DIR
+    move.b  (LF_FLAGS,a2), d3                 ; DIR (flags bits 3-4): 0 BOTH, 1 UP, 2 DOWN
+    lsr.b   #3, d3
+    andi.w  #3, d3
+    beq.s   .dboth
+    andi.w  #$7F, d2                          ; UP/DOWN: half phase = sawtooth at 2x rate
+    cmpi.b  #2, d3
+    bne.s   .flt1                             ; UP = rising ramp
+    move.w  #127, d3                          ; DOWN = falling ramp
+    sub.w   d2, d3
+    move.w  d3, d2
+    bra.s   .flt1
+.dboth:
+    cmpi.w  #128, d2                          ; full triangle fold -> -64..63
     blo.s   .flt1
     move.w  #255, d3
     sub.w   d2, d3
