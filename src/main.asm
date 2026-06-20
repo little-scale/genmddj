@@ -120,6 +120,7 @@ wave_on    equ $00FFE3F4           ; engine: 1 = a wave note is sounding (per-fr
 wave_ch    equ $00FFE3F6           ; engine: ch_state ptr of the sounding wave channel (long)
 wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
+wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain output -> Z80)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
@@ -4680,6 +4681,63 @@ dac_play:
     movem.l (sp)+, d2-d6/a0
     rts
 
+; ---- bake the base wave (a5) through the shaper chain into wave_bake (32 B).
+; a1 = WAVE instrument. v1 chain (per DESIGN.md $10.6): FOLD -> CRUSH -> x VOL.
+; (DRIVE tanh table, WARP index skew, and the dynamic AHD env are layered in next.)
+; Preserves a1/a4/a5/a6; clobbers a0/a2/d0-d6 (wave_play reloads d0-d7 from wave_bake after).
+bake_wave:
+    moveq   #0, d2
+    move.b  (ip_vol,a1), d2               ; VOL 0-15
+    moveq   #0, d6
+    move.b  (iw_fold,a1), d6
+    lsl.w   #3, d6                          ; FOLD * 8
+    move.w  #128, d3
+    sub.w   d6, d3                          ; d3 = fold threshold T = 128 - FOLD*8
+    moveq   #0, d5
+    move.b  (iw_crush,a1), d5
+    lsr.w   #1, d5                          ; crush: drop = CRUSH>>1 low bits (0-7)
+    movea.l a5, a0                          ; base read ptr (keep a5 intact)
+    lea     wave_bake, a2
+    moveq   #32-1, d4
+.bkl:
+    moveq   #0, d0
+    move.b  (a0)+, d0
+    subi.w  #128, d0                       ; d = deviation -128..127
+    cmp.w   d3, d0                          ; FOLD: reflect past +/- T
+    ble.s   .bf1
+    move.w  d3, d1                          ; d > T -> 2T - d
+    add.w   d1, d1
+    sub.w   d0, d1
+    move.w  d1, d0
+    bra.s   .bfd
+.bf1:
+    move.w  d3, d1
+    neg.w   d1                              ; -T
+    cmp.w   d1, d0
+    bge.s   .bfd
+    add.w   d1, d1                          ; d < -T -> -2T - d
+    sub.w   d0, d1
+    move.w  d1, d0
+.bfd:
+    tst.w   d5                              ; CRUSH: drop low bits
+    beq.s   .bcd
+    asr.w   d5, d0
+    lsl.w   d5, d0
+.bcd:
+    muls.w  d2, d0                          ; VOL: d * VOL / 16
+    asr.w   #4, d0
+    addi.w  #128, d0                       ; back to 0-255, clamp
+    bpl.s   .bp1
+    moveq   #0, d0
+.bp1:
+    cmpi.w  #255, d0
+    bls.s   .bp2
+    move.w  #255, d0
+.bp2:
+    move.b  d0, (a2)+
+    dbra    d4, .bkl
+    rts
+
 ; WAVE note trigger: push the base wave + pitch increment into Z80 RAM, arm wave mode.
 ; a1 = WAVE instrument; reads c_note(a6). CRITICAL: the 68k cannot read its own work RAM
 ; while holding the Z80 bus, so the wave is read into d0-d7 BEFORE the BUSREQ and only
@@ -4699,7 +4757,8 @@ wave_play:
     lsl.w   #5, d0
     lea     wave_ram, a5
     adda.w  d0, a5
-    movem.l (a5), d0-d7                    ; read the 32 wave bytes (BEFORE the BUSREQ)
+    bsr     bake_wave                      ; run the base wave through the shaper chain -> wave_bake
+    movem.l wave_bake, d0-d7               ; read the 32 baked bytes (BEFORE the BUSREQ)
     move.w  #$0100, Z80_BUSREQ
 .wpw:
     btst    #0, Z80_BUSREQ
