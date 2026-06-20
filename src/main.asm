@@ -6139,15 +6139,15 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     rts
 
 ; ---- 8 UI palettes: c0 background, c1 text/cursor-block, c2 cursor glyph (= bg). MD $0BGR. ----
-pal_table:
-    dc.w $0E40, $00EE, $0E40        ; 0 sky blue / yellow (default)
-    dc.w $0000, $00E0, $0000        ; 1 black / green
-    dc.w $0000, $0EE0, $0000        ; 2 black / cyan
-    dc.w $0000, $006E, $0000        ; 3 black / orange
-    dc.w $0600, $0EEE, $0600        ; 4 deep blue / white
-    dc.w $0206, $0E8E, $0206        ; 5 plum / pink
-    dc.w $0040, $00EC, $0040        ; 6 forest / lime
-    dc.w $0AAA, $0000, $0AAA        ; 7 silver / black
+pal_table:                          ; SMSGGDJ's 8 schemes (SMS 2:2:2 -> MD: 1->$4 2->$A 3->$E)
+    dc.w $0E40, $00EE, $0E40        ; 0 KIDD  yellow on sky blue (default; SMSGGDJ $34/$0F)
+    dc.w $0000, $0EEE, $0000        ; 1 WHT   white on black
+    dc.w $0040, $00EA, $0040        ; 2 GRN   green screen
+    dc.w $0000, $00AE, $0000        ; 3 AMBR  amber terminal
+    dc.w $0400, $0EE0, $0400        ; 4 CYAN  cyan on navy
+    dc.w $0404, $0E0E, $0404        ; 5 PINK  magenta on purple
+    dc.w $0EA4, $0A0E, $0EA4        ; 6 NEON  neon pink on light blue
+    dc.w $0440, $0AE4, $0440        ; 7 MINT  mint on dark teal
 
 apply_palette:                            ; load pal_table[opt_pal] into CRAM colours 0-2
     lea     VDP_CTRL, a0
