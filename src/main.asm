@@ -112,6 +112,10 @@ proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
 proj_slot  equ $00FFE3EA           ; PROJECT: save slot 1..8
+cur_wave   equ $00FFE3EC           ; WAVE screen: which wave (0-15)
+cur_wstep  equ $00FFE3ED           ; WAVE screen: step cursor (0-31)
+wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
+wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -359,6 +363,21 @@ Start:
     move.b  #0, proj_tsp                  ;   no master transpose
     move.b  #0, proj_mode                 ;   SONG mode
     move.b  #1, proj_slot                 ;   save slot 1
+    move.b  #0, cur_wave                  ; WAVE screen: wave 0, step 0
+    move.b  #0, cur_wstep
+    lea     wave_ram, a2                  ; init waves: wave 0 = a sawtooth, 1-15 = flat centre
+    moveq   #0, d0
+.winit0:
+    move.b  d0, d1
+    lsl.b   #3, d1                        ; V = step*8 (0,8,..,248)
+    move.b  d1, (a2)+
+    addq.b  #1, d0
+    cmpi.b  #32, d0
+    bne.s   .winit0
+    move.w  #(15*32)-1, d0
+.winitf:
+    move.b  #$80, (a2)+                   ; flat at centre ($80)
+    dbra    d0, .winitf
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
@@ -443,10 +462,12 @@ VBlankInt:
     beq     .gsg
     cmpi.b  #SCR_TABLE, d0
     beq.s   .gtbl
-    cmpi.b  #SCR_OPTS, d0                  ; OPTIONS / PROJECT placeholders now have a field body
+    cmpi.b  #SCR_OPTS, d0                  ; OPTIONS / PROJECT / WAVEFORM placeholders have bodies
     beq     .gopts
     cmpi.b  #SCR_PROJ, d0
     beq     .gproj
+    cmpi.b  #SCR_WAVE, d0
+    beq     .gwavescr
     cmpi.b  #SCR_ECHO, d0                  ; other placeholder screens: header only, no grid body
     bhs     .gd
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
@@ -466,6 +487,9 @@ VBlankInt:
 .gproj:
     bsr     render_proj
     bra     .gd
+.gwavescr:
+    bsr     render_wave
+    bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
     cmpi.b  #3, d1
@@ -477,7 +501,7 @@ VBlankInt:
     bsr     render_kit                    ; KIT
     bra.s   .gd
 .gwave:
-    bsr     render_psg_stub               ; WAVE (stub)
+    bsr     render_psg_stub               ; WAVE instrument on INSTR (fields TBD)
     bra.s   .gd
 .gtone:
     bsr     render_tone
@@ -2408,6 +2432,61 @@ render_psg_stub:
     moveq   #1, d4
     lea     str_wip, a1
     bsr     print_at
+    rts
+
+; WAVE screen: 32 centred bars (one column per step, cols 2-33, canvas rows 6-21).
+; Centre line between R=7 (row13) and R=8 (row14); value $80 = centre. Each row is
+; built as a 32-char string in wave_rowbuf and drawn with print_at (the proven path).
+render_wave:
+    lea     wave_ram, a3                  ; a3 = current wave
+    moveq   #0, d0
+    move.b  cur_wave, d0
+    lsl.w   #5, d0                         ; cur_wave * 32
+    adda.w  d0, a3
+    moveq   #0, d7                         ; canvas row R = 0..15 (screen row 6+R)
+.wr:
+    lea     wave_rowbuf, a2               ; build this row's string
+    moveq   #0, d5                         ; step S = 0..31
+.ws:
+    moveq   #0, d1
+    move.b  (a3,d5.w), d1                  ; value 0..255
+    subi.w  #128, d1                       ; deviation -128..127
+    asr.w   #4, d1                         ; n = rows, -8..7 (signed)
+    moveq   #$20, d2                       ; default cell = blank (space)
+    cmpi.w  #8, d7
+    bhs.s   .wdn
+    tst.w   d1                             ; up region (R 0..7): fill iff n>0 and R >= 8-n
+    ble.s   .wput
+    moveq   #8, d3
+    sub.w   d1, d3
+    cmp.w   d7, d3
+    bgt.s   .wput
+    moveq   #$80, d2                       ; solid block (inverse space)
+    bra.s   .wput
+.wdn:
+    tst.w   d1                             ; down region (R 8..15): fill iff n<0 and (R-8) < -n
+    bge.s   .wput
+    neg.w   d1
+    move.w  d7, d3
+    subi.w  #8, d3
+    cmp.w   d1, d3
+    bge.s   .wput
+    moveq   #$80, d2
+.wput:
+    move.b  d2, (a2)+                      ; append cell to the row string
+    addq.w  #1, d5
+    cmpi.w  #32, d5
+    bne.s   .ws
+    clr.b   (a2)                            ; NUL-terminate
+    move.w  d7, d3                          ; print row at (screen row 6+R, col 2)
+    addi.w  #6, d3
+    moveq   #2, d4
+    lea     wave_rowbuf, a1
+    bsr     print_at                        ; preserves d7/a3; clobbers d0,d1,a1
+    addq.w  #1, d7
+    cmpi.w  #16, d7
+    bne.s   .wr
+    move.b  #1, vdirty                    ; re-render next frame (entry frame overruns)
     rts
 
 ; KIT instrument page: the kit selector + a fill map of its 16 pads.
