@@ -268,6 +268,12 @@ Start:
 .fc2:
     move.w  (a1)+, VDP_DATA
     dbra    d0, .fc2
+    move.l  #$5C000000, (a0)            ; WAVE tiles (centre line + box border) -> tile $E0
+    lea     wave_tiles, a1
+    move.w  #(9*16)-1, d0
+.wtl:
+    move.w  (a1)+, VDP_DATA
+    dbra    d0, .wtl
     move.l  #$43E00000, (a0)            ; playhead triangle -> tile $1F
     lea     tri_tile, a1
     moveq   #16-1, d0
@@ -2468,9 +2474,22 @@ render_wave:
     move.b  cur_wave, d0
     lsl.w   #5, d0                         ; cur_wave * 32
     adda.w  d0, a3
-    moveq   #0, d7                         ; canvas row R = 0..15 (screen row 6+R)
+    moveq   #0, d7                         ; canvas row R = 0..15 (screen row 8+R)
+    lea     wave_rowbuf, a2               ; top border (row 7): TL + 32x top-edge + TR
+    move.b  #$E5, (a2)+
+    moveq   #32-1, d5
+.wtop:
+    move.b  #$E1, (a2)+
+    dbra    d5, .wtop
+    move.b  #$E6, (a2)+
+    clr.b   (a2)
+    moveq   #7, d3
+    moveq   #0, d4
+    lea     wave_rowbuf, a1
+    bsr     print_at
 .wr:
-    lea     wave_rowbuf, a2               ; build this row's string
+    lea     wave_rowbuf, a2               ; build this row's string ($E3 = left border edge)
+    move.b  #$E3, (a2)+
     moveq   #0, d5                         ; step S = 0..31
 .ws:
     moveq   #0, d1
@@ -2498,26 +2517,39 @@ render_wave:
     bge.s   .wput
     moveq   #$80, d2
 .wput:
-    cmpi.w  #7, d7                          ; centre line: dash through blank cells at R=7
+    cmpi.w  #7, d7                          ; centre line: line tile through blank cells at R=7
     bne.s   .wputw
     cmpi.b  #$20, d2
     bne.s   .wputw
-    moveq   #'_', d2
+    move.b  #$E0, d2                        ; centre-line tile (1px lower than the old '_')
 .wputw:
     move.b  d2, (a2)+                      ; append cell to the row string
     addq.w  #1, d5
     cmpi.w  #32, d5
     bne.s   .ws
+    move.b  #$E4, (a2)+                     ; right border edge (col 33)
     clr.b   (a2)                            ; NUL-terminate
-    move.w  d7, d3                          ; print row at (screen row 8+R, col 1)
+    move.w  d7, d3                          ; print row at (screen row 8+R, col 0)
     addi.w  #8, d3
-    moveq   #1, d4
+    moveq   #0, d4
     lea     wave_rowbuf, a1
     bsr     print_at                        ; preserves d7/a3; clobbers d0,d1,a1
     addq.w  #1, d7
     cmpi.w  #16, d7
     bne.s   .wr
-    ; cursor marker row (row 5): blank except the current step's column
+    lea     wave_rowbuf, a2               ; bottom border (row 24): BL + 32x bottom-edge + BR
+    move.b  #$E7, (a2)+
+    moveq   #32-1, d5
+.wbot:
+    move.b  #$E2, (a2)+
+    dbra    d5, .wbot
+    move.b  #$E8, (a2)+
+    clr.b   (a2)
+    moveq   #24, d3
+    moveq   #0, d4
+    lea     wave_rowbuf, a1
+    bsr     print_at
+    ; cursor marker row (row 6): blank except the current step's column
     lea     wave_rowbuf, a2
     moveq   #0, d6
     move.b  cur_wstep, d6
@@ -5203,6 +5235,19 @@ font_data:
     incbin "build/font.bin"
 font_end:
     even
+
+; WAVE-screen tiles (MD 4bpp, colour 1) -> loaded at tile $E0. Lines sit near the inner
+; edges with a 1px gap to the canvas content (1px interior padding on the box border).
+wave_tiles:
+    dc.l 0,0,0,0,0,0,0,$11111111                 ; $E0 centre line  (pixel row 7, the very bottom)
+    dc.l 0,0,0,0,0,0,$11111111,0                  ; $E1 top edge     (pixel row 6)
+    dc.l 0,$11111111,0,0,0,0,0,0                   ; $E2 bottom edge  (pixel row 1)
+    dc.l $10,$10,$10,$10,$10,$10,$10,$10           ; $E3 left edge    (pixel col 6)
+    dc.l $01000000,$01000000,$01000000,$01000000,$01000000,$01000000,$01000000,$01000000 ; $E4 right edge (col 1)
+    dc.l 0,0,0,0,0,0,$11,$10                       ; $E5 top-left corner
+    dc.l 0,0,0,0,0,0,$11000000,$01000000           ; $E6 top-right corner
+    dc.l $10,$11,0,0,0,0,0,0                        ; $E7 bottom-left corner
+    dc.l $01000000,$11000000,0,0,0,0,0,0           ; $E8 bottom-right corner
 
 sample_pool:                              ; kit directory (8x16 members) + 8-bit PCM (makesamples.py)
     incbin "build/samples.bin"
