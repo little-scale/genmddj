@@ -116,6 +116,7 @@ cur_wave   equ $00FFE3EC           ; WAVE screen: which wave (0-15)
 cur_wstep  equ $00FFE3ED           ; WAVE screen: step cursor (0-31)
 wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
+PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -812,15 +813,37 @@ input_tick:
     btst    #5, d3                        ; B held -> edit modifier
     bne.s   .bheld
     btst    #6, d3                        ; else C held -> project modifier
-    bne.s   .cheld
+    bne     .cheld
     btst    #4, d3                        ; else A held -> channel switch
     bne     .aheld
+    cmpi.b  #SCR_WAVE, cur_screen          ; WAVE: plain Left/Right moves the step cursor
+    beq.s   .wavecur
     tst.b   d5                            ; neither: d-pad moves cursor
     beq     .done
     move.b  d5, d2
     bsr     move_cursor
     rts
+.wavecur:
+    btst    #2, d5                          ; Left -> step--
+    beq.s   .wvcr
+    tst.b   cur_wstep
+    beq.s   .wvcr
+    subq.b  #1, cur_wstep
+    move.b  #1, vdirty
+.wvcr:
+    btst    #3, d5                          ; Right -> step++
+    beq.s   .wvcdone
+    cmpi.b  #31, cur_wstep
+    bhs.s   .wvcdone
+    addq.b  #1, cur_wstep
+    move.b  #1, vdirty
+.wvcdone:
+    rts
 .bheld:
+    cmpi.b  #SCR_WAVE, cur_screen          ; WAVE: own pen/draw/preset gestures
+    bne.s   .nwb
+    jmp     wave_bheld
+.nwb:
     btst    #6, d4                        ; B + C tap -> cut (clear cell)
     beq.s   .nbc
     bsr     do_cut
@@ -2464,6 +2487,68 @@ render_psg_stub:
     lea     str_wip, a1
     bsr     print_at
     rts
+
+; WAVE B-held gestures (entered by branch from the input dispatch, so it must rts):
+; B+Up/Down pens the current step's level; B+Left/Right draws the current value to the
+; neighbour and moves there (sweep to paint); B+C cycles a preset.
+wave_bheld:
+    btst    #6, d4                          ; B + C tap -> cycle preset
+    beq.s   .wbdp
+    bsr     wave_preset
+    rts
+.wbdp:
+    lea     wave_ram, a1                    ; a1+d0 = current step's byte
+    moveq   #0, d0
+    move.b  cur_wave, d0
+    lsl.w   #5, d0
+    moveq   #0, d1
+    move.b  cur_wstep, d1
+    add.w   d1, d0
+    btst    #0, d5                          ; Up -> level += PEN_STEP (clamp $FF)
+    beq.s   .wbnu
+    moveq   #0, d2
+    move.b  (a1,d0.w), d2
+    addi.w  #PEN_STEP, d2
+    cmpi.w  #255, d2
+    bls.s   .wbu1
+    move.w  #255, d2
+.wbu1:
+    move.b  d2, (a1,d0.w)
+    move.b  #1, vdirty
+.wbnu:
+    btst    #1, d5                          ; Down -> level -= PEN_STEP (clamp 0)
+    beq.s   .wbnd
+    moveq   #0, d2
+    move.b  (a1,d0.w), d2
+    subi.w  #PEN_STEP, d2
+    bpl.s   .wbd1
+    moveq   #0, d2
+.wbd1:
+    move.b  d2, (a1,d0.w)
+    move.b  #1, vdirty
+.wbnd:
+    btst    #3, d5                          ; Right -> draw value to step+1, move there
+    beq.s   .wbnr
+    cmpi.b  #31, cur_wstep
+    bhs.s   .wbnr
+    move.b  (a1,d0.w), d2
+    move.b  d2, 1(a1,d0.w)
+    addq.b  #1, cur_wstep
+    move.b  #1, vdirty
+.wbnr:
+    btst    #2, d5                          ; Left -> draw value to step-1, move there
+    beq.s   .wbdone
+    tst.b   cur_wstep
+    beq.s   .wbdone
+    move.b  (a1,d0.w), d2
+    move.b  d2, -1(a1,d0.w)
+    subq.b  #1, cur_wstep
+    move.b  #1, vdirty
+.wbdone:
+    rts
+
+wave_preset:
+    rts                                      ; TODO: sine / tri / saw / square / pulse / organ / random
 
 ; WAVE screen: 32 centred bars (one column per step, cols 2-33, canvas rows 6-21).
 ; Centre line between R=7 (row13) and R=8 (row14); value $80 = centre. Each row is
