@@ -179,8 +179,7 @@ function resample(s, srcRate, dst){
 }
 function to8bit(pad){
   const f = resample(processed(pad), pad.srcRate, DAC_RATE);
-  const nf = Math.min(24, f.length);             // declick: fade last 24 samples to centre
-  for (let i=0;i<nf;i++) f[f.length-nf+i] *= (nf-1-i)/Math.max(1,nf-1);  // (matches makesamples.py)
+  // no end-of-sample declick (DESIGN.md Q5); use the fade-out slider above if you want one baked in.
   let u = new Uint8Array(f.length);
   for (let i=0;i<f.length;i++) u[i] = Math.max(0,Math.min(255, Math.round(f[i]*127)+128));
   if (u.length & 1){ const e=new Uint8Array(u.length+1); e.set(u); e[u.length]=128; u=e; }
