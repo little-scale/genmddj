@@ -18,7 +18,7 @@ static unsigned g_w = 0, g_h = 0;
 static uint8_t  g_fb[1024 * 512 * 4];
 
 /* audio capture (interleaved stereo int16) */
-#define AUD_MAX (48000 * 2 * 8)
+#define AUD_MAX (48000 * 2 * 30)
 static int16_t g_aud[AUD_MAX];
 static size_t  g_aud_n = 0;
 static void aud_push(int16_t l, int16_t r) {
