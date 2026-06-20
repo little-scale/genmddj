@@ -1277,7 +1277,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     mulu.w  #INSTR_SIZE, d0
     move.b  (i_type,a1,d0.w), d0
     beq.s   .crfm                          ; FM
-    moveq   #12, d1                         ; WAVE: 1 + 11 fields
+    moveq   #9, d1                          ; WAVE: INST + TYPE + 8 grid rows (rows 2..9)
     cmpi.b  #1, d0
     bne.s   .crkit
     moveq   #3, d1                          ; KIT: + the kit-selector and rate rows
@@ -1313,7 +1313,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     cmpi.b  #SCR_SONG, d1
     beq.s   .sg
     cmpi.b  #SCR_INSTR, d1
-    beq.s   .fm
+    beq.s   .instr
     cmpi.b  #SCR_FM, d1
     beq.s   .fm
     cmpi.b  #SCR_TABLE, d1
@@ -1324,6 +1324,26 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #1, d1                        ; CHAIN: PH,TR
     rts
 .czero:
+    moveq   #0, d1
+    rts
+.instr:                                   ; INSTR page: WAVE uses its grid's per-row col count
+    lea     instrum, a1
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    move.b  (i_type,a1,d0.w), d0
+    cmpi.b  #2, d0                        ; WAVE?
+    bne.s   .fm                            ; else PSG/KIT/TONE/NOISE = single column
+    moveq   #0, d0
+    move.b  cur_row, d0
+    subq.w  #2, d0                         ; grid rows start at cur_row 2
+    bmi.s   .izero                         ; INST/TYPE rows: single column
+    lea     wgrid_cc, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    subq.b  #1, d1                         ; colcount - 1
+    rts
+.izero:
     moveq   #0, d1
     rts
 .fm:
@@ -1636,20 +1656,26 @@ edit_psg:
     move.b  (a2,d0.w), d4
     bra     adj_field
 .ep_wavef:
-    moveq   #0, d0
+    moveq   #0, d0                          ; grid cell = wgrid_off[(cur_row-2)*3 + cur_col]
     move.b  cur_row, d0
-    subq.b  #2, d0                          ; field index
-    lea     wave_off, a1
+    subq.w  #2, d0                          ; rows 0/1 are INST/TYPE; grid starts at row 2
+    move.w  d0, d1
+    add.w   d0, d0
+    add.w   d1, d0                          ; row * 3
+    moveq   #0, d1
+    move.b  cur_col, d1
+    add.w   d1, d0                          ; + col
+    lea     wgrid_off, a1
     moveq   #0, d1
     move.b  (a1,d0.w), d1
-    lea     0(a3,d1.w), a1                  ; field address
-    lea     wave_max, a2
-    moveq   #0, d3
-    move.b  (a2,d0.w), d3                   ; field max
-    lea     wave_step, a2
-    moveq   #0, d4
-    move.b  (a2,d0.w), d4
-    bra     adj_field                      ; L/R +-1, U/D +-step, wrapping
+    cmpi.b  #$FF, d1
+    beq.s   .ep_wnop                        ; empty cell (e.g. WAVE row cols 1-2) -> no edit
+    lea     0(a3,d1.w), a1                  ; field address (a3 = instrument)
+    moveq   #15, d3                          ; every grid cell is 0-15
+    moveq   #1, d4                           ; step 1 (L/R = U/D = +-1)
+    bra     adj_field
+.ep_wnop:
+    rts
 
 edit_table:                               ; left/right = +-1, up/down = +-$10 on the cursor cell
     lea     tbl_ram, a1
@@ -2540,64 +2566,70 @@ render_psg_stub:
     bsr     print_at
     rts
 
-; WAVE instrument page: WAVE# + AHD volume env (VOL/ATK/HLD/DCY) + the WARP/DRIVE/FOLD/
-; CRUSH shaper chain + TBL/TBS. Table-driven like render_psg; gaps after idx 0, 4, 8.
+; WAVE instrument page: a row x col grid. Rows WAVE / ENV / VOL / WARP / FOLD / DRIVE /
+; CRUSH / PITCH; the 6 LFO rows have OFFSET/RATE/DEPTH columns (WAVE = wave#, ENV = the
+; AHD ATK/HLD/DCY). Cursor = (cur_row 0..7, cur_col 0..2). Plus the live shape preview.
 render_wave_inst:                          ; a0 = VDP_CTRL
     bsr     render_inst_hdr               ; a3 = instrum[cur_instr]
-    moveq   #0, d6                          ; field index
-.wir:
-    move.w  d6, d5                          ; display row = PSG_TOP + idx + group gaps
-    addi.w  #PSG_TOP, d5
-    cmpi.w  #1, d6
-    blo.s   .wnog
-    addq.w  #1, d5
-    cmpi.w  #5, d6
-    blo.s   .wnog
-    addq.w  #1, d5
-    cmpi.w  #9, d6
-    blo.s   .wnog
-    addq.w  #1, d5
-.wnog:
-    move.w  d5, d3                          ; label at (row, col1)
+    moveq   #7, d3                          ; "OFF RAT DEP" header above the LFO rows
+    moveq   #7, d4
+    lea     str_grid_hdr, a1
+    bsr     print_at
+    moveq   #0, d6                          ; grid row r = 0..7
+.wgr:
+    lea     wgrid_srow, a1                 ; screen row for this grid row
+    moveq   #0, d5
+    move.b  (a1,d6.w), d5
+    move.w  d5, d3                          ; row label at (srow, col1)
     moveq   #1, d4
     move.w  d6, d0
     lsl.w   #2, d0
-    lea     wave_lbl, a1
+    lea     wgrid_lbl, a1
     move.l  (a1,d0.w), a1
     bsr     print_at
-    lea     wave_off, a1                   ; value -> d1
-    moveq   #0, d0
-    move.b  (a1,d6.w), d0
-    move.b  (a3,d0.w), d1
-    moveq   #0, d2                          ; highlight when cur_row-2 == idx
+    moveq   #0, d7                          ; col c = 0..2
+.wgc:
+    move.w  d6, d0                          ; field = wgrid_off[r*3 + c]
+    add.w   d0, d0
+    add.w   d6, d0
+    add.w   d7, d0
+    lea     wgrid_off, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    cmpi.b  #$FF, d1
+    beq.s   .wgcn                           ; empty cell
+    move.b  (a3,d1.w), d1                  ; value at instrument + field offset
+    moveq   #0, d2                          ; highlight the cursor cell (cur_row-2 = grid row)
     move.b  cur_row, d0
     subq.b  #2, d0
     cmp.b   d6, d0
-    bne.s   .winh
+    bne.s   .wgnh
+    move.b  cur_col, d0
+    cmp.b   d7, d0
+    bne.s   .wgnh
     moveq   #$60, d2
-.winh:
-    lea     wave_fmt, a1                   ; format: 0 hex1, 1 hex2
-    move.b  (a1,d6.w), d0
-    moveq   #0, d3                          ; value cell at (row, col8) -- clear hi word first
+.wgnh:
+    move.w  d7, d4                          ; cell column = 7 + c*4
+    lsl.w   #2, d4
+    addi.w  #7, d4
+    moveq   #0, d3                          ; VDP addr at (srow, cellcol), clear hi word first
     move.w  d5, d3
     lsl.w   #6, d3
-    addi.w  #8, d3
+    add.w   d4, d3
     add.w   d3, d3
     swap    d3
     ori.l   #$40000003, d3
     move.l  d3, (a0)
     move.b  d1, d3                          ; value
     move.b  d2, d4                          ; highlight offset
-    tst.b   d0
-    beq.s   .wih1
-    bsr     draw_hex2
-    bra.s   .winext
-.wih1:
     bsr     draw_hex1
-.winext:
+.wgcn:
+    addq.w  #1, d7
+    cmpi.w  #3, d7
+    bne.s   .wgc
     addq.w  #1, d6
-    cmpi.w  #11, d6
-    bne     .wir
+    cmpi.w  #8, d6
+    bne     .wgr
     ; --- waveform-operations preview (shape only, full scale) under the fields ---
     movea.l a3, a1                          ; a1 = current instrument (a3 held through the loop)
     moveq   #0, d0
@@ -5806,6 +5838,24 @@ wave_off:   dc.b iw_wave, ip_vol, ip_atk, ip_hld, ip_dcy, iw_warp, iw_drive, iw_
 wave_max:   dc.b 15, 15, 15, 15, 15, 15, 15, 15, 15, 31, 15
 wave_step:  dc.b 1, 4, 4, 4, 4, 1, 1, 1, 1, 16, 4
 wave_fmt:   dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0    ; all hex1 except TBL (hex2)
+    even
+; WAVE instrument grid: 8 rows, up to 3 columns each ($FF = empty cell). All cells are 0-15.
+wgrid_srow: dc.b 5, 6, 8, 9, 10, 11, 12, 13         ; screen row per grid row (gap at 7 = header)
+wgrid_cc:   dc.b 1, 3, 3, 3, 3, 3, 3, 3             ; columns per row (for cursor clamping)
+    even
+wgrid_lbl:  dc.l str_w_wave, str_env, str_vol, str_warp, str_fold, str_drive, str_crush, str_w_pitch
+wgrid_off:  dc.b iw_wave, $FF, $FF                  ; WAVE: base wave #
+    dc.b ip_atk,  ip_hld,  ip_dcy                   ; ENV:  AHD attack / hold / decay
+    dc.b ip_vol,  iwl_vr,  iwl_vd                   ; VOLUME: peak / tremolo rate / depth
+    dc.b iw_warp, iwl_wr,  iwl_wd                   ; WARP:  offset / rate / depth
+    dc.b iw_fold, iwl_fr,  iwl_fd                   ; FOLD
+    dc.b iw_drive,iwl_dr,  iwl_dd                   ; DRIVE
+    dc.b iw_crush,iwl_cr,  iwl_cd                   ; CRUSH
+    dc.b iw_pitch,iwl_pr,  iwl_pd                   ; PITCH: detune / vibrato rate / depth
+    even
+str_env:    dc.b "ENV",0
+str_w_pitch: dc.b "PITCH",0
+str_grid_hdr: dc.b "OFF RAT DEP",0
     even
 str_warp:   dc.b "WARP",0
 str_drive:  dc.b "DRIVE",0
