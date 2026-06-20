@@ -122,6 +122,8 @@ wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain output -> Z80)
 prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vol forced full)
+wlfo_phase equ $00FFD268           ; 5 global wave LFO phases (vol/warp/fold/drive/crush, 1 wave)
+wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fold/drive/crush)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -193,6 +195,18 @@ iw_warp    equ 14                   ; phase skew 0-F
 iw_drive   equ 15                   ; tanh drive 0-F
 iw_fold    equ 16                   ; wavefolder 0-F
 iw_crush   equ 17                   ; bit crush 0-F
+; WAVE per-parameter LFOs (RATE/DEPTH; OFFSET is the static field above). 5 rows x (rate,depth)
+; in the grid order VOLUME/WARP/FOLD/DRIVE/CRUSH. Free for WAVE (= NOISE/FM bytes, one type/instr).
+iwl_vr     equ 18                   ; VOLUME LFO rate (0=off); VOLUME offset = ip_vol (env peak)
+iwl_vd     equ 19                   ; VOLUME LFO depth (tremolo inside the AHD envelope)
+iwl_wr     equ 20                   ; WARP rate / depth ...
+iwl_wd     equ 21
+iwl_fr     equ 22
+iwl_fd     equ 23
+iwl_dr     equ 24
+iwl_dd     equ 25
+iwl_cr     equ 26
+iwl_cd     equ 27
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
@@ -2589,8 +2603,11 @@ render_wave_inst:                          ; a0 = VDP_CTRL
     lsl.w   #5, d0
     lea     wave_ram, a5
     adda.w  d0, a5                          ; a5 = base wave
-    move.b  #15, prev_ch+c_vol             ; full scale -- VOL/env are excluded from the preview
-    lea     prev_ch, a6
+    move.b  #15, wbake_in                  ; preview = static offsets, full scale (no LFO/env)
+    move.b  (iw_warp,a1), wbake_in+1
+    move.b  (iw_fold,a1), wbake_in+2
+    move.b  (iw_drive,a1), wbake_in+3
+    move.b  (iw_crush,a1), wbake_in+4
     bsr     bake_wave                       ; WAVE# -> WARP -> DRIVE -> FOLD -> CRUSH -> wave_bake
     bsr     plot_wave_preview
     rts
@@ -4021,7 +4038,8 @@ wave_rebake:
     bsr     wave_env                      ; advance the AHD envelope one frame
     tst.b   c_estate(a6)                  ; envelope decayed to off?
     beq.s   .wr_off
-    bsr     wave_play                     ; bake (uses c_vol) + push + re-arm
+    bsr     wave_lfo                      ; advance the 5 LFOs -> wbake_in (vol/warp/fold/drv/crush)
+    bsr     wave_play                     ; bake (reads wbake_in) + push + re-arm
     rts
 .wr_off:
     bsr     wave_silence                  ; env finished -> stop + park the DAC
@@ -4202,9 +4220,12 @@ advance_ch:                               ; a6 = channel
     move.b  #1, c_estate(a6)             ; start the AHD envelope at attack
     move.b  #0, c_vol(a6)
     move.b  #0, c_ectr(a6)
-    movea.l a1, a4                        ; a4 = instrument for wave_env
+    clr.l   wlfo_phase                    ; reset the 5 LFO phases (start each cycle at note-on)
+    clr.b   wlfo_phase+4
+    movea.l a1, a4                        ; a4 = instrument for wave_env / wave_lfo
     bsr     wave_env                      ; advance once (ATK 0 -> instant peak)
-    bsr     wave_play                     ; bake (uses c_vol) + push + arm
+    bsr     wave_lfo                      ; fill wbake_in for the first bake
+    bsr     wave_play                     ; bake (reads wbake_in) + push + arm
     move.b  #1, wave_on                  ; mark sounding -> engine re-bakes it every frame
     move.l  a6, wave_ch
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
@@ -4835,6 +4856,82 @@ wave_env:
 .wend:
     rts
 
+; ---- per-frame: fill wbake_in (the 5 values bake_wave reads) from the instrument's LFO grid.
+; VOLUME's base is the live AHD level (c_vol) so tremolo rides inside the envelope; the four
+; shapers use their static OFFSET field as the base. a4 = instrument, a6 = channel.
+wave_lfo:
+    movem.l d3-d5/a2-a3, -(sp)
+    moveq   #0, d0                          ; VOLUME: base = env level, phase slot 0
+    move.b  c_vol(a6), d0
+    moveq   #0, d1
+    move.b  (iwl_vd,a4), d1                 ; depth
+    moveq   #0, d2
+    move.b  (iwl_vr,a4), d2                 ; rate
+    moveq   #0, d3
+    bsr     wlfo_one
+    move.b  d0, wbake_in
+    lea     wlfo_sfld, a2                  ; shapers WARP/FOLD/DRIVE/CRUSH -> slots 1..4
+    moveq   #1, d3
+.wls:
+    moveq   #0, d5
+    move.b  (a2)+, d5                      ; OFFSET field
+    moveq   #0, d0
+    move.b  (a4,d5.w), d0                  ; base = static offset value
+    moveq   #0, d5
+    move.b  (a2)+, d5                      ; RATE field
+    moveq   #0, d2
+    move.b  (a4,d5.w), d2
+    moveq   #0, d5
+    move.b  (a2)+, d5                      ; DEPTH field
+    moveq   #0, d1
+    move.b  (a4,d5.w), d1
+    bsr     wlfo_one
+    lea     wbake_in, a3
+    move.b  d0, (a3,d3.w)
+    addq.w  #1, d3
+    cmpi.w  #5, d3
+    bne.s   .wls
+    movem.l (sp)+, d3-d5/a2-a3
+    rts
+
+; wlfo_one: d0=base(0-15), d1=depth, d2=rate, d3=phase index (0-4). Returns d0 = clamp(base +
+; (depth*triangle(phase))>>6, 0, 15) and advances wlfo_phase[d3] by rate (only if depth>0).
+wlfo_one:
+    andi.w  #15, d1                         ; depth 0 -> static base, no LFO, no phase advance
+    beq.s   .wo_ret
+    andi.w  #15, d2
+    lea     wlfo_phase, a3
+    move.b  (a3,d3.w), d4
+    add.b   d2, d4                          ; phase += rate (byte wraps = LFO period)
+    move.b  d4, (a3,d3.w)
+    andi.w  #$FF, d4
+    move.w  d4, d2                          ; triangle: fold 0..255 -> 0..127, centre 64
+    cmpi.w  #128, d2
+    blo.s   .wo_t
+    move.w  #255, d5
+    sub.w   d2, d5
+    move.w  d5, d2
+.wo_t:
+    subi.w  #64, d2                         ; tri in -64..63
+    muls.w  d2, d1                          ; depth * tri
+    asr.w   #6, d1                          ; / 64 -> swing +/- depth
+    add.w   d1, d0
+    bpl.s   .wo_c
+    moveq   #0, d0
+.wo_c:
+    cmpi.w  #15, d0
+    bls.s   .wo_ret
+    moveq   #15, d0
+.wo_ret:
+    rts
+
+wlfo_sfld:                                  ; shaper LFO field table: OFFSET, RATE, DEPTH
+    dc.b iw_warp, iwl_wr, iwl_wd           ; -> wbake_in[1]
+    dc.b iw_fold, iwl_fr, iwl_fd           ; -> wbake_in[2]
+    dc.b iw_drive, iwl_dr, iwl_dd          ; -> wbake_in[3]
+    dc.b iw_crush, iwl_cr, iwl_cd          ; -> wbake_in[4]
+    even
+
 ; ---- bake the base wave (a5) through the shaper chain into wave_bake (32 B).
 ; a1 = WAVE instrument. Chain (DESIGN.md $10.6): WARP -> DRIVE -> FOLD -> CRUSH -> x VOL.
 ; WARP skews the source index (pivot p=16+WARP); DRIVE is a tanh ROM table; FOLD reflects
@@ -4842,25 +4939,25 @@ wave_env:
 ; Preserves a1/a4/a5/a6; clobbers a2/a3/d0-d7 (wave_play reloads d0-d7 from wave_bake after).
 bake_wave:
     moveq   #0, d2
-    move.b  c_vol(a6), d2                 ; amplitude = current AHD env level (0-15)
+    move.b  wbake_in, d2                  ; VOL: env level x tremolo (filled by wave_lfo)
     moveq   #0, d6
-    move.b  (iw_fold,a1), d6
-    andi.w  #15, d6                         ; clamp (a stale/foreign byte must not run wild)
+    move.b  wbake_in+2, d6                 ; FOLD (modulated)
+    andi.w  #15, d6
     lsl.w   #3, d6                          ; FOLD * 8
     move.w  #128, d3
     sub.w   d6, d3                          ; d3 = fold threshold T = 128 - FOLD*8
     moveq   #0, d5
-    move.b  (iw_crush,a1), d5
+    move.b  wbake_in+4, d5                 ; CRUSH (modulated)
     andi.w  #15, d5
     lsr.w   #1, d5                          ; crush: drop = CRUSH>>1 low bits (0-7)
-    moveq   #0, d7                          ; DRIVE: a3 = drivetab + DRIVE*256
-    move.b  (iw_drive,a1), d7
-    andi.w  #15, d7                         ; clamp -> drivetab index stays in the 16-entry table
+    moveq   #0, d7                          ; DRIVE: a3 = drivetab + DRIVE*256 (modulated)
+    move.b  wbake_in+3, d7
+    andi.w  #15, d7
     lsl.w   #8, d7
     lea     drivetab, a3
     adda.w  d7, a3
-    moveq   #0, d7                          ; WARP: d7 = pivot p = 16 + WARP (16..31)
-    move.b  (iw_warp,a1), d7
+    moveq   #0, d7                          ; WARP: d7 = pivot p = 16 + WARP (modulated)
+    move.b  wbake_in+1, d7
     andi.w  #15, d7
     addi.w  #16, d7
     moveq   #0, d6                          ; d6 = output step i
