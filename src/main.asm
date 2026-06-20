@@ -3947,7 +3947,14 @@ wave_rebake:
     move.b  c_instr(a6), d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a1
-    bsr     wave_play
+    movea.l a1, a4                        ; a4 = instrument for wave_env
+    bsr     wave_env                      ; advance the AHD envelope one frame
+    tst.b   c_estate(a6)                  ; envelope decayed to off?
+    beq.s   .wr_off
+    bsr     wave_play                     ; bake (uses c_vol) + push + re-arm
+    rts
+.wr_off:
+    bsr     wave_silence                  ; env finished -> stop + park the DAC
 .wrx:
     rts
 
@@ -4122,7 +4129,12 @@ advance_ch:                               ; a6 = channel
     cmpi.b  #2, (i_type,a4,d2.w)         ; i_type 2 = WAVE -> wavetable on the DAC
     bne.s   .fmtrig
     lea     0(a4,d2.w), a1               ; a1 = the WAVE instrument
-    bsr     wave_play
+    move.b  #1, c_estate(a6)             ; start the AHD envelope at attack
+    move.b  #0, c_vol(a6)
+    move.b  #0, c_ectr(a6)
+    movea.l a1, a4                        ; a4 = instrument for wave_env
+    bsr     wave_env                      ; advance once (ATK 0 -> instant peak)
+    bsr     wave_play                     ; bake (uses c_vol) + push + arm
     move.b  #1, wave_on                  ; mark sounding -> engine re-bakes it every frame
     move.l  a6, wave_ch
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
@@ -4681,14 +4693,86 @@ dac_play:
     movem.l (sp)+, d2-d6/a0
     rts
 
+; ---- advance the wave AHD envelope one frame (a6 = channel, a4 = WAVE instrument).
+; Mirrors the PSG software AHD: state 1 attack (0->VOL) -> 2 hold (HLD) -> 3 decay (->0)
+; -> 0 off. Sets c_vol 0-15, which bake_wave uses as the per-frame amplitude. Clobbers d0-d2.
+wave_env:
+    moveq   #0, d0
+    move.b  c_estate(a6), d0
+    beq     .wend                           ; state 0 = off (c_vol stays 0)
+    cmpi.b  #1, d0
+    bne.s   .whld
+    move.b  (ip_atk,a4), d1                 ; --- attack ---
+    bne.s   .wa_ramp
+    move.b  (ip_vol,a4), d1                 ; ATK 0 -> instant to peak
+    move.b  d1, c_vol(a6)
+    move.b  #2, c_estate(a6)
+    move.b  #0, c_ectr(a6)
+    rts
+.wa_ramp:
+    addq.b  #1, c_ectr(a6)                  ; one step up per ATK ticks
+    move.b  c_ectr(a6), d2
+    cmp.b   d1, d2
+    blo     .wend
+    move.b  #0, c_ectr(a6)
+    move.b  c_vol(a6), d1
+    addq.b  #1, d1
+    move.b  (ip_vol,a4), d2
+    cmp.b   d2, d1
+    blo.s   .wa_set
+    move.b  d2, d1                           ; reached peak -> hold
+    move.b  #2, c_estate(a6)
+    move.b  #0, c_ectr(a6)
+.wa_set:
+    move.b  d1, c_vol(a6)
+    rts
+.whld:
+    cmpi.b  #2, d0
+    bne.s   .wdcy
+    move.b  (ip_hld,a4), d1                 ; --- hold ---
+    cmpi.b  #$0F, d1
+    beq     .wend                            ; F = infinite (sustain)
+    tst.b   d1
+    beq.s   .wh_end                          ; 0 = no hold
+    add.b   d1, d1                            ; HLD*2 ticks
+    addq.b  #1, c_ectr(a6)
+    move.b  c_ectr(a6), d2
+    cmp.b   d1, d2
+    blo     .wend
+.wh_end:
+    move.b  #3, c_estate(a6)
+    move.b  #0, c_ectr(a6)
+    rts
+.wdcy:
+    move.b  (ip_dcy,a4), d1                 ; --- decay ---
+    bne.s   .wd_ramp
+    move.b  #0, c_vol(a6)                    ; DCY 0 -> instant cut
+    move.b  #0, c_estate(a6)
+    rts
+.wd_ramp:
+    addq.b  #1, c_ectr(a6)                  ; one step down per DCY ticks
+    move.b  c_ectr(a6), d2
+    cmp.b   d1, d2
+    blo     .wend
+    move.b  #0, c_ectr(a6)
+    move.b  c_vol(a6), d1
+    beq.s   .wd_off
+    subq.b  #1, d1
+    move.b  d1, c_vol(a6)
+    bne.s   .wend
+.wd_off:
+    move.b  #0, c_estate(a6)
+.wend:
+    rts
+
 ; ---- bake the base wave (a5) through the shaper chain into wave_bake (32 B).
 ; a1 = WAVE instrument. Chain (DESIGN.md $10.6): WARP -> DRIVE -> FOLD -> CRUSH -> x VOL.
 ; WARP skews the source index (pivot p=16+WARP); DRIVE is a tanh ROM table; FOLD reflects
-; past +/-T; CRUSH drops low bits; VOL scales the deviation. (Dynamic AHD env-vol: next.)
+; past +/-T; CRUSH drops low bits; VOL = the AHD env level (c_vol) scaling the deviation.
 ; Preserves a1/a4/a5/a6; clobbers a2/a3/d0-d7 (wave_play reloads d0-d7 from wave_bake after).
 bake_wave:
     moveq   #0, d2
-    move.b  (ip_vol,a1), d2               ; VOL 0-15
+    move.b  c_vol(a6), d2                 ; amplitude = current AHD env level (0-15)
     moveq   #0, d6
     move.b  (iw_fold,a1), d6
     lsl.w   #3, d6                          ; FOLD * 8
