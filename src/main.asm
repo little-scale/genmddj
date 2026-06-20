@@ -781,12 +781,34 @@ draw_splash_row:                          ; a0 = VDP_CTRL; d5 = logo tile row to
     dbra    d6, .sc
     rts
 
-draw_splash_text:                         ; a0 = VDP_CTRL; version + git stamp
-    moveq   #SPLASH_ROW+SPLASH_H+1, d3
-    moveq   #17, d4
+draw_splash_text:                         ; a0 = VDP_CTRL; inverted version strip + git stamp
+    moveq   #SPLASH_ROW+SPLASH_H+1, d0    ; full-width inverse band at the version row
+    lsl.w   #6, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #40-1, d6
+.sb:
+    move.w  #$80, VDP_DATA                 ; inverse space = solid band (text colour)
+    dbra    d6, .sb
+    moveq   #SPLASH_ROW+SPLASH_H+1, d0    ; version text inverted (chars + $60), at col 17
+    lsl.w   #6, d0
+    addi.w  #17, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
     lea     ver_str, a1
-    bsr     print_at
-    moveq   #SPLASH_ROW+SPLASH_H+2, d3
+.vt:
+    move.b  (a1)+, d1
+    beq.s   .vd
+    andi.w  #$00FF, d1
+    addi.w  #$60, d1                        ; -> inverse tile (bg colour glyph on the band)
+    move.w  d1, VDP_DATA
+    bra.s   .vt
+.vd:
+    moveq   #SPLASH_ROW+SPLASH_H+2, d3     ; git stamp below, normal
     moveq   #16, d4
     lea     git_hash_str, a1
     bsr     print_at
