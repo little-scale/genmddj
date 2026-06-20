@@ -126,8 +126,8 @@ prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vo
 wlfo_phase equ $00FFD268           ; 5 global wave LFO phases (vol/warp/fold/drive/crush, 1 wave)
 wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fold/drive/crush)
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
-lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth)
-lfo_phase  equ $00FFD2A0           ; 6 runtime LFO phases
+lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
+lfo_phase  equ $00FFD2A8           ; 6 runtime LFO phases (past lfo_cfg's 36 bytes)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -217,12 +217,13 @@ iwl_pr     equ 29                   ; PITCH LFO rate / depth
 iwl_pd     equ 30
 ; FM LFO bank record (6 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE).
 NLFO       equ 6
-LF_SIZE    equ 5
+LF_SIZE    equ 6
 LF_FLAGS   equ 0                    ; bit0 = on; bits 1-2 = resync mode
 LF_CHAN    equ 1                    ; target channel 0..NCH-1
 LF_PARM    equ 2                    ; target FM parameter (see fmlfo param table)
 LF_RATE    equ 3
 LF_DEPTH   equ 4
+LF_POFF    equ 5                    ; coarse phase offset 0-F: resync restarts phase at offset*16
 LFRS_NOTE  equ 0                    ; resync: reset phase on each note-on of the target channel
 LFRS_PHRASE equ 1                   ; reset phase when the target channel enters a new phrase
 LFRS_FREE  equ 2                    ; never reset (free-running)
@@ -1352,7 +1353,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #1, d1                        ; CHAIN: PH,TR
     rts
 .clfo:
-    moveq   #5, d1                        ; 6 LFO columns
+    moveq   #6, d1                        ; 7 LFO columns (ON CH PM RT DP SY PO)
     rts
 .czero:
     moveq   #0, d1
@@ -2678,7 +2679,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     move.b  d1, d4                          ; highlight
     bsr     draw_hex1
     addq.w  #1, d7
-    cmpi.w  #6, d7
+    cmpi.w  #7, d7
     bne     .lfc
     addq.w  #1, d6
     cmpi.w  #6, d6
@@ -2691,8 +2692,9 @@ lf_col:                                     ; per column: lfo_cfg field offset, 
     dc.b LF_RATE,  0                        ; RT
     dc.b LF_DEPTH, 0                        ; DP
     dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
+    dc.b LF_POFF,  0                        ; PO  phase offset
     even
-str_lfo_hdr: dc.b "ON  CH  PM  RT  DP  SY",0
+str_lfo_hdr: dc.b "ON  CH  PM  RT  DP  SY  PO",0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
@@ -2751,7 +2753,7 @@ edit_lfo:
     lea     0(a3,d1.w), a1
     moveq   #1, d4
     bra     adj_field
-lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 15, 15, 0   ; max per column (CH = FM channels 0-5)
+lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 15, 15, 0, 15  ; max per col (CH=FM 0-5; PO 0-15)
     even
 
 ; WAVE instrument page: a row x col grid. Rows WAVE / ENV / VOL / FOLD / DRIVE /
@@ -4209,8 +4211,11 @@ fmlfo_tick:
     move.b  c_lfosync(a3), d1               ; mode 0 -> bit0 (note), 1 -> bit1 (phrase)
     btst    d0, d1
     beq.s   .flnors
-    lea     lfo_phase, a4                    ; resync: restart this LFO's phase
-    clr.b   (a4,d6.w)
+    lea     lfo_phase, a4                    ; resync: restart phase at offset*16
+    moveq   #0, d1
+    move.b  (LF_POFF,a2), d1
+    lsl.w   #4, d1
+    move.b  d1, (a4,d6.w)
 .flnors:
     moveq   #0, d1                           ; advance phase += rate
     move.b  (LF_RATE,a2), d1
