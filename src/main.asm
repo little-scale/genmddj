@@ -440,6 +440,11 @@ VBlankInt:
     bsr     screen_ptr                     ; a1 = hdr table entry
     move.l  (a1), a1
     bsr     print_at
+    move.l  #$40820003, (a0)              ; clear the name area (cols 1-11) first -- a longer
+    moveq   #11-1, d0                      ; previous name (e.g. WAVEFORM) bleeds under a shorter
+.cnm:                                       ; one since clear_grid leaves rows 0-2 untouched
+    move.w  #' ', VDP_DATA
+    dbra    d0, .cnm
     moveq   #1, d3                        ; screen name at row1 col1 (left-aligned, SMSGGDJ-style)
     moveq   #1, d4
     bsr     screen_ptr
@@ -534,12 +539,6 @@ VBlankInt:
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
     dbra    d3, .tk
-    cmpi.b  #SCR_WAVE, cur_screen          ; WAVEFORM is an 8-char name: keep col8 (the M),
-    bne.s   .pnnotw                        ; blank only col9
-    move.l  #$40920003, (a0)
-    move.w  #' ', VDP_DATA
-    bra     .pntrack
-.pnnotw:
     move.l  #$40900003, (a0)             ; screen number (2 hex digits) at row1 col8
     cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens carry no number
     blo.s   .pnnum
@@ -4932,7 +4931,7 @@ str_scr_fm: dc.b "FM    ",0
 str_scr_echo: dc.b "ECHO",0
 str_scr_opt:  dc.b "OPTIONS",0
 str_scr_proj: dc.b "PROJECT",0
-str_scr_wave: dc.b "WAVEFORM",0
+str_scr_wave: dc.b "WAVFORM",0
 str_scr_grv:  dc.b "GROOVE",0
 str_scr_tb: dc.b "TABLE ",0
 str_hdr_tb: dc.b "   V  PIT CMD",0
