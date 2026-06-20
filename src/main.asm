@@ -94,6 +94,11 @@ scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, index
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
 cur_table  equ $00FFE3A9           ; macro table shown/edited on the TABLE screen
 last_instr equ $00FFE3AA           ; PHRASE I-column memory: last instrument placed (new notes inherit it)
+last_chain equ $00FFE3AB           ; SONG insert memory: last chain# placed (single B-tap repeats it)
+last_phrase equ $00FFE3AC          ; CHAIN insert memory: last phrase# placed (single B-tap repeats it)
+btap_frame equ $00FFE3AE           ; g_ticks at the last B-tap (word) -- double-tap window
+btap_addr  equ $00FFE3B0           ; field address of the last B-tap (long) -- double-tap = same cell
+DBLTAP_FRAMES equ 16               ; max frames between B-taps to count as a double-tap
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -405,6 +410,9 @@ Start:
     move.b  #48, last_note
     move.b  #0, last_cmd
     move.b  #0, last_instr
+    move.b  #0, last_chain
+    move.b  #0, last_phrase
+    move.l  #0, btap_addr
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -1898,12 +1906,28 @@ edit_value:
     sub.b   d4, d0
 .h4:
     move.b  d0, (a1)
-    tst.b   cur_screen                     ; PHRASE instr column (col 1) -> remember for new notes
+    cmpi.b  #SCR_SONG, cur_screen           ; remember the last value placed (single B-tap repeats)
+    beq.s   .h4_chain
+    cmpi.b  #SCR_CHAIN, cur_screen
+    beq.s   .h4_phrase
+    tst.b   cur_screen                     ; PHRASE instr column (col 1) -> last_instr
     bne.s   .h4r
     cmpi.b  #1, cur_col
     bne.s   .h4r
     move.b  d0, last_instr
 .h4r:
+    rts
+.h4_chain:
+    cmpi.b  #NCHAINS, d0                    ; only remember a valid chain#
+    bhs.s   .h4r
+    move.b  d0, last_chain
+    rts
+.h4_phrase:
+    tst.b   cur_col                          ; CHAIN col 0 = phrase#
+    bne.s   .h4r
+    cmpi.b  #NPHRASES, d0
+    bhs.s   .h4r
+    move.b  d0, last_phrase
     rts
 .cmd:
     bsr     get_field_addr
@@ -2015,22 +2039,36 @@ do_insert:
 .ret:
     rts
 .song_ins:
-    cmpi.b  #$FF, (a1)                      ; only on an empty song cell
-    bne.s   .ret
+    bsr     chk_dbltap                       ; double B-tap -> allocate a new (unused) chain
+    tst.b   d2
+    bne.s   .song_new
+    cmpi.b  #$FF, (a1)                      ; single B-tap -> repeat last_chain on an empty cell
+    bne     .ret
+    move.b  last_chain, (a1)
+    rts
+.song_new:
     bsr     find_free_chain
     cmpi.b  #NCHAINS, d0
-    bhs.s   .ret                            ; no free chain
+    bhs     .ret                            ; no free chain
     move.b  d0, (a1)
+    move.b  d0, last_chain
     rts
 .chain_ins:
     tst.b   cur_col                          ; col 0 = phrase# (col 1 = transpose -> leave)
-    bne.s   .ret
-    cmpi.b  #$FF, (a1)
-    bne.s   .ret
+    bne     .ret
+    bsr     chk_dbltap                       ; double B-tap -> allocate a new (unused) phrase
+    tst.b   d2
+    bne.s   .chain_new
+    cmpi.b  #$FF, (a1)                      ; single B-tap -> repeat last_phrase on an empty cell
+    bne     .ret
+    move.b  last_phrase, (a1)
+    rts
+.chain_new:
     bsr     find_free_phrase
     cmpi.b  #NPHRASES, d0
-    bhs.s   .ret
+    bhs     .ret
     move.b  d0, (a1)
+    move.b  d0, last_phrase
     rts
 .ins_note:
     move.b  (a1), d0
@@ -2077,6 +2115,21 @@ find_free_phrase:                         ; d0.b = lowest phrase# not referenced
     addq.b  #1, d0
     cmpi.b  #NPHRASES, d0
     blo.s   .ffp_cand
+    rts
+
+chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this is a 2nd B-tap on the
+    moveq   #0, d2                         ; same cell within DBLTAP_FRAMES, else 0. Records this tap.
+    move.l  a1, d0
+    cmp.l   btap_addr, d0
+    bne.s   .ct_rec
+    move.w  g_ticks, d0
+    sub.w   btap_frame, d0
+    cmpi.w  #DBLTAP_FRAMES, d0
+    bhi.s   .ct_rec
+    moveq   #1, d2
+.ct_rec:
+    move.l  a1, btap_addr
+    move.w  g_ticks, btap_frame
     rts
 
 prelisten:                                ; audition e_audnote on channel 0
