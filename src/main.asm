@@ -688,6 +688,7 @@ VBlankInt:
     moveq   #35, d4
     bsr     print_at
     bsr     draw_map                      ; map at row5 col35
+    bsr     amp_refresh                   ; smooth per-frame AMP bars (LFO screen + playing)
     tst.b   env_ready                     ; push an envelope chunk every frame (budget OK)
     beq.s   .vbend
     cmpi.b  #SCR_INSTR, cur_screen
@@ -2773,6 +2774,43 @@ render_lfo:                                ; a0 = VDP_CTRL
     addq.w  #1, d6
     cmpi.w  #NLFO, d6
     bne     .lfr
+    rts
+
+; ---- per-frame smooth AMP-column update (called from the vblank tail). Writes just the 16
+; AMP cells (col 30), so it fits the vblank budget unlike a full-grid redraw. No-op off the
+; LFO screen / when stopped (the gated redraw already left those cells blank). ----
+amp_refresh:
+    cmpi.b  #SCR_LFO, cur_screen
+    bne.s   .arret
+    tst.b   playing
+    beq.s   .arret
+    lea     VDP_CTRL, a0
+    lea     lfo_cfg, a2
+    lea     lfo_amp, a3
+    moveq   #0, d6
+.arl:
+    moveq   #0, d0                           ; VRAM addr at (row 6+i, col 30)
+    move.w  d6, d0
+    addi.w  #6, d0
+    lsl.w   #6, d0
+    addi.w  #30, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  #$20, d3                         ; blank, or bar $E9+amp if this LFO is on
+    btst    #0, (a2)
+    beq.s   .arw
+    moveq   #0, d3
+    move.b  (a3,d6.w), d3
+    addi.w  #$E9, d3
+.arw:
+    move.w  d3, VDP_DATA
+    lea     LF_SIZE(a2), a2
+    addq.w  #1, d6
+    cmpi.w  #NLFO, d6
+    bne.s   .arl
+.arret:
     rts
 lf_col:                                     ; per column: lfo_cfg field offset, kind
     dc.b LF_FLAGS, 1                        ; ON  (bit 0)
