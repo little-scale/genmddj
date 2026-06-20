@@ -112,7 +112,6 @@ proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
 proj_slot  equ $00FFE3EA           ; PROJECT: save slot 1..8
-settle     equ $00FFE3EB           ; post-splash: force re-render N frames so render_song fully settles
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -360,14 +359,15 @@ Start:
     move.b  #0, proj_tsp                  ;   no master transpose
     move.b  #0, proj_mode                 ;   SONG mode
     move.b  #1, proj_slot                 ;   save slot 1
-    move.b  #0, settle
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
-    move.b  #1, in_splash                 ; power-up logo splash (skippable with Start)
-    move.b  #0, splash_row                ; draw the logo one row per VBlank from the top
-    move.w  #150, splash_ctr              ; hold ~2.5 s at 60 Hz, then fall through to the UI
-    move    #$2000, sr                    ; enable VBlank -> splash_tick takes over
+    lea     VDP_CTRL, a0                  ; splash parked (H40 corruption to revisit)
+    moveq   #0, d3                        ; GENMDDJ title at row0 col1
+    moveq   #1, d4
+    lea     str_title, a1
+    bsr     print_at
+    move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
     beq.s   .forever
@@ -415,33 +415,28 @@ VBlankInt:
     move.b  #0, eng_adv
     moveq   #1, d7
 .nev:
-    tst.b   settle                        ; post-splash: force re-render a few frames
-    beq.s   .nst
-    subq.b  #1, settle
-    moveq   #1, d7
-.nst:
     tst.b   need_clear
     beq.s   .nc
     bsr     clear_grid
-    move.b  #0, need_clear
-    move.b  #1, vdirty                    ; re-render next frame (header self-heals)
-    move.b  #1, env_dirty
-    moveq   #0, d7                        ; clear-only this frame; render header+grid next
-.nc:                                       ; frame (a clean VBlank -> no overrun/scatter)
-    bsr     get_playrow                   ; playhead position for this screen
-    move.b  d0, play_row
-    tst.b   d7
-    beq     .gd                           ; unchanged -> skip the grid redraw
-    moveq   #3, d3                        ; column header + screen name EVERY render so they
-    moveq   #1, d4                        ; survive a need_clear frame's VBlank overrun (the
-    bsr     screen_ptr                     ; post-splash settle frames then redraw them clean)
+    moveq   #3, d3                        ; header at row3 col1
+    moveq   #1, d4
+    bsr     screen_ptr                     ; a1 = hdr table entry
     move.l  (a1), a1
     bsr     print_at
-    moveq   #1, d3
+    moveq   #1, d3                        ; screen name at row1 col1 (left-aligned, SMSGGDJ-style)
     moveq   #1, d4
     bsr     screen_ptr
     move.l  4(a1), a1
     bsr     print_at
+    move.b  #0, need_clear
+    move.b  #1, vdirty                    ; re-render next frame (header self-heals)
+    move.b  #1, env_dirty
+    moveq   #1, d7
+.nc:
+    bsr     get_playrow                   ; playhead position for this screen
+    move.b  d0, play_row
+    tst.b   d7
+    beq     .gd                           ; unchanged -> skip the grid redraw
     move.b  cur_screen, d0                ; render active grid
     beq     .gph
     cmpi.b  #SCR_CHAIN, d0
@@ -647,7 +642,6 @@ splash_tick:                              ; a0 = VDP_CTRL; incremental draw + co
     bsr     print_at
     move.w  #0, g_ticks                   ; tick count starts when the UI loads
     move.b  #0, in_splash
-    move.b  #8, settle                    ; force a few full redraws so render_song settles
     move.b  #1, need_clear                ; redraw the UI next frame
 .ret:
     rts
