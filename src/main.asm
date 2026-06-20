@@ -362,11 +362,9 @@ Start:
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
-    lea     VDP_CTRL, a0                  ; splash parked (H40 corruption to revisit)
-    moveq   #0, d3                        ; GENMDDJ title at row0 col1
-    moveq   #1, d4
-    lea     str_title, a1
-    bsr     print_at
+    move.b  #1, in_splash
+    move.b  #0, splash_row
+    move.w  #150, splash_ctr
     move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
@@ -620,7 +618,8 @@ splash_tick:                              ; a0 = VDP_CTRL; incremental draw + co
 .end:
     moveq   #8, d2                        ; clear only the logo's right edge (rows 8-13,
 .ce:                                       ; cols 34-39); clear_grid wipes cols 0-33 and
-    move.w  d2, d0                          ; the SONG render redraws the rest -- avoids
+    moveq   #0, d0                          ; clear high word first (swap below needs it 0,
+    move.w  d2, d0                          ; else garbage corrupts the VDP command's 2nd word)
     lsl.w   #6, d0                          ; clear_splash's full-plane write burst
     addi.w  #34, d0
     add.w   d0, d0
