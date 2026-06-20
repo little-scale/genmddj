@@ -121,7 +121,10 @@ wave_ch    equ $00FFE3F6           ; engine: ch_state ptr of the sounding wave c
 wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain output -> Z80)
+prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vol forced full)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
+PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
+PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
 
 ; screen IDs (kept stable so every dispatch site is unchanged); the map order
 ; (left..right SONG CHAIN PHRASE INSTR) is expressed by scr_order/scr_pos tables.
@@ -2578,6 +2581,73 @@ render_wave_inst:                          ; a0 = VDP_CTRL
     addq.w  #1, d6
     cmpi.w  #11, d6
     bne     .wir
+    ; --- waveform-operations preview (shape only, full scale) under the fields ---
+    movea.l a3, a1                          ; a1 = current instrument (a3 held through the loop)
+    moveq   #0, d0
+    move.b  (iw_wave,a1), d0
+    andi.w  #15, d0
+    lsl.w   #5, d0
+    lea     wave_ram, a5
+    adda.w  d0, a5                          ; a5 = base wave
+    move.b  #15, prev_ch+c_vol             ; full scale -- VOL/env are excluded from the preview
+    lea     prev_ch, a6
+    bsr     bake_wave                       ; WAVE# -> WARP -> DRIVE -> FOLD -> CRUSH -> wave_bake
+    bsr     plot_wave_preview
+    rts
+
+; ---- plot wave_bake (32 samples) as a 32-col x 8-row bar scope, top-left = (PREV_TOP,
+; PREV_COL). Shows the shaped wave only. Clobbers d0-d5/d7/a1-a3 (a0 = VDP_CTRL kept). ----
+plot_wave_preview:
+    lea     wave_bake, a3
+    moveq   #0, d7                          ; scope row R = 0..7 (centre between 3 and 4)
+.ppr:
+    lea     wave_rowbuf, a2
+    moveq   #0, d5                          ; sample 0..31
+.pps:
+    moveq   #0, d1
+    move.b  (a3,d5.w), d1
+    subi.w  #128, d1                       ; deviation -128..127
+    asr.w   #5, d1                          ; n = -4..3 (8 rows tall)
+    moveq   #$20, d2                        ; blank cell
+    cmpi.w  #4, d7
+    bhs.s   .ppdn
+    tst.w   d1                              ; upper rows 0..3: fill iff n>0 and R >= 4-n
+    ble.s   .ppc
+    moveq   #4, d3
+    sub.w   d1, d3
+    cmp.w   d7, d3
+    bgt.s   .ppc
+    moveq   #$80, d2
+    bra.s   .ppc
+.ppdn:
+    tst.w   d1                              ; lower rows 4..7: fill iff n<0 and (R-4) < -n
+    bge.s   .ppc
+    neg.w   d1
+    move.w  d7, d3
+    subi.w  #4, d3
+    cmp.w   d1, d3
+    bge.s   .ppc
+    moveq   #$80, d2
+.ppc:
+    cmpi.w  #3, d7                          ; centre line through blank cells just above centre
+    bne.s   .ppw
+    cmpi.b  #$20, d2
+    bne.s   .ppw
+    move.b  #$E0, d2
+.ppw:
+    move.b  d2, (a2)+
+    addq.w  #1, d5
+    cmpi.w  #32, d5
+    bne.s   .pps
+    clr.b   (a2)
+    move.w  d7, d3                          ; print this row
+    addi.w  #PREV_TOP, d3
+    moveq   #PREV_COL, d4
+    lea     wave_rowbuf, a1
+    bsr     print_at
+    addq.w  #1, d7
+    cmpi.w  #8, d7
+    bne     .ppr
     rts
 
 ; WAVE B-held gestures (entered by branch from the input dispatch, so it must rts):
