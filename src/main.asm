@@ -435,6 +435,11 @@ Start:
     dbra    d0, .winitf
     move.b  #0, wave_pidx                 ; preset cycle starts at sine
     move.b  #0, wave_on                   ; no wave note sounding yet
+    lea     lfo_cfg, a2                   ; clear the FM LFO bank (no stray LFOs at boot)
+    moveq   #(lfo_phase+12-lfo_cfg-1), d0 ; through lfo_cfg records + the 12-byte phase array
+.linit:
+    clr.b   (a2)+
+    dbra    d0, .linit
     move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
