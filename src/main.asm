@@ -181,6 +181,12 @@ ip_vib     equ 14                   ; vibrato (packed)
 ip_trm     equ 15                   ; tremolo (packed)
 ip_mode    equ 18                   ; NOISE: 0 white, 1 periodic  (offsets 16/17 unused now)
 ip_rate    equ 19                   ; NOISE: 0-2 = clk/512,1024,2048; 3 = pitched (T3)
+; WAVE instrument fields (i_type 2) overlay the PSG SWP/VIB/TRM bytes + 16/17 (one type per instr)
+iw_wave    equ 13                   ; which base wave (0-15)
+iw_warp    equ 14                   ; phase skew 0-F
+iw_drive   equ 15                   ; tanh drive 0-F
+iw_fold    equ 16                   ; wavefolder 0-F
+iw_crush   equ 17                   ; bit crush 0-F
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
@@ -517,7 +523,7 @@ VBlankInt:
     bsr     render_kit                    ; KIT
     bra.s   .gd
 .gwave:
-    bsr     render_psg_stub               ; WAVE instrument on INSTR (fields TBD)
+    bsr     render_wave_inst              ; WAVE instrument page
     bra.s   .gd
 .gtone:
     bsr     render_tone
@@ -1247,7 +1253,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     mulu.w  #INSTR_SIZE, d0
     move.b  (i_type,a1,d0.w), d0
     beq.s   .crfm                          ; FM
-    moveq   #1, d1                          ; WAVE: INST/TYPE only
+    moveq   #12, d1                         ; WAVE: 1 + 11 fields
     cmpi.b  #1, d0
     bne.s   .crkit
     moveq   #3, d1                          ; KIT: + the kit-selector and rate rows
@@ -1575,7 +1581,7 @@ edit_psg:
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
     cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = kit, row 3 = rate
-    bne.s   .ep_psgf
+    bne.s   .ep_nkit
     cmpi.b  #3, cur_row
     bne.s   .ep_ksel
     lea     (i_rate,a3), a1                ; row 3 = RATE (0..3 -> .5x/1x/2x/4x)
@@ -1587,6 +1593,9 @@ edit_psg:
     moveq   #15, d3                         ; 16 kits (0..15)
     moveq   #1, d4
     bra     adj_field
+.ep_nkit:
+    cmpi.b  #2, (i_type,a3)                ; WAVE -> the WAVE field set
+    beq.s   .ep_wavef
 .ep_psgf:
     moveq   #0, d0
     move.b  cur_row, d0
@@ -1599,6 +1608,21 @@ edit_psg:
     moveq   #0, d3
     move.b  (a2,d0.w), d3                   ; field max
     lea     psg_step, a2                   ; coarse step (B+Up/Down); TSP = 12 (octave)
+    moveq   #0, d4
+    move.b  (a2,d0.w), d4
+    bra     adj_field
+.ep_wavef:
+    moveq   #0, d0
+    move.b  cur_row, d0
+    subq.b  #2, d0                          ; field index
+    lea     wave_off, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    lea     0(a3,d1.w), a1                  ; field address
+    lea     wave_max, a2
+    moveq   #0, d3
+    move.b  (a2,d0.w), d3                   ; field max
+    lea     wave_step, a2
     moveq   #0, d4
     move.b  (a2,d0.w), d4
     bra     adj_field                      ; L/R +-1, U/D +-step, wrapping
@@ -2483,13 +2507,73 @@ render_inst_hdr:
     bsr     print_hl
     rts
 
-; placeholder for KIT/WAVE until their editors land
+; placeholder for KIT until its editor lands
 render_psg_stub:
     bsr     render_inst_hdr
     moveq   #7, d3
     moveq   #1, d4
     lea     str_wip, a1
     bsr     print_at
+    rts
+
+; WAVE instrument page: WAVE# + AHD volume env (VOL/ATK/HLD/DCY) + the WARP/DRIVE/FOLD/
+; CRUSH shaper chain + TBL/TBS. Table-driven like render_psg; gaps after idx 0, 4, 8.
+render_wave_inst:                          ; a0 = VDP_CTRL
+    bsr     render_inst_hdr               ; a3 = instrum[cur_instr]
+    moveq   #0, d6                          ; field index
+.wir:
+    move.w  d6, d5                          ; display row = PSG_TOP + idx + group gaps
+    addi.w  #PSG_TOP, d5
+    cmpi.w  #1, d6
+    blo.s   .wnog
+    addq.w  #1, d5
+    cmpi.w  #5, d6
+    blo.s   .wnog
+    addq.w  #1, d5
+    cmpi.w  #9, d6
+    blo.s   .wnog
+    addq.w  #1, d5
+.wnog:
+    move.w  d5, d3                          ; label at (row, col1)
+    moveq   #1, d4
+    move.w  d6, d0
+    lsl.w   #2, d0
+    lea     wave_lbl, a1
+    move.l  (a1,d0.w), a1
+    bsr     print_at
+    lea     wave_off, a1                   ; value -> d1
+    moveq   #0, d0
+    move.b  (a1,d6.w), d0
+    move.b  (a3,d0.w), d1
+    moveq   #0, d2                          ; highlight when cur_row-2 == idx
+    move.b  cur_row, d0
+    subq.b  #2, d0
+    cmp.b   d6, d0
+    bne.s   .winh
+    moveq   #$60, d2
+.winh:
+    lea     wave_fmt, a1                   ; format: 0 hex1, 1 hex2
+    move.b  (a1,d6.w), d0
+    moveq   #0, d3                          ; value cell at (row, col8) -- clear hi word first
+    move.w  d5, d3
+    lsl.w   #6, d3
+    addi.w  #8, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    move.b  d1, d3                          ; value
+    move.b  d2, d4                          ; highlight offset
+    tst.b   d0
+    beq.s   .wih1
+    bsr     draw_hex2
+    bra.s   .winext
+.wih1:
+    bsr     draw_hex1
+.winext:
+    addq.w  #1, d6
+    cmpi.w  #11, d6
+    bne     .wir
     rts
 
 ; WAVE B-held gestures (entered by branch from the input dispatch, so it must rts):
@@ -5262,6 +5346,18 @@ psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm,
 psg_max:    dc.b 15, 15, 15, 15, 255, 255, 255, 255, 31, 15, 1, 3
 psg_step:   dc.b 4, 4, 4, 4, 12, 16, 16, 16, 16, 4, 1, 1   ; TSP=12; SWP/VIB/TRM/TBL=16
 psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE text, 3 RATE text
+    even
+; WAVE instrument field set (11 fields)
+wave_lbl:   dc.l str_w_wave, str_vol, str_atk, str_hld, str_dcy, str_warp, str_drive, str_fold, str_crush, str_tbl, str_tbs
+wave_off:   dc.b iw_wave, ip_vol, ip_atk, ip_hld, ip_dcy, iw_warp, iw_drive, iw_fold, iw_crush, i_tbl, i_tbs
+wave_max:   dc.b 15, 15, 15, 15, 15, 15, 15, 15, 15, 31, 15
+wave_step:  dc.b 1, 4, 4, 4, 4, 1, 1, 1, 1, 16, 4
+wave_fmt:   dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0    ; all hex1 except TBL (hex2)
+    even
+str_warp:   dc.b "WARP",0
+str_drive:  dc.b "DRIVE",0
+str_fold:   dc.b "FOLD",0
+str_crush:  dc.b "CRUSH",0
     even
 NVOICE     equ 7                            ; voice params before the (global) LFO row
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
