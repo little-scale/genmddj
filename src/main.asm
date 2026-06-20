@@ -4389,11 +4389,17 @@ engine_tick:
     bsr     wave_silence                  ; stopped -> park any sounding wave
     rts
 .play:
-    ; global groove
+    ; row advance gated by tempo: frames/row = 1250 / proj_tmpo (125 BPM -> 10 = old GROOVE)
     addq.b  #1, g_gctr
-    move.b  g_gctr, d0
-    cmp.b   #GROOVE, d0
-    blo.s   .noadv
+    move.l  #1250, d0
+    moveq   #0, d1
+    move.b  proj_tmpo, d1
+    bne.s   .tdiv
+    moveq   #1, d1                         ; guard (proj_tmpo is clamped >=32 anyway)
+.tdiv:
+    divu.w  d1, d0                         ; d0 low word = frames per row
+    cmp.b   g_gctr, d0
+    bhi.s   .noadv                         ; not enough frames elapsed yet
     move.b  #0, g_gctr
     move.b  #1, eng_adv                   ; playheads moved -> redraw the grid
     moveq   #NCH-1, d7
