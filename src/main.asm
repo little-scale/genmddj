@@ -1076,8 +1076,8 @@ screen_left:
     move.b  cur_screen, d0
     lea     scr_pos, a1
     move.b  (a1,d0.w), d0                  ; current map position
-    bne.s   .l_step                        ; leftmost -> wrap to rightmost (TABLE)
-    moveq   #SCR_MAXPOS+1, d0
+    bne.s   .l_step
+    rts                                    ; leftmost -> stay put (map no longer wraps)
 .l_step:
     subq.b  #1, d0
     lea     scr_order, a1
@@ -1098,7 +1098,7 @@ screen_right:
     lea     scr_pos, a1
     move.b  (a1,d0.w), d0
     cmpi.b  #SCR_MAXPOS, d0
-    bhs.s   .r_wrap                        ; rightmost -> wrap to leftmost (SONG)
+    bhs.s   .r_done                        ; rightmost -> stay put (map no longer wraps)
     bsr     drill_down                     ; load the item under the cursor
     moveq   #0, d1                          ; remember this screen's cursor so screen_left
     move.b  cur_screen, d1                  ;   can bring us back to exactly this cell
