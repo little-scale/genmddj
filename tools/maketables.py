@@ -12,7 +12,7 @@ import sys
 
 CLOCK = 3579545          # NTSC PSG clock (PAL table is a later addition)
 A4 = 57                  # note index of A4
-DAC_RATE = 7610          # YM2612 Timer-A DAC feed rate (1024-TA=7); see src/z80/driver.asm
+DAC_RATE = 5327         # YM2612 Timer-A DAC feed rate (1024-TA=10); see src/z80/driver.asm
 WAVE_LEN = 32            # wavetable steps; phase is 8.8 fixed-point -> 32*256 units/cycle
 out = bytearray()
 for n in range(96):

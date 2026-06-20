@@ -99,13 +99,13 @@ start:
     ld   a, $FF
     ld   (PSG), a
 
-    ld   a, $24                 ; YM2612 Timer A = DAC clock; 1024-TA=7 -> 7610 Hz
-    ld   (YM_A0), a             ; (highest step the Z80 paces cleanly; 6->8878 over-runs)
-    ld   a, $FE                 ; TA=$3F9 -> $24=$FE (bits 9-2), $25=$01 (bits 1-0)
-    ld   (YM_D0), a
+    ld   a, $24                 ; YM2612 Timer A = DAC clock; 1024-TA=10 -> 5327 Hz
+    ld   (YM_A0), a             ; (highest rate the polled feed paces 1:1 -- output measured
+    ld   a, $FD                 ;  = 440 on a 440 sine; >5327 over-runs + pitches down. M9 =
+    ld   (YM_D0), a             ;  cycle-counted feed to climb higher. TA=$3F6 -> $24=$FD/$25=$02)
     ld   a, $25
     ld   (YM_A0), a
-    ld   a, $01
+    ld   a, $02
     ld   (YM_D0), a
     ld   a, $27                 ; load + enable Timer A
     ld   (YM_A0), a
