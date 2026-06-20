@@ -2771,7 +2771,7 @@ render_wave:
     cmpi.w  #32, d5
     bne.s   .wcm
     clr.b   (a2)
-    moveq   #6, d3                          ; cursor marker on row 6 (above the canvas)
+    moveq   #25, d3                         ; cursor marker on row 25 (just below the canvas box)
     moveq   #1, d4
     lea     wave_rowbuf, a1
     bsr     print_at
