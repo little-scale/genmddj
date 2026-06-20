@@ -93,6 +93,7 @@ last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entere
 scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
 cur_table  equ $00FFE3A9           ; macro table shown/edited on the TABLE screen
+last_instr equ $00FFE3AA           ; PHRASE I-column memory: last instrument placed (new notes inherit it)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -161,6 +162,7 @@ PHRASE_SIZE equ 64
 NPHRASES   equ 16                   ; ($FFF400 chains - $FFF000 phrases) / 64
 chains     equ $00FFF400            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
+NCHAINS    equ 16                   ; ($FFF600 song - $FFF400 chains) / 32
 song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
 instrum    equ $00FFB000            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
@@ -402,6 +404,7 @@ Start:
     move.b  #0, dpad_prev
     move.b  #48, last_note
     move.b  #0, last_cmd
+    move.b  #0, last_instr
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -1865,9 +1868,9 @@ edit_value:
     tst.b   cur_screen                    ; CHAIN/SONG: both cols are byte +-1/+-$10
     bne.s   .hexfield
     move.b  cur_col, d0
-    beq.s   .note
+    beq     .note
     cmpi.b  #2, d0
-    beq.s   .cmd
+    beq     .cmd
 .hexfield:
     bsr     get_field_addr
     moveq   #$10, d4                        ; coarse step = high nibble...
@@ -1895,6 +1898,12 @@ edit_value:
     sub.b   d4, d0
 .h4:
     move.b  d0, (a1)
+    tst.b   cur_screen                     ; PHRASE instr column (col 1) -> remember for new notes
+    bne.s   .h4r
+    cmpi.b  #1, cur_col
+    bne.s   .h4r
+    move.b  d0, last_instr
+.h4r:
     rts
 .cmd:
     bsr     get_field_addr
@@ -1990,6 +1999,10 @@ do_insert:
     rts
 .di_go:
     bsr     get_field_addr
+    cmpi.b  #SCR_SONG, cur_screen           ; SONG B-tap -> allocate a new (empty) chain
+    beq.s   .song_ins
+    cmpi.b  #SCR_CHAIN, cur_screen           ; CHAIN B-tap -> allocate a new (empty) phrase
+    beq.s   .chain_ins
     move.b  cur_col, d0
     beq.s   .ins_note                      ; col 0 = NOT -> insert/audition note
     cmpi.b  #2, d0                          ; col 2 = C (PHRASE command column)
@@ -2001,15 +2014,69 @@ do_insert:
     move.b  last_cmd, (a1)                  ; B-tap repeats the last command entered
 .ret:
     rts
+.song_ins:
+    cmpi.b  #$FF, (a1)                      ; only on an empty song cell
+    bne.s   .ret
+    bsr     find_free_chain
+    cmpi.b  #NCHAINS, d0
+    bhs.s   .ret                            ; no free chain
+    move.b  d0, (a1)
+    rts
+.chain_ins:
+    tst.b   cur_col                          ; col 0 = phrase# (col 1 = transpose -> leave)
+    bne.s   .ret
+    cmpi.b  #$FF, (a1)
+    bne.s   .ret
+    bsr     find_free_phrase
+    cmpi.b  #NPHRASES, d0
+    bhs.s   .ret
+    move.b  d0, (a1)
+    rts
 .ins_note:
     move.b  (a1), d0
     cmpi.b  #$FF, d0
     bne.s   .audit
     move.b  last_note, d0
     move.b  d0, (a1)
+    tst.b   cur_screen                      ; PHRASE -> new note inherits the last instrument
+    bne.s   .audit
+    move.b  last_instr, 1(a1)
 .audit:
     move.b  d0, e_audnote
     bsr     prelisten
+    rts
+
+find_free_chain:                          ; d0.b = lowest chain# not referenced in the song (NCHAINS if none)
+    moveq   #0, d0
+.ffc_cand:
+    lea     song, a2
+    move.w  #(NSONGROWS*NCH)-1, d1
+.ffc_scan:
+    cmp.b   (a2)+, d0
+    beq.s   .ffc_next
+    dbra    d1, .ffc_scan
+    rts
+.ffc_next:
+    addq.b  #1, d0
+    cmpi.b  #NCHAINS, d0
+    blo.s   .ffc_cand
+    rts
+
+find_free_phrase:                         ; d0.b = lowest phrase# not referenced in any chain (NPHRASES if none)
+    moveq   #0, d0
+.ffp_cand:
+    lea     chains, a2
+    move.w  #(NCHAINS*16)-1, d1            ; 16 phrase slots per chain
+.ffp_scan:
+    cmp.b   (a2), d0
+    beq.s   .ffp_next
+    addq.l  #2, a2                          ; step over the transpose byte
+    dbra    d1, .ffp_scan
+    rts
+.ffp_next:
+    addq.b  #1, d0
+    cmpi.b  #NPHRASES, d0
+    blo.s   .ffp_cand
     rts
 
 prelisten:                                ; audition e_audnote on channel 0
@@ -6346,6 +6413,11 @@ load_demo:                                ; phrases -> rests, then copy demo phr
     move.b  #0, (a2)+
     move.b  #0, (a2)+
     dbra    d0, .ld_clr
+    lea     chains, a2                     ; chains + song (contiguous) -> empty ($FF) so untouched
+    move.w  #(NCHAINS*CHAIN_SIZE)+(NSONGROWS*NCH)-1, d0   ; slots aren't read as phrase 00 / garbage
+.ld_ce:
+    move.b  #$FF, (a2)+
+    dbra    d0, .ld_ce
     lea     demo_phrases, a1
     lea     phrases, a2
     move.w  #(demo_end-demo_phrases)-1, d0
