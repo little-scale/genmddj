@@ -56,14 +56,14 @@ BANKS 1
 .DEFINE D_HALF    $1FC9
 .DEFINE D_HFLIP   $1FCA     ; half-rate toggle
 ; --- wavetable mode (32-byte wave looped from local RAM via a phase accumulator) ---
-; Kept at $0C00, well BELOW the SCB mailbox ($1F00+): the SCB's YM-write list can run
-; up past $1FB0 and would clobber these if they sat in the mailbox region.
-.DEFINE WV_TRIG   $0C00     ; wave trigger seq (68k bumps it)
-.DEFINE WV_INC    $0C01     ; phase increment, 8.8 fixed (LE word)
-.DEFINE WV_BUF    $0C10     ; 32-byte baked wave buffer ($0C10-$0C2F)
-.DEFINE WV_PHASE  $0C30     ; phase accumulator, 8.8 fixed (LE word)
-.DEFINE D_WMODE   $0C32     ; 1 = wave-loop mode (else ROM PCM)
-.DEFINE WV_LAST   $0C33     ; last wave trigger processed
+; In the SCB mailbox region (the 68k reliably writes here); above the DAC fields and
+; the YM-write area (which the engine keeps under $1FB0), so no clobber in practice.
+.DEFINE WV_TRIG   $1FCB     ; wave trigger seq (68k bumps it)
+.DEFINE WV_INC    $1FCC     ; phase increment, 8.8 fixed (LE word)
+.DEFINE WV_BUF    $1FD0     ; 32-byte baked wave buffer ($1FD0-$1FEF)
+.DEFINE WV_PHASE  $1FF0     ; phase accumulator, 8.8 fixed (LE word)
+.DEFINE D_WMODE   $1FF2     ; 1 = wave-loop mode (else ROM PCM)
+.DEFINE WV_LAST   $1FF3     ; last wave trigger processed
 
 .BANK 0 SLOT 0
 .ORG 0

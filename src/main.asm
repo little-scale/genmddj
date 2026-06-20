@@ -4643,40 +4643,57 @@ dac_play:
     movem.l (sp)+, d2-d6/a0
     rts
 
-; WAVE note trigger: copy the base wave into Z80 RAM + push the pitch increment, arm wave
-; mode. a1 = WAVE instrument; reads c_note(a6). (v1: raw wave -- shaper chain/env come next.)
+; WAVE note trigger: push the base wave + pitch increment into Z80 RAM, arm wave mode.
+; a1 = WAVE instrument; reads c_note(a6). CRITICAL: the 68k cannot read its own work RAM
+; while holding the Z80 bus, so the wave is read into d0-d7 BEFORE the BUSREQ and only
+; written under it (mirrors dac_play, which computes from RAM before grabbing the bus).
 wave_play:
-    movem.l d0-d3/a0-a3, -(sp)
+    movem.l d0-d7/a2-a5, -(sp)
+    moveq   #0, d0                         ; note -> phase increment (notetable + 192)
+    move.b  c_note(a6), d0
+    cmpi.w  #96, d0
+    bhs     .wpx
+    add.w   d0, d0
+    lea     notetable+192, a2
+    movea.w (a2,d0.w), a4                  ; a4 = increment (max ~$2140, no sign issue)
     moveq   #0, d0                         ; base wave = wave_ram + WAVE# * 32
     move.b  (iw_wave,a1), d0
     andi.w  #15, d0
     lsl.w   #5, d0
-    lea     wave_ram, a0
-    adda.w  d0, a0
-    moveq   #0, d0                         ; note -> phase increment (notetable + 192)
-    move.b  c_note(a6), d0
-    cmpi.w  #96, d0
-    bhs.s   .wpx
-    add.w   d0, d0
-    lea     notetable+192, a2
-    move.w  (a2,d0.w), d2                  ; increment (BE word)
+    lea     wave_ram, a5
+    adda.w  d0, a5
+    movem.l (a5), d0-d7                    ; read the 32 wave bytes (BEFORE the BUSREQ)
     move.w  #$0100, Z80_BUSREQ
 .wpw:
     btst    #0, Z80_BUSREQ
     bne.s   .wpw
-    move.b  d2, Z80_RAM+$0C01             ; WV_INC lo (Z80 little-endian)
-    move.w  d2, d3
-    lsr.w   #8, d3
-    move.b  d3, Z80_RAM+$0C02             ; WV_INC hi
-    lea     Z80_RAM+$0C10, a3             ; copy the 32-byte wave into WV_BUF
-    moveq   #32-1, d0
-.wpc:
-    move.b  (a0)+, (a3)+
-    dbra    d0, .wpc
-    addq.b  #1, Z80_RAM+$0C00             ; bump the wave trigger -> Z80 arms wave mode
+    lea     Z80_RAM+$1FD0, a3             ; write d0-d7 to WV_BUF, big-endian (no work-RAM
+WB      macro                              ; access under BUSREQ: rol restores the reg)
+    rol.l   #8, \1
+    move.b  \1, (a3)+
+    rol.l   #8, \1
+    move.b  \1, (a3)+
+    rol.l   #8, \1
+    move.b  \1, (a3)+
+    rol.l   #8, \1
+    move.b  \1, (a3)+
+    endm
+    WB      d0
+    WB      d1
+    WB      d2
+    WB      d3
+    WB      d4
+    WB      d5
+    WB      d6
+    WB      d7
+    move.l  a4, d0                         ; WV_INC (LE)
+    move.b  d0, Z80_RAM+$1FCC
+    lsr.w   #8, d0
+    move.b  d0, Z80_RAM+$1FCD
+    addq.b  #1, Z80_RAM+$1FCB             ; bump the wave trigger -> Z80 arms wave mode
     move.w  #$0000, Z80_BUSREQ
 .wpx:
-    movem.l (sp)+, d0-d3/a0-a3
+    movem.l (sp)+, d0-d7/a2-a5
     rts
 rate_step:  dc.b 1, 2, 4, 1               ; i_rate 0..3 = 1x/2x/4x/0.5x -> window step
 rate_half:  dc.b 0, 0, 0, 1               ; i_rate 3 (0.5x) feeds each byte twice
