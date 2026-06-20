@@ -4239,7 +4239,7 @@ fmlfo_tick:
     move.b  (LF_PARM,a2), d0
     cmpi.w  #FMLFO_NPARM, d0
     bhs     .fltn
-    mulu.w  #3, d0
+    mulu.w  #6, d0
     lea     fmlfo_ptab, a4
     adda.w  d0, a4
     lea     instrum, a1                      ; the target channel's instrument
@@ -4261,6 +4261,18 @@ fmlfo_tick:
     bls.s   .flc1
     move.w  d3, d2
 .flc1:
+    moveq   #0, d3                           ; compose register byte: (value<<shift)|(co<<coshift)
+    move.b  (3,a4), d3                       ; shift
+    lsl.b   d3, d2
+    move.b  (4,a4), d3                       ; co-param patch off ($FF = register holds only this)
+    cmpi.b  #$FF, d3
+    beq.s   .flnoco
+    moveq   #0, d0
+    move.b  (a1,d3.w), d0                    ; co-param value from the patch
+    move.b  (5,a4), d3                       ; co shift
+    lsl.b   d3, d0
+    or.b    d0, d2
+.flnoco:
     move.b  c_ympart(a3), (a5)+             ; append YM write: part, reg+chreg, value
     move.b  (1,a4), d3
     add.b   c_ymchreg(a3), d3
@@ -4281,14 +4293,24 @@ fmlfo_tick:
     movem.l (sp)+, d0-d4/d6-d7/a1-a4
     rts
 
-; FM LFO param table: {patch offset within the instrument, YM register base, value max}.
-; v1 exposes the four operators' TL (output/level -> tremolo + timbre). More params follow.
+; FM LFO param table: {patch off, YM reg, max, shift, co-param patch off ($FF=none), co shift}.
+; Packed registers (DT+MUL in $30, FB+ALGO in $B0) recompose the co-param from the patch.
 fmlfo_ptab:
-    dc.b i_op+0*10+2, $40, 127              ; TL S1
-    dc.b i_op+1*10+2, $44, 127              ; TL S3
-    dc.b i_op+2*10+2, $48, 127              ; TL S2
-    dc.b i_op+3*10+2, $4C, 127              ; TL S4
-FMLFO_NPARM equ 4
+    dc.b i_op+0*10+2, $40, 127, 0, $FF, 0           ; 0  TL S1
+    dc.b i_op+1*10+2, $44, 127, 0, $FF, 0           ; 1  TL S3
+    dc.b i_op+2*10+2, $48, 127, 0, $FF, 0           ; 2  TL S2
+    dc.b i_op+3*10+2, $4C, 127, 0, $FF, 0           ; 3  TL S4
+    dc.b i_op+0*10+1, $30, 7, 4, i_op+0*10+0, 0     ; 4  DT S1 (packed w/ MUL)
+    dc.b i_op+1*10+1, $34, 7, 4, i_op+1*10+0, 0     ; 5  DT S3
+    dc.b i_op+2*10+1, $38, 7, 4, i_op+2*10+0, 0     ; 6  DT S2
+    dc.b i_op+3*10+1, $3C, 7, 4, i_op+3*10+0, 0     ; 7  DT S4
+    dc.b i_op+0*10+0, $30, 15, 0, i_op+0*10+1, 4    ; 8  MUL S1 (packed w/ DT)
+    dc.b i_op+1*10+0, $34, 15, 0, i_op+1*10+1, 4    ; 9  MUL S3
+    dc.b i_op+2*10+0, $38, 15, 0, i_op+2*10+1, 4    ; A  MUL S2
+    dc.b i_op+3*10+0, $3C, 15, 0, i_op+3*10+1, 4    ; B  MUL S4
+    dc.b i_fb,   $B0, 7, 3, i_algo, 0               ; C  FB (packed w/ ALGO)
+    dc.b i_algo, $B0, 7, 0, i_fb, 3                 ; D  ALGO (packed w/ FB)
+FMLFO_NPARM equ 14
     even
 
 engine_tick:
