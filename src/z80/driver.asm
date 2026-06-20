@@ -56,12 +56,14 @@ BANKS 1
 .DEFINE D_HALF    $1FC9
 .DEFINE D_HFLIP   $1FCA     ; half-rate toggle
 ; --- wavetable mode (32-byte wave looped from local RAM via a phase accumulator) ---
-.DEFINE WV_TRIG   $1FCB     ; wave trigger seq (68k bumps it)
-.DEFINE WV_INC    $1FCC     ; phase increment, 8.8 fixed (LE word)
-.DEFINE WV_BUF    $1FD0     ; 32-byte baked wave buffer ($1FD0-$1FEF)
-.DEFINE WV_PHASE  $1FF0     ; phase accumulator, 8.8 fixed (LE word)
-.DEFINE D_WMODE   $1FF2     ; 1 = wave-loop mode (else ROM PCM)
-.DEFINE WV_LAST   $1FF3     ; last wave trigger processed
+; Kept at $0C00, well BELOW the SCB mailbox ($1F00+): the SCB's YM-write list can run
+; up past $1FB0 and would clobber these if they sat in the mailbox region.
+.DEFINE WV_TRIG   $0C00     ; wave trigger seq (68k bumps it)
+.DEFINE WV_INC    $0C01     ; phase increment, 8.8 fixed (LE word)
+.DEFINE WV_BUF    $0C10     ; 32-byte baked wave buffer ($0C10-$0C2F)
+.DEFINE WV_PHASE  $0C30     ; phase accumulator, 8.8 fixed (LE word)
+.DEFINE D_WMODE   $0C32     ; 1 = wave-loop mode (else ROM PCM)
+.DEFINE WV_LAST   $0C33     ; last wave trigger processed
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -239,7 +241,10 @@ df_pace:
     ret                        ; Timer A paces the feed now; no busy-wait needed
 
 ; ---- wavetable feed: WV_BUF[(phase>>8) & 31] -> DAC, then phase += inc ----
+; MUST preserve bc/de: the main loop keeps the last SCB_SEQ in b and last SCB_DAC in d.
 wave_feed:
+    push bc
+    push de
     ld   hl, (WV_PHASE)
     ld   a, h                   ; integer part of the 8.8 phase
     and  31                     ; -> step 0..31 (the wave loops every 32)
@@ -252,13 +257,15 @@ wave_feed:
     ld   (YM_A0), a
     ld   a, c
     ld   (YM_D0), a
-    ld   hl, (WV_PHASE)         ; phase += increment (byte loads: ld de,(nn) is unused here)
+    ld   hl, (WV_PHASE)         ; phase += increment
     ld   a, (WV_INC)
     ld   e, a
     ld   a, (WV_INC+1)
     ld   d, a
     add  hl, de
     ld   (WV_PHASE), hl
+    pop  de
+    pop  bc
     ret
 
 ; ---- set the 9-bit window bank from hl (LSB first) ----

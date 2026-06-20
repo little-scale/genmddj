@@ -4664,16 +4664,16 @@ wave_play:
 .wpw:
     btst    #0, Z80_BUSREQ
     bne.s   .wpw
-    move.b  d2, Z80_RAM+$1FCC             ; WV_INC lo (Z80 little-endian)
+    move.b  d2, Z80_RAM+$0C01             ; WV_INC lo (Z80 little-endian)
     move.w  d2, d3
     lsr.w   #8, d3
-    move.b  d3, Z80_RAM+$1FCD             ; WV_INC hi
-    lea     Z80_RAM+$1FD0, a3             ; copy the 32-byte wave into WV_BUF
+    move.b  d3, Z80_RAM+$0C02             ; WV_INC hi
+    lea     Z80_RAM+$0C10, a3             ; copy the 32-byte wave into WV_BUF
     moveq   #32-1, d0
 .wpc:
     move.b  (a0)+, (a3)+
     dbra    d0, .wpc
-    addq.b  #1, Z80_RAM+$1FCB             ; bump the wave trigger -> Z80 arms wave mode
+    addq.b  #1, Z80_RAM+$0C00             ; bump the wave trigger -> Z80 arms wave mode
     move.w  #$0000, Z80_BUSREQ
 .wpx:
     movem.l (sp)+, d0-d3/a0-a3
