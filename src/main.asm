@@ -2620,8 +2620,8 @@ render_psg_stub:
 ; FM LFO bank editor (SCR_LFO): 6 LFO rows x 6 columns ON/CH/PM/RT/DP/SY. Cursor = (cur_row
 ; 0..5, cur_col 0..5). Reads the lfo_cfg records; ON and SY share the flags byte.
 render_lfo:                                ; a0 = VDP_CTRL
-    moveq   #4, d3                          ; column header at row 4
-    moveq   #4, d4
+    moveq   #4, d3                          ; column header at row 4, col 3
+    moveq   #3, d4
     lea     str_lfo_hdr, a1
     bsr     print_at
     moveq   #0, d6                          ; LFO row r = 0..5
@@ -2669,9 +2669,9 @@ render_lfo:                                ; a0 = VDP_CTRL
     bne.s   .lfnh
     moveq   #$60, d1
 .lfnh:
-    move.w  d7, d4                          ; cell column = 4 + c*4
-    lsl.w   #2, d4
-    addi.w  #4, d4
+    lea     lf_colx, a4                     ; cell screen column from the layout table
+    moveq   #0, d4
+    move.b  (a4,d7.w), d4
     moveq   #0, d3
     move.w  d5, d3
     lsl.w   #6, d3
@@ -2680,9 +2680,32 @@ render_lfo:                                ; a0 = VDP_CTRL
     swap    d3
     ori.l   #$40000003, d3
     move.l  d3, (a0)
-    move.b  d2, d3                          ; value
-    move.b  d1, d4                          ; highlight
+    cmpi.w  #2, d7                          ; col 2 PRM -> 3-char param name
+    beq.s   .lfprm
+    cmpi.w  #5, d7                          ; col 5 SYN -> 3-char resync name
+    beq.s   .lfsyn
+    move.b  d2, d3                          ; else a single hex digit
+    move.b  d1, d4
     bsr     draw_hex1
+    bra.s   .lfcn
+.lfprm:
+    lea     lf_pnames, a1
+    bra.s   .lfnm
+.lfsyn:
+    lea     lf_snames, a1
+.lfnm:
+    move.w  d2, d0                          ; a1 += value * 3
+    add.w   d0, d0
+    add.w   d2, d0
+    adda.w  d0, a1
+    moveq   #3-1, d0
+.lf3:
+    moveq   #0, d3
+    move.b  (a1)+, d3
+    add.w   d1, d3                          ; + highlight (inverse-tile offset)
+    move.w  d3, VDP_DATA
+    dbra    d0, .lf3
+.lfcn:
     addq.w  #1, d7
     cmpi.w  #7, d7
     bne     .lfc
@@ -2699,7 +2722,14 @@ lf_col:                                     ; per column: lfo_cfg field offset, 
     dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
     dc.b LF_POFF,  0                        ; PO  phase offset
     even
-str_lfo_hdr: dc.b "ON  CH  PM  RT  DP  SY  `",0
+lf_colx: dc.b 3, 6, 9, 13, 17, 21, 25      ; screen column per LFO grid column
+    even
+lf_pnames:                                  ; 14 FM-param names (3 chars), in fmlfo_ptab order
+    dc.b "TL1TL3TL2TL4DT1DT3DT2DT4ML1ML3ML2ML4FB ALG"
+    even
+lf_snames: dc.b "NTEPHRFRE"                 ; resync modes: NOTE / PHRASE / FREE
+    even
+str_lfo_hdr: dc.b "ON CH PRM RTE DPT SYN `",0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
