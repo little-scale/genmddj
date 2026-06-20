@@ -29,5 +29,19 @@ for n in range(96):
     inc = max(1, min(65535, inc))
     out += struct.pack(">H", inc)
 
+# WAVE DRIVE soft-clip (appended at +384): 16 drive levels x 256 samples. Each entry maps
+# an 8-bit sample through a normalised tanh (peak preserved): DRIVE 0 ~= clean, F ~= square.
+import math
+for drv in range(16):
+    if drv == 0:                                  # DRIVE 0 = clean pass-through (identity)
+        out += bytes(range(256))
+        continue
+    gain = 1.0 + drv * 0.45
+    tg = math.tanh(gain)
+    for s in range(256):
+        dev = s - 128
+        outdev = 127.0 * math.tanh((dev / 128.0) * gain) / tg
+        out += struct.pack("B", max(0, min(255, int(round(outdev)) + 128)))
+
 open(sys.argv[1], "wb").write(out)
-print(f"maketables: 96 note periods + 96 wave increments (C0-B7, NTSC) -> {sys.argv[1]}")
+print(f"maketables: 96 periods + 96 wave increments + 16x256 DRIVE table -> {sys.argv[1]}")

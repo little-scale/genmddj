@@ -4696,12 +4696,18 @@ bake_wave:
     moveq   #0, d5
     move.b  (iw_crush,a1), d5
     lsr.w   #1, d5                          ; crush: drop = CRUSH>>1 low bits (0-7)
+    moveq   #0, d7                          ; DRIVE: a3 = drivetab + DRIVE*256
+    move.b  (iw_drive,a1), d7
+    lsl.w   #8, d7
+    lea     drivetab, a3
+    adda.w  d7, a3
     movea.l a5, a0                          ; base read ptr (keep a5 intact)
     lea     wave_bake, a2
     moveq   #32-1, d4
 .bkl:
     moveq   #0, d0
     move.b  (a0)+, d0
+    move.b  (a3,d0.w), d0                  ; DRIVE: tanh soft-clip (sample -> sample)
     subi.w  #128, d0                       ; d = deviation -128..127
     cmp.w   d3, d0                          ; FOLD: reflect past +/- T
     ble.s   .bf1
@@ -5672,7 +5678,8 @@ vdp_regs_end:
     even
 
 notetable:
-    incbin "build/notes.bin"
+    incbin "build/notes.bin"             ; 96 periods + 96 wave increments + 16x256 DRIVE
+drivetab equ notetable+384               ; WAVE DRIVE table: drivetab + DRIVE*256 + sample
     even
 z80_blob:
     incbin "build/driver.z80.bin"
