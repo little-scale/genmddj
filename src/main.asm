@@ -2578,7 +2578,7 @@ FM_OHDR equ 16                            ; operator grid header (INST + gaps, n
 FM_OTOP equ 17                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
 ALGO_DIAG_ROW equ 11                      ; algorithm diagram (1x, half size)
-ALGO_DIAG_COL equ 16
+ALGO_DIAG_COL equ 12
 ENV_TW  equ 32                            ; envelope canvas: 4 ops x 8 tiles wide, 4 tall
 ENV_TH  equ 4
 ENV_TILES equ ENV_TW*ENV_TH
