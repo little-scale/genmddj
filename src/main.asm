@@ -1616,6 +1616,18 @@ edit_psg:
     subq.b  #1, d0
 .ep_tw:
     move.b  d0, (i_type,a3)
+    cmpi.b  #2, d0                          ; switched to WAVE -> install clean defaults so the
+    bne.s   .ep_twd                          ; old type's bytes don't read as random LFO/detune
+    lea     8(a3), a1                        ; clear the WAVE field block (offsets 8..30)
+    moveq   #23-1, d1
+.ep_twc:
+    clr.b   (a1)+
+    dbra    d1, .ep_twc
+    move.b  #15, (ip_vol,a3)               ; VOL peak = full
+    move.b  #15, (ip_hld,a3)               ; ENV: infinite hold (sustain)
+    move.b  #3, (ip_dcy,a3)                ; ENV: gentle release
+    move.b  #8, (iw_pitch,a3)              ; PITCH centred (in tune)
+.ep_twd:
     move.b  #1, need_clear
     rts
 .ep_field:
