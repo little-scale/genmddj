@@ -280,6 +280,9 @@ GRID_TOP   equ 6
     dc.l ROM_END-1
     dc.l $00FF0000
     dc.l $00FFFFFF
+    dc.b "RA", $F8, $20             ; $1B0 SRAM present (odd bytes, $A130F1-gated; Q1 layout)
+    dc.l $00200001                  ; $1B4 SRAM start (odd-byte addressing)
+    dc.l $0020FFFF                  ; $1B8 SRAM end (32 KB of odd bytes)
     dcb.b $1F0-*, ' '
     dc.b "JUE"
     dcb.b $200-*, ' '
@@ -423,6 +426,8 @@ Start:
     move.b  #2, opt_vid                   ; OPTIONS defaults: region AUTO
     move.b  #0, opt_sync                  ;   sync OFF
     move.b  #0, opt_pal                   ;   UI palette 0
+    bsr     load_config                   ; SRAM overrides the OPTIONS defaults if a config exists
+    bsr     apply_palette                 ; reflect the (possibly restored) palette in CRAM
     move.b  #125, proj_tmpo               ; PROJECT defaults: 125 BPM
     move.b  #0, proj_tsp                  ;   no master transpose
     move.b  #0, proj_mode                 ;   SONG mode
@@ -6114,20 +6119,71 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     beq.s   .eo_vid
     cmpi.b  #1, d0
     beq.s   .eo_sync
-    lea     opt_pal, a1                     ; PAL 0..3
-    moveq   #3, d3
+    lea     opt_pal, a1                     ; PAL 0..7
+    moveq   #7, d3
     moveq   #1, d4
-    bra     adj_field
+    bra.s   .eo_apply
 .eo_vid:
     lea     opt_vid, a1
     moveq   #2, d3
     moveq   #1, d4
-    bra     adj_field
+    bra.s   .eo_apply
 .eo_sync:
     lea     opt_sync, a1
     moveq   #2, d3
     moveq   #1, d4
-    bra     adj_field
+.eo_apply:
+    bsr     adj_field
+    bsr     apply_palette                   ; re-apply UI palette (harmless for VID/SYNC)
+    bsr     save_config                     ; persist OPTIONS to SRAM
+    rts
+
+; ---- 8 UI palettes: c0 background, c1 text/cursor-block, c2 cursor glyph (= bg). MD $0BGR. ----
+pal_table:
+    dc.w $0E40, $00EE, $0E40        ; 0 sky blue / yellow (default)
+    dc.w $0000, $00E0, $0000        ; 1 black / green
+    dc.w $0000, $0EE0, $0000        ; 2 black / cyan
+    dc.w $0000, $006E, $0000        ; 3 black / orange
+    dc.w $0600, $0EEE, $0600        ; 4 deep blue / white
+    dc.w $0206, $0E8E, $0206        ; 5 plum / pink
+    dc.w $0040, $00EC, $0040        ; 6 forest / lime
+    dc.w $0AAA, $0000, $0AAA        ; 7 silver / black
+
+apply_palette:                            ; load pal_table[opt_pal] into CRAM colours 0-2
+    lea     VDP_CTRL, a0
+    move.l  #$C0000000, (a0)
+    moveq   #0, d0
+    move.b  opt_pal, d0
+    mulu.w  #6, d0                          ; 3 words per palette
+    lea     pal_table, a1
+    adda.w  d0, a1
+    move.w  (a1)+, VDP_DATA
+    move.w  (a1)+, VDP_DATA
+    move.w  (a1)+, VDP_DATA
+    rts
+
+; ---- config block in cart SRAM (odd-byte, $A130F1-gated). Persists the OPTIONS across power.
+; Layout: byte0 magic $A5, 1 opt_pal, 2 opt_vid, 3 opt_sync (each at $200001 + i*2). ----
+save_config:
+    move.b  #1, $A130F1                     ; map SRAM (writable)
+    lea     $200001, a1
+    move.b  #$A5, (a1)
+    move.b  opt_pal, (2,a1)
+    move.b  opt_vid, (4,a1)
+    move.b  opt_sync, (6,a1)
+    move.b  #0, $A130F1                     ; unmap (protect)
+    rts
+load_config:
+    move.b  #1, $A130F1
+    lea     $200001, a1
+    cmpi.b  #$A5, (a1)                       ; valid config?
+    bne.s   .lcdone
+    move.b  (2,a1), opt_pal
+    move.b  (4,a1), opt_vid
+    move.b  (6,a1), opt_sync
+.lcdone:
+    move.b  #0, $A130F1
+    rts
 
 edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/MODE/SLOT
     move.b  cur_row, d0

@@ -63,7 +63,8 @@ def load_wav_8bit(path):
 
 def pad_name(path):
     base = os.path.splitext(os.path.basename(path))[0]
-    base = re.sub(r'^\s*\d+\s*', '', base)           # drop a leading "NN " index
+    stripped = re.sub(r'^\s*\d+\s*', '', base)        # drop a leading "NN " index
+    base = stripped if stripped else base             # ...but keep pure-numeric chop names
     return base[:8]
 
 
