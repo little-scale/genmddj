@@ -2620,8 +2620,8 @@ render_psg_stub:
 ; FM LFO bank editor (SCR_LFO): 6 LFO rows x 6 columns ON/CH/PM/RT/DP/SY. Cursor = (cur_row
 ; 0..5, cur_col 0..5). Reads the lfo_cfg records; ON and SY share the flags byte.
 render_lfo:                                ; a0 = VDP_CTRL
-    moveq   #4, d3                          ; column header at row 4, col 3
-    moveq   #3, d4
+    moveq   #4, d3                          ; column header at row 4, col 2
+    moveq   #2, d4
     lea     str_lfo_hdr, a1
     bsr     print_at
     moveq   #0, d6                          ; LFO row r = 0..5
@@ -2680,31 +2680,34 @@ render_lfo:                                ; a0 = VDP_CTRL
     swap    d3
     ori.l   #$40000003, d3
     move.l  d3, (a0)
-    cmpi.w  #2, d7                          ; col 2 PRM -> 3-char param name
+    cmpi.w  #2, d7                          ; col 2 PARAM -> 4-char param name
     beq.s   .lfprm
-    cmpi.w  #5, d7                          ; col 5 SYN -> 3-char resync name
+    cmpi.w  #5, d7                          ; col 5 SYNC -> 5-char resync name
     beq.s   .lfsyn
     move.b  d2, d3                          ; else a single hex digit
     move.b  d1, d4
     bsr     draw_hex1
     bra.s   .lfcn
 .lfprm:
-    lea     lf_pnames, a1
-    bra.s   .lfnm
+    lea     lf_pnames, a1                   ; a1 += value * 4
+    lsl.w   #2, d2
+    adda.w  d2, a1
+    moveq   #4-1, d3
+    bra.s   .lf3
 .lfsyn:
-    lea     lf_snames, a1
-.lfnm:
-    move.w  d2, d0                          ; a1 += value * 3
+    lea     lf_snames, a1                   ; a1 += value * 5
+    move.w  d2, d0
+    add.w   d0, d0
     add.w   d0, d0
     add.w   d2, d0
     adda.w  d0, a1
-    moveq   #3-1, d0
+    moveq   #5-1, d3
 .lf3:
-    moveq   #0, d3
-    move.b  (a1)+, d3
-    add.w   d1, d3                          ; + highlight (inverse-tile offset)
-    move.w  d3, VDP_DATA
-    dbra    d0, .lf3
+    moveq   #0, d0
+    move.b  (a1)+, d0
+    add.w   d1, d0                          ; + highlight (inverse-tile offset)
+    move.w  d0, VDP_DATA
+    dbra    d3, .lf3
 .lfcn:
     addq.w  #1, d7
     cmpi.w  #7, d7
@@ -2722,14 +2725,16 @@ lf_col:                                     ; per column: lfo_cfg field offset, 
     dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
     dc.b LF_POFF,  0                        ; PO  phase offset
     even
-lf_colx: dc.b 3, 6, 9, 13, 17, 21, 25      ; screen column per LFO grid column
+lf_colx: dc.b 2, 5, 8, 14, 19, 23, 29      ; screen column per LFO grid column
     even
-lf_pnames:                                  ; 14 FM-param names (3 chars), in fmlfo_ptab order
-    dc.b "TL1TL3TL2TL4DT1DT3DT2DT4ML1ML3ML2ML4FB ALG"
+lf_pnames:                                  ; 34 FM-param names (4 chars), in fmlfo_ptab order
+    dc.b "TL1 TL3 TL2 TL4 DT1 DT3 DT2 DT4 MUL1MUL3MUL2MUL4FB  ALGO"
+    dc.b "AR1 AR3 AR2 AR4 D1R1D1R3D1R2D1R4D2R1D2R3D2R2D2R4"
+    dc.b "RR1 RR3 RR2 RR4 SL1 SL3 SL2 SL4 "
     even
-lf_snames: dc.b "NTEPHRFRE"                 ; resync modes: NOTE / PHRASE / FREE
+lf_snames: dc.b "NOTE PHRSEFREE "           ; resync modes (5 chars): NOTE / PHRASE / FREE
     even
-str_lfo_hdr: dc.b "ON CH PRM RTE DPT SYN `",0
+str_lfo_hdr: dc.b "ON CH PARAM RATE MOD SYNC  `",0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
@@ -4353,7 +4358,27 @@ fmlfo_ptab:
     dc.b i_op+3*10+0, $3C, 15, 0, i_op+3*10+1, 4    ; B  MUL S4
     dc.b i_fb,   $B0, 7, 3, i_algo, 0               ; C  FB (packed w/ ALGO)
     dc.b i_algo, $B0, 7, 0, i_fb, 3                 ; D  ALGO (packed w/ FB)
-FMLFO_NPARM equ 14
+    dc.b i_op+0*10+4, $50, 31, 0, i_op+0*10+3, 6    ; AR1 attack  (packed w/ RS)
+    dc.b i_op+1*10+4, $54, 31, 0, i_op+1*10+3, 6    ; AR3
+    dc.b i_op+2*10+4, $58, 31, 0, i_op+2*10+3, 6    ; AR2
+    dc.b i_op+3*10+4, $5C, 31, 0, i_op+3*10+3, 6    ; AR4
+    dc.b i_op+0*10+6, $60, 31, 0, i_op+0*10+5, 7    ; D1R1 decay1 (packed w/ AM)
+    dc.b i_op+1*10+6, $64, 31, 0, i_op+1*10+5, 7    ; D1R3
+    dc.b i_op+2*10+6, $68, 31, 0, i_op+2*10+5, 7    ; D1R2
+    dc.b i_op+3*10+6, $6C, 31, 0, i_op+3*10+5, 7    ; D1R4
+    dc.b i_op+0*10+7, $70, 31, 0, $FF, 0            ; D2R1 decay2 (alone)
+    dc.b i_op+1*10+7, $74, 31, 0, $FF, 0            ; D2R3
+    dc.b i_op+2*10+7, $78, 31, 0, $FF, 0            ; D2R2
+    dc.b i_op+3*10+7, $7C, 31, 0, $FF, 0            ; D2R4
+    dc.b i_op+0*10+8, $80, 15, 0, i_op+0*10+9, 4    ; RR1 release (packed w/ SL)
+    dc.b i_op+1*10+8, $84, 15, 0, i_op+1*10+9, 4    ; RR3
+    dc.b i_op+2*10+8, $88, 15, 0, i_op+2*10+9, 4    ; RR2
+    dc.b i_op+3*10+8, $8C, 15, 0, i_op+3*10+9, 4    ; RR4
+    dc.b i_op+0*10+9, $80, 15, 4, i_op+0*10+8, 0    ; SL1 sustain (packed w/ RR)
+    dc.b i_op+1*10+9, $84, 15, 4, i_op+1*10+8, 0    ; SL3
+    dc.b i_op+2*10+9, $88, 15, 4, i_op+2*10+8, 0    ; SL2
+    dc.b i_op+3*10+9, $8C, 15, 4, i_op+3*10+8, 0    ; SL4
+FMLFO_NPARM equ 34
     even
 ; FM LFO rate -> 16-bit phase increment per tick. 0 = frozen; 1-8 ramp up very slowly (song-
 ; length sweeps); 9-F = rate*256 (the old fast end, ~2.1-3.5 Hz at 60 fps).
