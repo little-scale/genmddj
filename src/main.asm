@@ -4211,20 +4211,28 @@ fmlfo_tick:
     move.b  c_lfosync(a3), d1               ; mode 0 -> bit0 (note), 1 -> bit1 (phrase)
     btst    d0, d1
     beq.s   .flnors
-    lea     lfo_phase, a4                    ; resync: restart phase at offset*16
+    lea     lfo_phase, a4                    ; resync: restart 16-bit phase at offset*16 (hi byte)
     moveq   #0, d1
     move.b  (LF_POFF,a2), d1
     lsl.w   #4, d1
-    move.b  d1, (a4,d6.w)
+    lsl.w   #8, d1
+    move.w  d6, d3
+    add.w   d3, d3
+    move.w  d1, (a4,d3.w)
 .flnors:
-    moveq   #0, d1                           ; advance phase += rate
-    move.b  (LF_RATE,a2), d1
+    moveq   #0, d1                           ; advance 16-bit phase += fmlfo_inc[rate]
+    move.b  (LF_RATE,a2), d1                 ; (curve: 0 frozen, 1-7 very slow, 9-F = old fast)
+    add.w   d1, d1
+    lea     fmlfo_inc, a4
+    move.w  (a4,d1.w), d1
+    move.w  d6, d3
+    add.w   d3, d3
     lea     lfo_phase, a4
-    move.b  (a4,d6.w), d2
-    add.b   d1, d2
-    move.b  d2, (a4,d6.w)
-    andi.w  #$FF, d2                          ; triangle fold -> -64..63
-    cmpi.w  #128, d2
+    move.w  (a4,d3.w), d2
+    add.w   d1, d2
+    move.w  d2, (a4,d3.w)
+    lsr.w   #8, d2                            ; integer part -> triangle input 0-255
+    cmpi.w  #128, d2                          ; triangle fold -> -64..63
     blo.s   .flt1
     move.w  #255, d3
     sub.w   d2, d3
@@ -4312,6 +4320,11 @@ fmlfo_ptab:
     dc.b i_algo, $B0, 7, 0, i_fb, 3                 ; D  ALGO (packed w/ FB)
 FMLFO_NPARM equ 14
     even
+; FM LFO rate -> 16-bit phase increment per tick. 0 = frozen; 1-8 ramp up very slowly (song-
+; length sweeps); 9-F = rate*256 (the old fast end, ~2.1-3.5 Hz at 60 fps).
+fmlfo_inc:
+    dc.w 0, 16, 32, 64, 128, 256, 512, 1024
+    dc.w 1664, 2304, 2560, 2816, 3072, 3328, 3584, 3840
 
 engine_tick:
     tst.b   playing
