@@ -207,6 +207,9 @@ iwl_dr     equ 24
 iwl_dd     equ 25
 iwl_cr     equ 26
 iwl_cd     equ 27
+iw_pitch   equ 28                   ; PITCH detune: 8 = in tune, <8 flat, >8 sharp (LFO -> vibrato)
+iwl_pr     equ 29                   ; PITCH LFO rate / depth
+iwl_pd     equ 30
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
@@ -4220,8 +4223,8 @@ advance_ch:                               ; a6 = channel
     move.b  #1, c_estate(a6)             ; start the AHD envelope at attack
     move.b  #0, c_vol(a6)
     move.b  #0, c_ectr(a6)
-    clr.l   wlfo_phase                    ; reset the 5 LFO phases (start each cycle at note-on)
-    clr.b   wlfo_phase+4
+    clr.l   wlfo_phase                    ; reset the 6 LFO phases (vol/warp/fold/drive/crush/pitch)
+    clr.w   wlfo_phase+4
     movea.l a1, a4                        ; a4 = instrument for wave_env / wave_lfo
     bsr     wave_env                      ; advance once (ATK 0 -> instant peak)
     bsr     wave_lfo                      ; fill wbake_in for the first bake
@@ -4889,7 +4892,7 @@ wave_lfo:
     lea     wbake_in, a3
     move.b  d0, (a3,d3.w)
     addq.w  #1, d3
-    cmpi.w  #5, d3
+    cmpi.w  #6, d3                          ; 5 table params (warp/fold/drive/crush/pitch)
     bne.s   .wls
     movem.l (sp)+, d3-d5/a2-a3
     rts
@@ -4925,11 +4928,12 @@ wlfo_one:
 .wo_ret:
     rts
 
-wlfo_sfld:                                  ; shaper LFO field table: OFFSET, RATE, DEPTH
+wlfo_sfld:                                  ; LFO field table: OFFSET, RATE, DEPTH
     dc.b iw_warp, iwl_wr, iwl_wd           ; -> wbake_in[1]
     dc.b iw_fold, iwl_fr, iwl_fd           ; -> wbake_in[2]
     dc.b iw_drive, iwl_dr, iwl_dd          ; -> wbake_in[3]
     dc.b iw_crush, iwl_cr, iwl_cd          ; -> wbake_in[4]
+    dc.b iw_pitch, iwl_pr, iwl_pd          ; -> wbake_in[5] (detune/vibrato, applied by wave_play)
     even
 
 ; ---- bake the base wave (a5) through the shaper chain into wave_bake (32 B).
@@ -5036,6 +5040,13 @@ wave_play:
     add.w   d0, d0
     lea     notetable+192, a2
     movea.w (a2,d0.w), a4                  ; a4 = increment (max ~$2140, no sign issue)
+    move.w  a4, d0                          ; PITCH: increment += increment*(pitch-8)/128
+    moveq   #0, d1                          ; pitch 8 = in tune; +-7 ~= +-1 semitone (proportional)
+    move.b  wbake_in+5, d1
+    subi.w  #8, d1
+    muls.w  d1, d0
+    asr.l   #7, d0
+    adda.w  d0, a4
     moveq   #0, d0                         ; base wave = wave_ram + WAVE# * 32
     move.b  (iw_wave,a1), d0
     andi.w  #15, d0
