@@ -2694,7 +2694,7 @@ lf_col:                                     ; per column: lfo_cfg field offset, 
     dc.b LF_FLAGS, 2                        ; SY  resync (bits 1-2)
     dc.b LF_POFF,  0                        ; PO  phase offset
     even
-str_lfo_hdr: dc.b "ON  CH  PM  RT  DP  SY  PO",0
+str_lfo_hdr: dc.b "ON  CH  PM  RT  DP  SY  `",0
     even
 
 ; ---- edit the FM LFO cell at (cur_row, cur_col). d2 = d-pad mask. a3 = the LFO record. ----
