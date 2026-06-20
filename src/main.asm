@@ -116,6 +116,8 @@ cur_wave   equ $00FFE3EC           ; WAVE screen: which wave (0-15)
 cur_wstep  equ $00FFE3ED           ; WAVE screen: step cursor (0-31)
 wave_pidx  equ $00FFE3EE           ; WAVE: B+C preset cycle index (0-7)
 wave_rng   equ $00FFE3F0           ; WAVE: random-preset xorshift state (4 bytes)
+wave_on    equ $00FFE3F4           ; engine: 1 = a wave note is sounding (per-frame re-bake)
+wave_ch    equ $00FFE3F6           ; engine: ch_state ptr of the sounding wave channel (long)
 wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -394,6 +396,7 @@ Start:
     move.b  #$80, (a2)+                   ; flat at centre ($80)
     dbra    d0, .winitf
     move.b  #0, wave_pidx                 ; preset cycle starts at sine
+    move.b  #0, wave_on                   ; no wave note sounding yet
     move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
@@ -3891,6 +3894,7 @@ engine_tick:
     beq.s   .sret
     bsr     push_scb
 .sret:
+    bsr     wave_silence                  ; stopped -> park any sounding wave
     rts
 .play:
     ; global groove
@@ -3928,6 +3932,36 @@ engine_tick:
     beq.s   .nopush
     bsr     push_scb
 .nopush:
+    bsr     wave_rebake                   ; re-arm the sounding wave each frame (sustain + live edits)
+    rts
+
+; ---- per-frame wave re-bake: re-push the sounding wave + re-arm (no phase reset on the
+;      Z80 side, so it's seamless). a6/a1 set from wave_ch + its instrument. ----
+wave_rebake:
+    tst.b   wave_on
+    beq.s   .wrx
+    movea.l wave_ch, a6
+    lea     instrum, a1
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a1
+    bsr     wave_play
+.wrx:
+    rts
+
+; ---- stop a sounding wave (on STOP): clear the flag + tell the Z80 to park the DAC ----
+wave_silence:
+    tst.b   wave_on
+    beq.s   .wsx
+    move.b  #0, wave_on
+    move.w  #$0100, Z80_BUSREQ
+.wsw:
+    btst    #0, Z80_BUSREQ
+    bne.s   .wsw
+    addq.b  #1, Z80_RAM+$1FF4             ; bump WV_OFF -> Z80 parks the DAC, leaves wave mode
+    move.w  #$0000, Z80_BUSREQ
+.wsx:
     rts
 
 ; gate countdown: $FF = held; else decrement, and request key-off when it hits 0
@@ -4079,6 +4113,7 @@ advance_ch:                               ; a6 = channel
     andi.w  #$0F, d1                     ; pad = note % 16 (wraps every octave-ish)
     lea     0(a4,d2.w), a1               ; a1 = the KIT instrument (for gain/rate)
     bsr     dac_play
+    move.b  #0, wave_on                  ; a sample takes the DAC -> end any wave note
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
     move.b  #0, c_trig(a6)
     rts
@@ -4087,6 +4122,8 @@ advance_ch:                               ; a6 = channel
     bne.s   .fmtrig
     lea     0(a4,d2.w), a1               ; a1 = the WAVE instrument
     bsr     wave_play
+    move.b  #1, wave_on                  ; mark sounding -> engine re-bakes it every frame
+    move.l  a6, wave_ch
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
     move.b  #0, c_trig(a6)
     rts

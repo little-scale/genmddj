@@ -64,6 +64,8 @@ BANKS 1
 .DEFINE WV_PHASE  $1FF0     ; phase accumulator, 8.8 fixed (LE word)
 .DEFINE D_WMODE   $1FF2     ; 1 = wave-loop mode (else ROM PCM)
 .DEFINE WV_LAST   $1FF3     ; last wave trigger processed
+.DEFINE WV_OFF    $1FF4     ; 68k bumps this to stop the wave (park DAC, leave wave mode)
+.DEFINE WV_OLAST  $1FF5     ; last wave-off processed
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -81,6 +83,10 @@ start:
     ld   (D_WMODE), a           ; not in wave mode
     ld   (WV_TRIG), a
     ld   (WV_LAST), a
+    ld   (WV_PHASE), a          ; phase accumulator starts at step 0
+    ld   (WV_PHASE+1), a
+    ld   (WV_OFF), a
+    ld   (WV_OLAST), a
     ld   b, a                   ; b = last SCB seq processed
     ld   d, a                   ; d = last dac trigger
 
@@ -113,12 +119,19 @@ main:
     ld   d, a
     call dac_arm
 mn_wtrig:
-    ld   a, (WV_TRIG)           ; new wave note to start?
+    ld   a, (WV_TRIG)           ; new wave note (or per-tick re-arm)?
     ld   hl, WV_LAST
+    cp   (hl)
+    jr   z, mn_woff
+    ld   (hl), a
+    call wave_arm
+mn_woff:
+    ld   a, (WV_OFF)            ; wave stop requested?
+    ld   hl, WV_OLAST
     cp   (hl)
     jr   z, mn_dac
     ld   (hl), a
-    call wave_arm
+    call wave_off
 mn_dac:
     ld   a, (YM_A0)             ; Timer A overflow -> time to feed one DAC sample
     bit  0, a
@@ -163,18 +176,27 @@ dac_arm:
     ld   (D_PLAY), a
     ret
 
-; ---- arm wave-loop mode: enable the DAC, reset the phase, mark wave mode ----
+; ---- arm wave-loop mode: enable the DAC, mark wave mode. Does NOT reset the phase,
+;      so the per-tick re-arm (the engine re-bakes the wave every frame) is seamless.
 wave_arm:
     ld   a, $2B
     ld   (YM_A0), a
     ld   a, $80
     ld   (YM_D0), a
-    xor  a
-    ld   (WV_PHASE), a          ; phase = 0 (start at step 0)
-    ld   (WV_PHASE+1), a
-    inc  a
+    ld   a, 1
     ld   (D_WMODE), a
     ld   (D_PLAY), a
+    ret
+
+; ---- stop the wave: park the DAC at centre, drop out of wave mode ----
+wave_off:
+    xor  a
+    ld   (D_PLAY), a
+    ld   (D_WMODE), a
+    ld   a, $2A                 ; park ch6 DAC at centre (leave it enabled -> no click)
+    ld   (YM_A0), a
+    ld   a, $80
+    ld   (YM_D0), a
     ret
 
 ; ---- feed one PCM byte (gained), advance by the rate step, re-bank, stop at end ----
