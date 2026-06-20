@@ -55,6 +55,13 @@ BANKS 1
 .DEFINE D_STEP    $1FC8
 .DEFINE D_HALF    $1FC9
 .DEFINE D_HFLIP   $1FCA     ; half-rate toggle
+; --- wavetable mode (32-byte wave looped from local RAM via a phase accumulator) ---
+.DEFINE WV_TRIG   $1FCB     ; wave trigger seq (68k bumps it)
+.DEFINE WV_INC    $1FCC     ; phase increment, 8.8 fixed (LE word)
+.DEFINE WV_BUF    $1FD0     ; 32-byte baked wave buffer ($1FD0-$1FEF)
+.DEFINE WV_PHASE  $1FF0     ; phase accumulator, 8.8 fixed (LE word)
+.DEFINE D_WMODE   $1FF2     ; 1 = wave-loop mode (else ROM PCM)
+.DEFINE WV_LAST   $1FF3     ; last wave trigger processed
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -69,6 +76,9 @@ start:
     ld   (SCB_SEQ), a
     ld   (SCB_DAC), a
     ld   (D_PLAY), a
+    ld   (D_WMODE), a           ; not in wave mode
+    ld   (WV_TRIG), a
+    ld   (WV_LAST), a
     ld   b, a                   ; b = last SCB seq processed
     ld   d, a                   ; d = last dac trigger
 
@@ -97,9 +107,16 @@ start:
 main:
     ld   a, (SCB_DAC)           ; new sample to start?
     cp   d
-    jr   z, mn_dac
+    jr   z, mn_wtrig
     ld   d, a
     call dac_arm
+mn_wtrig:
+    ld   a, (WV_TRIG)           ; new wave note to start?
+    ld   hl, WV_LAST
+    cp   (hl)
+    jr   z, mn_dac
+    ld   (hl), a
+    call wave_arm
 mn_dac:
     ld   a, (YM_A0)             ; Timer A overflow -> time to feed one DAC sample
     bit  0, a
@@ -125,6 +142,8 @@ dac_arm:
     ld   (YM_A0), a
     ld   a, $80
     ld   (YM_D0), a
+    xor  a
+    ld   (D_WMODE), a           ; PCM sample -> leave wave mode
     ld   hl, (SCB_DBANK)
     ld   (D_BANK), hl
     call set_bank
@@ -142,8 +161,25 @@ dac_arm:
     ld   (D_PLAY), a
     ret
 
+; ---- arm wave-loop mode: enable the DAC, reset the phase, mark wave mode ----
+wave_arm:
+    ld   a, $2B
+    ld   (YM_A0), a
+    ld   a, $80
+    ld   (YM_D0), a
+    xor  a
+    ld   (WV_PHASE), a          ; phase = 0 (start at step 0)
+    ld   (WV_PHASE+1), a
+    inc  a
+    ld   (D_WMODE), a
+    ld   (D_PLAY), a
+    ret
+
 ; ---- feed one PCM byte (gained), advance by the rate step, re-bank, stop at end ----
 dac_feed:
+    ld   a, (D_WMODE)
+    or   a
+    jp   nz, wave_feed
     ld   hl, (D_PTR)
     ld   a, $2A                 ; ch6 DAC data register
     ld   (YM_A0), a
@@ -201,6 +237,29 @@ df_end:
     ld   (YM_D0), a
 df_pace:
     ret                        ; Timer A paces the feed now; no busy-wait needed
+
+; ---- wavetable feed: WV_BUF[(phase>>8) & 31] -> DAC, then phase += inc ----
+wave_feed:
+    ld   hl, (WV_PHASE)
+    ld   a, h                   ; integer part of the 8.8 phase
+    and  31                     ; -> step 0..31 (the wave loops every 32)
+    ld   c, a
+    ld   b, 0
+    ld   hl, WV_BUF
+    add  hl, bc
+    ld   c, (hl)                ; wave sample
+    ld   a, $2A                 ; ch6 DAC data register
+    ld   (YM_A0), a
+    ld   a, c
+    ld   (YM_D0), a
+    ld   hl, (WV_PHASE)         ; phase += increment (byte loads: ld de,(nn) is unused here)
+    ld   a, (WV_INC)
+    ld   e, a
+    ld   a, (WV_INC+1)
+    ld   d, a
+    add  hl, de
+    ld   (WV_PHASE), hl
+    ret
 
 ; ---- set the 9-bit window bank from hl (LSB first) ----
 set_bank:

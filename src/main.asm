@@ -4072,13 +4072,21 @@ advance_ch:                               ; a6 = channel
     move.b  c_instr(a6), d2
     mulu.w  #INSTR_SIZE, d2
     cmpi.b  #1, (i_type,a4,d2.w)         ; i_type 1 = KIT
-    bne.s   .fmtrig
+    bne.s   .nwkit
     move.b  (i_kit,a4,d2.w), d0          ; kit index
     moveq   #0, d1
     move.b  c_note(a6), d1
     andi.w  #$0F, d1                     ; pad = note % 16 (wraps every octave-ish)
     lea     0(a4,d2.w), a1               ; a1 = the KIT instrument (for gain/rate)
     bsr     dac_play
+    move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
+    move.b  #0, c_trig(a6)
+    rts
+.nwkit:
+    cmpi.b  #2, (i_type,a4,d2.w)         ; i_type 2 = WAVE -> wavetable on the DAC
+    bne.s   .fmtrig
+    lea     0(a4,d2.w), a1               ; a1 = the WAVE instrument
+    bsr     wave_play
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
     move.b  #0, c_trig(a6)
     rts
@@ -4633,6 +4641,42 @@ dac_play:
     move.w  #$0000, Z80_BUSREQ
 .dpx:
     movem.l (sp)+, d2-d6/a0
+    rts
+
+; WAVE note trigger: copy the base wave into Z80 RAM + push the pitch increment, arm wave
+; mode. a1 = WAVE instrument; reads c_note(a6). (v1: raw wave -- shaper chain/env come next.)
+wave_play:
+    movem.l d0-d3/a0-a3, -(sp)
+    moveq   #0, d0                         ; base wave = wave_ram + WAVE# * 32
+    move.b  (iw_wave,a1), d0
+    andi.w  #15, d0
+    lsl.w   #5, d0
+    lea     wave_ram, a0
+    adda.w  d0, a0
+    moveq   #0, d0                         ; note -> phase increment (notetable + 192)
+    move.b  c_note(a6), d0
+    cmpi.w  #96, d0
+    bhs.s   .wpx
+    add.w   d0, d0
+    lea     notetable+192, a2
+    move.w  (a2,d0.w), d2                  ; increment (BE word)
+    move.w  #$0100, Z80_BUSREQ
+.wpw:
+    btst    #0, Z80_BUSREQ
+    bne.s   .wpw
+    move.b  d2, Z80_RAM+$1FCC             ; WV_INC lo (Z80 little-endian)
+    move.w  d2, d3
+    lsr.w   #8, d3
+    move.b  d3, Z80_RAM+$1FCD             ; WV_INC hi
+    lea     Z80_RAM+$1FD0, a3             ; copy the 32-byte wave into WV_BUF
+    moveq   #32-1, d0
+.wpc:
+    move.b  (a0)+, (a3)+
+    dbra    d0, .wpc
+    addq.b  #1, Z80_RAM+$1FCB             ; bump the wave trigger -> Z80 arms wave mode
+    move.w  #$0000, Z80_BUSREQ
+.wpx:
+    movem.l (sp)+, d0-d3/a0-a3
     rts
 rate_step:  dc.b 1, 2, 4, 1               ; i_rate 0..3 = 1x/2x/4x/0.5x -> window step
 rate_half:  dc.b 0, 0, 0, 1               ; i_rate 3 (0.5x) feeds each byte twice
