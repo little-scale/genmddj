@@ -2563,7 +2563,7 @@ FM_VTOP equ 7                             ; voice params, one per row, LFO at FM
 FM_OHDR equ 16                            ; operator grid header (INST + gaps, no LFO row)
 FM_OTOP equ 17                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
-ALGO_DIAG_ROW equ 6                       ; algorithm diagram (2x size)
+ALGO_DIAG_ROW equ 6                       ; algorithm diagram (1x, half size)
 ALGO_DIAG_COL equ 12
 ENV_TW  equ 32                            ; envelope canvas: 4 ops x 8 tiles wide, 4 tall
 ENV_TH  equ 4
