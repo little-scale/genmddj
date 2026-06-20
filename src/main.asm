@@ -114,6 +114,8 @@ proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
 proj_slot  equ $00FFE3EA           ; PROJECT: save slot 1..8
 cur_wave   equ $00FFE3EC           ; WAVE screen: which wave (0-15)
 cur_wstep  equ $00FFE3ED           ; WAVE screen: step cursor (0-31)
+wave_pidx  equ $00FFE3EE           ; WAVE: B+C preset cycle index (0-7)
+wave_rng   equ $00FFE3F0           ; WAVE: random-preset xorshift state (4 bytes)
 wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -385,6 +387,8 @@ Start:
 .winitf:
     move.b  #$80, (a2)+                   ; flat at centre ($80)
     dbra    d0, .winitf
+    move.b  #0, wave_pidx                 ; preset cycle starts at sine
+    move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
     move.b  #1, need_clear               ; draw header/name on first frame
 
@@ -2547,8 +2551,125 @@ wave_bheld:
 .wbdone:
     rts
 
+; B+C: stamp the next preset onto the current wave, cycling through the set.
 wave_preset:
-    rts                                      ; TODO: sine / tri / saw / square / pulse / organ / random
+    lea     wave_ram, a2
+    moveq   #0, d0
+    move.b  cur_wave, d0
+    lsl.w   #5, d0
+    adda.w  d0, a2                          ; a2 = current wave (32 bytes)
+    moveq   #0, d1
+    move.b  wave_pidx, d1                   ; preset to apply
+    move.b  d1, d0
+    addq.b  #1, d0                          ; advance + wrap for next press
+    andi.b  #7, d0
+    move.b  d0, wave_pidx
+    move.b  #1, vdirty
+    lsl.w   #2, d1                          ; *4 (long jump-table entries)
+    lea     .jtab(pc), a1
+    move.l  (a1,d1.w), a1
+    jmp     (a1)
+.jtab:
+    dc.l    wp_sine, wp_tri, wp_saw, wp_square
+    dc.l    wp_p25, wp_p125, wp_organ, wp_random
+
+wp_sine:
+    lea     wave_sintab, a1
+    moveq   #32-1, d0
+.s:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .s
+    rts
+wp_organ:                                   ; 2nd harmonic of the sine (2 cycles)
+    lea     wave_sintab, a1
+    moveq   #0, d0
+.o:
+    move.w  d0, d1
+    add.w   d1, d1
+    andi.w  #31, d1
+    move.b  (a1,d1.w), (a2)+
+    addq.w  #1, d0
+    cmpi.w  #32, d0
+    bne.s   .o
+    rts
+wp_saw:
+    moveq   #0, d0
+.s:
+    move.b  d0, d1
+    lsl.b   #3, d1                          ; step*8
+    move.b  d1, (a2)+
+    addq.b  #1, d0
+    cmpi.b  #32, d0
+    bne.s   .s
+    rts
+wp_tri:
+    moveq   #0, d0
+.t:
+    move.w  d0, d1
+    cmpi.w  #16, d1
+    blo.s   .up
+    moveq   #31, d2
+    sub.w   d1, d2                          ; 31-s on the falling half
+    move.w  d2, d1
+.up:
+    lsl.w   #4, d1                          ; *16
+    cmpi.w  #255, d1
+    bls.s   .ok
+    move.w  #255, d1
+.ok:
+    move.b  d1, (a2)+
+    addq.w  #1, d0
+    cmpi.w  #32, d0
+    bne.s   .t
+    rts
+wp_square:                                  ; 50% duty
+    moveq   #16, d2
+    bra.s   wp_pulse
+wp_p25:                                     ; 25% duty
+    moveq   #8, d2
+    bra.s   wp_pulse
+wp_p125:                                    ; 12.5% duty
+    moveq   #4, d2
+wp_pulse:
+    moveq   #0, d0
+.p:
+    cmp.b   d2, d0
+    bhs.s   .lo
+    move.b  #$FF, (a2)+
+    bra.s   .pn
+.lo:
+    clr.b   (a2)+
+.pn:
+    addq.b  #1, d0
+    cmpi.b  #32, d0
+    bne.s   .p
+    rts
+wp_random:
+    move.l  wave_rng, d0
+    move.w  g_ticks, d1                     ; mix in the tick so it differs each press
+    add.l   d1, d0
+    moveq   #32-1, d1
+.r:
+    move.l  d0, d2                          ; xorshift32
+    lsl.l   #7, d2
+    eor.l   d2, d0
+    move.l  d0, d2
+    lsr.l   #5, d2
+    eor.l   d2, d0
+    move.l  d0, d2
+    lsl.l   #3, d2
+    eor.l   d2, d0
+    move.l  d0, d2
+    swap    d2
+    move.b  d2, (a2)+
+    dbra    d1, .r
+    move.l  d0, wave_rng
+    rts
+
+wave_sintab:                                ; $80 +/- 127*sin, 32 steps
+    dc.b    $80,$99,$B1,$C7,$DA,$EA,$F5,$FD,$FF,$FD,$F5,$EA,$DA,$C7,$B1,$99
+    dc.b    $80,$67,$4F,$39,$26,$16,$0B,$03,$01,$03,$0B,$16,$26,$39,$4F,$67
+    even
 
 ; WAVE screen: 32 centred bars (one column per step, cols 2-33, canvas rows 6-21).
 ; Centre line between R=7 (row13) and R=8 (row14); value $80 = centre. Each row is
