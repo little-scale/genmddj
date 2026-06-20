@@ -609,8 +609,8 @@ VBlankInt:
     bsr     render_phrase
     bsr     render_track_playing
 .gd:
-    addq.w  #1, g_ticks                  ; tick counter (4 hex) at row1 col35
-    move.l  #$40C60003, (a0)
+    addq.w  #1, g_ticks                  ; tick counter (4 hex) at row0 col35
+    move.l  #$40460003, (a0)
     move.w  g_ticks, d2
     lea     hexd, a1
     moveq   #3, d3
