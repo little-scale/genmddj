@@ -2520,8 +2520,8 @@ clear_grid:                               ; a0=VDP_CTRL; blank header + grid + e
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    moveq   #34-1, d3                      ; cols 0-33 (covers the wide SONG header)
-.col:
+    moveq   #40-1, d3                      ; cols 0-39 (full width: also wipes the splash band in the
+.col:                                          ;   status column 34-39; the status panel redraws it)
     move.w  #' ', VDP_DATA
     dbra    d3, .col
     addq.w   #1, d2
@@ -3163,8 +3163,8 @@ lf_emax: dc.b 0, 5, FMLFO_NPARM-1, 255, 15, 0, 15, 0  ; max per col (CH=FM 0-5; 
 ; AHD ATK/HLD/DCY). Cursor = (cur_row 0..7, cur_col 0..2). Plus the live shape preview.
 render_wave_inst:                          ; a0 = VDP_CTRL
     bsr     render_inst_hdr               ; a3 = instrum[cur_instr]
-    moveq   #7, d3                          ; "OFF RAT DEP" header above the LFO rows
-    moveq   #7, d4
+    moveq   #8, d3                          ; "OFF RAT DEP" header (row 8; col 8 aligns INST/WAVE)
+    moveq   #8, d4
     lea     str_grid_hdr, a1
     bsr     print_at
     moveq   #0, d6                          ; grid row r = 0..7
@@ -3201,9 +3201,9 @@ render_wave_inst:                          ; a0 = VDP_CTRL
     bne.s   .wgnh
     moveq   #$60, d2
 .wgnh:
-    move.w  d7, d4                          ; cell column = 7 + c*4
+    move.w  d7, d4                          ; cell column = 8 + c*4 (aligns with INST/WAVE at col 8)
     lsl.w   #2, d4
-    addi.w  #7, d4
+    addi.w  #8, d4
     moveq   #0, d3                          ; VDP addr at (srow, cellcol), clear hi word first
     move.w  d5, d3
     lsl.w   #6, d3
@@ -3640,11 +3640,11 @@ render_kit:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
-    moveq   #5, d3                          ; "KIT" + kit index at row 5 (cur_row 2)
+    moveq   #6, d3                          ; "KIT" + kit index at row 6 (cur_row 2; blank row 5 = spacer)
     moveq   #1, d4
     lea     str_kit, a1
     bsr     print_at
-    move.l  #$42900003, (a0)               ; kit index at row 5 col 8
+    move.l  #$43100003, (a0)               ; kit index at row 6 col 8
     move.b  (i_kit,a3), d3
     moveq   #0, d4
     cmpi.b  #2, cur_row
@@ -3652,7 +3652,7 @@ render_kit:
     moveq   #$60, d4                         ; highlight the KIT field row
 .rk1:
     bsr     draw_hex2
-    moveq   #6, d3                          ; "RATE" + value at row 6 (cur_row 3)
+    moveq   #7, d3                          ; "RATE" + value at row 7 (cur_row 3)
     moveq   #1, d4
     lea     str_rate, a1
     bsr     print_at
@@ -3667,14 +3667,14 @@ render_kit:
     lsl.w   #2, d1
     lea     kit_rate_lbl, a1
     move.l  (a1,d1.w), a1                    ; rate name (.5X / 1X / 2X / 4X)
-    moveq   #6, d3
+    moveq   #7, d3
     moveq   #8, d4
     bsr     print_hl
-    moveq   #7, d3                          ; "TSP" + value at row 7 (cur_row 4)
+    moveq   #8, d3                          ; "TSP" + value at row 8 (cur_row 4)
     moveq   #1, d4
     lea     str_tsp, a1
     bsr     print_at
-    move.l  #$43900003, (a0)               ; TSP value at row 7 col 8
+    move.l  #$44100003, (a0)               ; TSP value at row 8 col 8
     move.b  (i_tsp,a3), d3
     moveq   #0, d4
     cmpi.b  #4, cur_row
@@ -3682,11 +3682,11 @@ render_kit:
     moveq   #$60, d4                         ; highlight the TSP field row
 .rktsp:
     bsr     draw_hex2
-    moveq   #9, d3                          ; "PADS" + 16 fill markers at row 9 (blank row 8 = spacer)
+    moveq   #10, d3                         ; "PADS" + 16 fill markers at row 10 (blank row 9 = spacer)
     moveq   #1, d4
     lea     str_pads, a1
     bsr     print_at
-    move.l  #$448C0003, (a0)               ; markers at row 9 col 6
+    move.l  #$450C0003, (a0)               ; markers at row 10 col 6
     lea     sample_pool, a4
     adda.w  #16, a4                          ; skip the magic header -> directory
     moveq   #0, d2
@@ -7506,7 +7506,7 @@ wave_step:  dc.b 1, 4, 4, 4, 4, 1, 1, 1, 1, 16, 4
 wave_fmt:   dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0    ; all hex1 except TBL (hex2)
     even
 ; WAVE instrument grid: 8 rows, up to 3 columns each ($FF = empty cell). All cells are 0-15.
-wgrid_srow: dc.b 5, 6, 8, 9, 10, 11, 12, 13         ; screen row per grid row (gap at 7 = header)
+wgrid_srow: dc.b 6, 7, 9, 10, 11, 12, 13, 14         ; screen row per grid row (gap at 8 = header; blank 5)
 wgrid_cc:   dc.b 1, 3, 3, 3, 3, 3, 3, 3             ; columns per row (for cursor clamping)
     even
 wgrid_lbl:  dc.l str_w_wave, str_env, str_vol, str_warp, str_fold, str_drive, str_crush, str_w_pitch
