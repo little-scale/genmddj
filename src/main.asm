@@ -1413,7 +1413,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #9, d1                          ; WAVE: INST + TYPE + 8 grid rows (rows 2..9)
     cmpi.b  #1, d0
     bne.s   .crkit
-    moveq   #3, d1                          ; KIT: + the kit-selector and rate rows
+    moveq   #4, d1                          ; KIT: + kit-selector, rate, TSP rows
 .crkit:
     cmpi.b  #3, d0
     bne.s   .crk1
@@ -1791,8 +1791,15 @@ edit_psg:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
-    cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = kit, row 3 = rate
+    cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = kit, row 3 = rate, row 4 = TSP
     bne.s   .ep_nkit
+    cmpi.b  #4, cur_row
+    bne.s   .ep_krate
+    lea     (i_tsp,a3), a1                ; row 4 = TSP (signed byte, wraps 00<->FF)
+    moveq   #255, d3
+    moveq   #12, d4
+    bra     adj_field
+.ep_krate:
     cmpi.b  #3, cur_row
     bne.s   .ep_ksel
     lea     (i_rate,a3), a1                ; row 3 = RATE (0..3 -> .5x/1x/2x/4x)
@@ -3663,11 +3670,23 @@ render_kit:
     moveq   #6, d3
     moveq   #8, d4
     bsr     print_hl
-    moveq   #8, d3                          ; "PADS" + 16 fill markers at row 8
+    moveq   #7, d3                          ; "TSP" + value at row 7 (cur_row 4)
+    moveq   #1, d4
+    lea     str_tsp, a1
+    bsr     print_at
+    move.l  #$43900003, (a0)               ; TSP value at row 7 col 8
+    move.b  (i_tsp,a3), d3
+    moveq   #0, d4
+    cmpi.b  #4, cur_row
+    bne.s   .rktsp
+    moveq   #$60, d4                         ; highlight the TSP field row
+.rktsp:
+    bsr     draw_hex2
+    moveq   #9, d3                          ; "PADS" + 16 fill markers at row 9 (blank row 8 = spacer)
     moveq   #1, d4
     lea     str_pads, a1
     bsr     print_at
-    move.l  #$440C0003, (a0)               ; markers at row 8 col 6
+    move.l  #$448C0003, (a0)               ; markers at row 9 col 6
     lea     sample_pool, a4
     adda.w  #16, a4                          ; skip the magic header -> directory
     moveq   #0, d2
@@ -5299,8 +5318,8 @@ advance_ch:                               ; a6 = channel
     adda.w  d3, a4
     cmpi.b  #3, (a4)                       ; TONE/NOISE (>=3) transpose -> ip_tsp
     bhs.s   .psgtsp
-    tst.b   (a4)                            ; FM (type 0) transpose -> i_tsp; KIT/WAVE: none
-    bne.s   .notsp
+    cmpi.b  #2, (a4)                        ; FM (0) + KIT (1) transpose -> i_tsp; WAVE (2): none
+    beq.s   .notsp
     move.b  (i_tsp,a4), d3
     bra.s   .addtsp
 .psgtsp:
@@ -7249,7 +7268,9 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     lea     g_lfo, a1                        ; global FM LFO: 0=off, 1-8 = on at rate 0-7
     moveq   #8, d3
     moveq   #1, d4
-    bra     adj_field
+    bsr     adj_field
+    move.b  #1, repatch                      ; $22 (global LFO) is emitted with F1's patch -> re-push
+    rts                                       ;   it now so the new rate is heard without touching AMS/FMS
 .ep_tmpo:                                 ; L/R +-1, U/D +-10, clamp [32,255]
     moveq   #0, d0
     move.b  proj_tmpo, d0
