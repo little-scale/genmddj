@@ -5286,6 +5286,15 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_trig(a6)
     rts
 .fmtrig:
+    cmpi.b  #5, c_track(a6)              ; F6 hosts the DAC: an FM note here must drop ch6 out of
+    bne.s   .fm_nodac                    ;   DAC mode ($2B off) or the FM voice stays muted
+    move.w  #$0100, Z80_BUSREQ
+.fm_dacw:
+    btst    #0, Z80_BUSREQ
+    bne.s   .fm_dacw
+    addq.b  #1, Z80_RAM+$1FF4            ; bump WV_OFF -> Z80 wave_off disables ch6 DAC
+    move.w  #$0000, Z80_BUSREQ
+.fm_nodac:
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
     lea     instrum, a4                  ; HLD: gate time from the channel's instrument
