@@ -122,6 +122,7 @@ g_wait     equ $00FFE428           ; W command: this-row frame-count override (0
 cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose (signed; 0 each row)
 hop_ctr    equ $00FFE42A           ; H command: hops taken this advance (runaway guard; 0 each advance)
 k_set      equ $00FFE42B           ; K command: 1 if K set the gate this row (note-on must not override)
+c_set      equ $00FFE42C           ; C command: 1 if C set the chord this row (note-on keeps it, else clears)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -5020,6 +5021,7 @@ advance_ch:                               ; a6 = channel
 .noreset:
     move.b  #0, cmd_tsp                    ; J command: clear this row's repeat-gated transpose
     move.b  #0, k_set                      ; K command: clear this row's gate-override flag
+    move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
     beq     .cmd_hop
@@ -5172,6 +5174,7 @@ advance_ch:                               ; a6 = channel
     move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_c:
+    move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
     move.b  (3,a1,d1.w), d2               ; C xy = chord offsets (x<<4)|y semitones; 0 = off
     moveq   #0, d3
     move.b  c_track(a6), d3
@@ -5264,6 +5267,15 @@ advance_ch:                               ; a6 = channel
     cmpi.w  #96, d2
     bhs     .ret
     move.b  d2, c_note(a6)
+    tst.b   c_set                          ; C command: a new note with no C this row clears the chord
+    bne.s   .csok                          ;   (so the arp doesn't latch onto following notes)
+    movem.l d0/a0, -(sp)                    ; scratch d0/a0; d2 still holds the note this path needs
+    move.b  c_track(a6), d0
+    andi.w  #$00FF, d0
+    lea     c_chord, a0
+    clr.b   (a0,d0.w)
+    movem.l (sp)+, d0/a0
+.csok:
     bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
     cmpi.b  #1, c_type(a6)               ; PSG: (re)start the instrument's macro table
