@@ -1159,21 +1159,34 @@ grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
     lea     scr_grid, a1
     move.b  (a1,d6.w), d0
     cmpi.b  #$FF, d0
-    beq.s   .gn_skip                       ; empty -> keep stepping
+    beq     .gn_skip                       ; empty -> keep stepping
     cmp.b   cur_screen, d0
-    beq.s   .gn_ret                        ; wrapped back to self -> no move
+    beq     .gn_ret                        ; wrapped back to self -> no move
     moveq   #0, d1                          ; target cursor row (0 = top of the new screen)
     cmpi.b  #SCR_LFO, cur_screen           ; LFO -> INSTR on an FM instrument: land on OP1 MUL
-    bne.s   .gn_set
+    bne.s   .gn_notlfo
     cmpi.b  #SCR_INSTR, d0
-    bne.s   .gn_set
+    bne.s   .gn_notlfo
     lea     instrum, a1
     moveq   #0, d2
     move.b  cur_instr, d2
     mulu.w  #INSTR_SIZE, d2
     tst.b   (i_type,a1,d2.w)
-    bne.s   .gn_set
+    bne.s   .gn_notlfo
     moveq   #NVOICE+2, d1                   ; first operator row
+.gn_notlfo:
+    cmpi.b  #SCR_PHRASE, cur_screen        ; PHRASE -> INSTR: land on the instrument under the cursor row
+    bne.s   .gn_set
+    cmpi.b  #SCR_INSTR, d0
+    bne.s   .gn_set
+    movem.l d0/d1, -(sp)
+    bsr     cur_phrase_addr                ; a1 = current phrase base
+    moveq   #0, d1
+    move.b  cur_row, d1
+    lsl.w   #2, d1                          ; row * 4 (note,instr,cmd,prm)
+    addq.w  #1, d1                          ; +1 = the instr byte
+    move.b  (a1,d1.w), cur_instr
+    movem.l (sp)+, d0/d1
 .gn_set:
     move.b  d0, cur_screen
     move.b  #1, need_clear
@@ -1687,13 +1700,19 @@ edit_fm:
     move.b  (a2,d1.w), d4
 .adj:
     bsr     adj_field                      ; a1=field d2=buttons d3=max d4=step -> wrap-adjust
-    ; an FM patch field changed -> make every playing voice adopt it (not just F1), so you can
-    ; tweak an instrument live against a looping phrase on any track
-    move.b  #1, repatch                    ; F1: re-push its patch on the next SCB push (immediate)
-    lea     pshadow, a0                     ; F2-F6: invalidate shadows -> re-patch on next note-on
+    ; an FM patch field changed -> invalidate the shadow ONLY for channels currently playing this
+    ; instrument, so they re-patch on their next note-on (live edit on any track, no stray writes)
+    lea     ch_state, a6
+    lea     pshadow, a0
+    move.b  cur_instr, d1
     moveq   #NCH-1, d0
 .fed:
-    move.b  #$FF, (a0)+
+    cmp.b   c_instr(a6), d1
+    bne.s   .fed_n
+    move.b  #$FF, (a0)                      ; this channel is on the edited instrument -> re-patch
+.fed_n:
+    addq.l  #1, a0
+    lea     CHSIZE(a6), a6
     dbra    d0, .fed
     rts
 
