@@ -4903,6 +4903,10 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_o
     cmpi.b  #21, d2                        ; U xx = modulator TL (brightness)
     beq     .cmd_u
+    cmpi.b  #11, d2                        ; K xx = note cut after xx ticks
+    beq     .cmd_k
+    cmpi.b  #20, d2                        ; T xx = tempo (BPM)
+    beq     .cmd_t
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -4998,6 +5002,14 @@ advance_ch:                               ; a6 = channel
     move.b  d2, (a4,d3.w)
     lea     lu_dirty, a4
     move.b  #1, (a4,d3.w)
+    bra     .cmddone
+.cmd_k:
+    move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks (the gate countdown)
+    move.b  d2, c_hold(a6)
+    bra     .cmddone
+.cmd_t:
+    move.b  (3,a1,d1.w), d2               ; T xx = tempo (BPM); the row-advance uses 1250/proj_tmpo
+    move.b  d2, proj_tmpo
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0

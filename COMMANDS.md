@@ -162,6 +162,32 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
 - **Param widths / editor formatting** per command — fold into the table as we implement.
 
 ## 6. Implementation log (as built)
-- **Q (per-channel)** — `Q xy` now writes `$B0` (`(FB<<3)|ALGO`) for the *running* channel via
-  a per-channel live slot (`lq_b0`/`lq_dirty`), emitted in `compose_fm`; no more F1-only
-  `live_*`/repatch. Proves the targeted per-channel write path of §3.1. *(first of the set)*
+
+**Built (per-channel, ear-test individually):** H, I (pre-existing) + the new batch —
+- **Q xy** ALGO+FB → `$B0` (live slot `lq_*`, emitted in `compose_fm`).
+- **X xx** carrier volume → carrier `$40` (TL + `(15-vol)*8` atten) via `emit_x_tl`.
+- **O xy** pan → `$B4` bits 7/6 (x=L, y=R), preserving instrument AMS/FMS.
+- **U xx** modulator TL offset → modulator `$40` via `emit_u_tl` (brightness/filter).
+- **K xx** note cut after xx ticks → `c_hold` (the gate countdown). *(PCM-abort TBD)*
+- **T xx** tempo → `proj_tmpo` (row-advance = `1250/proj_tmpo`).
+
+All FM live commands are now per-channel/targeted (§3.1) — F1-F6, not F1-only, no repatch.
+
+**Remaining — grouped by the engine hook each needs (next batches):**
+- *Patch-source*: **Y xx** (adopt instrument xx's patch; needs `emit_ch_patch` from a chosen
+  instr + a per-note revert).
+- *Per-channel pitch offset* (one shared mechanism, then cheap): **F** finetune, **P** pitch
+  bend, **L** slide, **C** chord/arp — a per-channel cents/period delta applied before the
+  F-number / PSG-period lookup each tick (the vibrato path already perturbs pitch — extend it).
+- *Trigger / gate timing*: **D** delay (hold the trigger N ticks), **R** retrig (re-key every
+  N, step vol).
+- *Global timing*: **G** groove (needs the groove array — DESIGN §9; the engine currently runs
+  a flat `proj_tmpo`, so groove may be a prerequisite), **W** wait-skip (shorten this row).
+- *Voice-specialised*: **N** noise mode/rate (NO ch), **S** sample data-walk (DAC), **B** wave
+  bank (WAVE), **E** envelope reslope (PSG ramps + FM AR/RR per-channel writes).
+- *FM modulation via the chip LFO* (decision §5): **M** tremolo, **V** vibrato — set AMS/FMS +
+  `$22` enable/rate; first expose those params in the FM editor.
+- *Blocked*: **A** table — lands with the macro-table subsystem (task #9).
+
+**Audition retargeting** (§3.1 / §5): `ym_build_patch` still uses F1 for the editor audition —
+route it to `aud_track`/`aud_instr` (last FM instrument + last track a phrase was on).
