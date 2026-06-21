@@ -5660,12 +5660,12 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     bsr     psg_tremolo                   ; d1 += tremolo LFO
     move.w  c_period(a6), d2
     bsr     psg_vibrato                   ; d2 += vibrato LFO (preserves d1)
-    moveq   #0, d0                          ; F command: add the channel's fine pitch to the period
-    move.b  c_track(a6), d0
-    lea     c_pfine, a1
+    moveq   #0, d0                          ; F/P fine pitch -> period. SUBTRACT: a bigger SN76489
+    move.b  c_track(a6), d0                 ;   period = a LOWER note, so +pfine must shorten the
+    lea     c_pfine, a1                      ;   period to raise pitch -- same direction as FM's F-num
     move.b  (a1,d0.w), d0
     ext.w   d0
-    add.w   d0, d2
+    sub.w   d0, d2
     bgt.s   .fp_hi
     moveq   #1, d2
     bra.s   .fp_done
