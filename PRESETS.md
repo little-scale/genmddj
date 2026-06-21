@@ -18,8 +18,11 @@ The bank becomes **data-driven**: a CSV is the source of truth, a build step bak
 ## 2. The shared spine — one CSV schema
 
 A YM2612 patch is just operator registers, and genmddj's instrument record already *is* that.
-So **one CSV schema = the FM instrument record**, and it's the output of the editor, the output
-of the extractor, and the input of the baker. Define it once; the tools plug together.
+So **one CSV schema = the FM instrument record**, and it is the common destination of **five
+front-ends** — the browser editor, the three game extractors (SMPS / GEMS / VGM, §5), and the two
+Ableton adapters (`.adv` / `.als`, see `ALS.md`) — and the single input of the baker. Define it
+once; everything plugs in. The split that matters: game sources are **native re-packs**; Ableton
+sources are **adaptations** of a different FM engine.
 
 ### 2.1 CSV columns (FM preset — `i_type = 0`)
 
@@ -87,11 +90,22 @@ from MD emulators) so you *hear* each patch as you drag. CSV in/out (§2). This 
 exercises and pins the schema, so it comes before the extractor. Optional: an on-console-accurate
 preview (same F-number tables) so what you hear in the browser matches the hardware.
 
-## 5. Tool 3 — the extractor
+## 5. Tool 3 — the extractor (three game front-ends)
 
-Pulls FM patches out of real games. **Order: SMPS first, then VGM.**
+Pulls FM patches out of real games. Three sources, all producing **YM2612-native** patches — a
+**re-pack, no fidelity loss** (unlike the Ableton path in `ALS.md`, which must *adapt* a different
+FM engine):
 
-### 5.1 SMPS extraction (first)
+- **SMPS** — Sega first-party (Sonic + much of the catalogue); named, ordered voice banks.
+- **GEMS** — US/Western third-party; GEMS instrument banks.
+- **VGM** — driver-agnostic; the net for **custom drivers** (e.g. Streets of Rage — Koshiro's own
+  driver, which neither parser can read) and anything else with a register log.
+
+Order: **SMPS first** (best-documented, validates the unpack + the §2.2 op permutation against
+iconic voices), then **GEMS** and **VGM**. All emit the §2 CSV; together with `ALS.md`'s `.adv`/
+`.als` adapters, that's **five front-ends converging on one instrument schema**.
+
+### 5.1 SMPS extraction
 
 SMPS is Sega's standard driver (Sonic + a huge swath of first-party titles) and its voice format
 is thoroughly reverse-engineered. A voice is **25 bytes**, packed as the raw register values:
@@ -116,7 +130,20 @@ by ROM hash is the reliable fallback for stubborn titles. Auto-name `Game_vNN`; 
 0–127 and validate; some banks pad to 26+ bytes; voice count is in the bank header or implied by
 the pointer table.
 
-### 5.2 VGM extraction (second — the driver-agnostic net)
+### 5.2 GEMS extraction (US/Western third-party)
+
+GEMS ("Genesis Editor for Music and Sound," Recreational Brainware) was the common driver/toolkit
+for many US-developed Genesis titles. Like SMPS, its FM instruments are **YM2612-native** operator
+params (algorithm, feedback, per-op DT/MUL/TL/RS/AR/D1R/D2R/RR/SL), so the conversion is again a
+**re-pack**, just from a different container. GEMS keeps instruments in an instrument bank with its
+own record layout and an instrument *type* (FM / PSG / sampled / multi) — locate the bank via the
+GEMS engine's known structure and parse the FM records per the documented GEMS format.
+
+*Caveats:* skip/flag non-FM and multi instruments; the exact record layout is sourced from the
+GEMS format docs (as SMPS's 25-byte layout came from the Sonic scene). Same §2 destination, same
+§2.2 operator-order care.
+
+### 5.3 VGM extraction (the driver-agnostic net)
 
 A VGM is a log of the actual chip register writes, so it works for **any** game regardless of its
 driver (SMPS/GEMS/custom). Walk the log; at each ch6/ch-N **key-on** (`$28` with key bits),
@@ -125,8 +152,12 @@ snapshots. vgmrips has thousands of MD logs, and ROM→emulator→VGM feeds it a
 no SMPS bank to parse. Same §2 output. (Per-op `$30–$80` are already in datasheet/logical terms
 in the register file, so the permutation handling is the mirror of §2.2.)
 
-This is the broader net but it loses the game's *named, ordered* bank structure that SMPS gives —
-hence SMPS first for clean named banks, VGM second for coverage.
+This is the broadest net but it loses the game's *named, ordered* bank structure that SMPS/GEMS
+give — hence the parsers first for clean named banks, VGM for everything else. It's the **only**
+route for custom-driver titles like the **Streets of Rage** series: those patches are already
+YM2612-native, so a VGM snapshot → instrument is a direct re-pack with no adaptation, but their
+percussion is PCM (→ genmddj's kit/DAC, extracted separately) and Koshiro's slides/vibrato live
+in the register *stream* as performance (→ the `P`/`L`/`C`/`F` command layer), not in the patch.
 
 ## 6. Decisions / open questions
 
