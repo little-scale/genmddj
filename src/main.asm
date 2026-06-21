@@ -1379,7 +1379,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #2, d1                          ; VID SYNC PAL
     rts
 .rmproj:
-    moveq   #7, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD
+    moveq   #8, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD LFO
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
@@ -6873,7 +6873,19 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     lea     str_go, a1
     moveq   #16, d3
     moveq   #8, d4
-    bra     print_hl
+    bsr     print_hl
+    moveq   #17, d3                          ; LFO: global FM LFO (0 = off, 1-8 = on at rate 0-7)
+    moveq   #1, d4
+    lea     str_p_lfo, a1
+    bsr     print_at
+    move.l  #$48900003, (a0)
+    move.b  g_lfo, d3
+    moveq   #0, d4
+    cmpi.b  #8, cur_row
+    bne.s   .plf
+    moveq   #$60, d4
+.plf:
+    bra     draw_hex1
 
 edit_opts:                                ; B+dpad on OPTIONS: adjust the current field
     move.b  cur_row, d0
@@ -6955,6 +6967,8 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     beq.s   .ep_mode
     cmpi.b  #5, d0
     beq.s   .ep_slot
+    cmpi.b  #8, d0
+    beq.s   .ep_lfo
     rts                                     ; NEW/DEMO/SAVE/LOAD: no dpad value
 .ep_mode:
     lea     proj_mode, a1
@@ -6971,6 +6985,11 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     move.b  #1, proj_slot
 .eps:
     rts
+.ep_lfo:
+    lea     g_lfo, a1                        ; global FM LFO: 0=off, 1-8 = on at rate 0-7
+    moveq   #8, d3
+    moveq   #1, d4
+    bra     adj_field
 .ep_tmpo:                                 ; L/R +-1, U/D +-10, clamp [32,255]
     moveq   #0, d0
     move.b  proj_tmpo, d0
@@ -7157,6 +7176,7 @@ str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_demo: dc.b "DEMO",0
 str_p_slot: dc.b "SLOT",0
+str_p_lfo:  dc.b "LFO",0
 str_p_save: dc.b "SAVE",0
 str_p_load: dc.b "LOAD",0
 str_go:     dc.b "GO",0
