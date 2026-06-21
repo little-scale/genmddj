@@ -117,7 +117,8 @@ c_cphase   equ $00FFE1F4           ; C command: per-channel arp phase 0-2 (0,+x,
 c_bend     equ $00FFE400           ; P command: per-channel signed pitch-bend rate (added to c_pfine/tick)
 c_rtper    equ $00FFE40A           ; R command: per-channel retrigger period (ticks, 0=off)
 c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
-c_ypatch   equ $00FFE41E           ; Y command: per-channel one-shot FM patch swap (instrument #, $FF=none)
+g_lfo_dirty equ $00FFE41E          ; 1 = re-emit $22 (global LFO) on the next SCB push (boot + edits)
+; $00FFE41F-$00FFE427 free (was c_ypatch, removed when Y became AMS/FMS)
 g_wait     equ $00FFE428           ; W command: this-row frame-count override (0 = use 1250/proj_tmpo)
 cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose (signed; 0 each row)
 hop_ctr    equ $00FFE42A           ; H command: hops taken this advance (runaway guard; 0 each advance)
@@ -494,6 +495,7 @@ Start:
     dbra    d0, .linit
     move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
+    move.b  #1, g_lfo_dirty              ; emit $22 (global LFO) on the first SCB push
     move.b  #1, need_clear               ; draw header/name on first frame
 
     move.b  #1, in_splash
@@ -4557,11 +4559,6 @@ engine_play_reset:
 .rps:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
-    lea     c_ypatch, a0                  ; Y patch-swap slots -> none
-    moveq   #NCH-1, d0
-.rpy:
-    move.b  #$FF, (a0)+
-    dbra    d0, .rpy
     move.b  #0, g_wait                     ; W row-override off
     lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
     move.w  #(c_cphase+NCH)-lq_b0-1, d0
@@ -4834,6 +4831,7 @@ engine_tick:
     move.b  d6, d0
     or.b    d5, d0
     or.b    repatch, d0                   ; a pending patch re-push also needs a push
+    or.b    g_lfo_dirty, d0               ; ...as does a global-LFO ($22) change
     beq.s   .sret
     bsr     push_scb
 .sret:
@@ -4885,6 +4883,7 @@ engine_tick:
     move.b  d6, d0
     or.b    d5, d0
     or.b    repatch, d0                   ; a pending patch re-push also needs a push
+    or.b    g_lfo_dirty, d0               ; ...as does a global-LFO ($22) change
     beq.s   .nopush
     bsr     push_scb
 .nopush:
@@ -5995,17 +5994,11 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  (a4,d0.w), d1
     bsr     emit_u_tl
 .cf_nou:
-    move.b  c_trig(a6), d0                  ; on a note trigger, emit this channel's operator patch,
-    beq     .nochg                          ;   preferring the Y one-shot's instrument over the note's own
-    moveq   #0, d0                          ;   (1 patch/tick, only if the SCB has room -- else defer)
+    move.b  c_trig(a6), d0                  ; on a note trigger, emit this channel's operator patch
+    beq     .nochg                          ;   (1 patch/tick, only if the SCB has room -- else defer)
+    moveq   #0, d0
     move.b  c_track(a6), d0
-    lea     c_ypatch, a4
-    move.b  (a4,d0.w), d1                   ; Y instrument this note, or $FF if none
-    move.b  #$FF, (a4,d0.w)                 ; consume the Y one-shot (no-op if there was none)
-    cmpi.b  #$FF, d1
-    bne.s   .cf_pat                         ; Y active -> patch with the swapped instrument...
-    move.b  c_instr(a6), d1                 ; ...else with the note's own instrument
-.cf_pat:
+    move.b  c_instr(a6), d1                 ; the note's own instrument
     lea     pshadow, a4
     cmp.b   (a4,d0.w), d1
     beq.s   .cf_keys                        ; that patch already loaded on this channel -> just key
@@ -6366,6 +6359,20 @@ push_scb:
     move.b  (a4)+, (a2)+
     dbra    d0, .ycp
 .ymap:
+    tst.b   g_lfo_dirty                   ; global LFO changed -> emit $22 once (decoupled from F1)
+    beq.s   .nolfo22
+    move.b  #0, g_lfo_dirty
+    moveq   #0, d0
+    move.b  g_lfo, d0
+    beq.s   .lfo22z                        ; 0 = off ($00); 1-8 = enable bit 3 | rate 0-7
+    subq.b  #1, d0
+    ori.b   #$08, d0
+.lfo22z:
+    move.b  #0, (a2)+                      ; YM triple: part0, reg $22, value
+    move.b  #$22, (a2)+
+    move.b  d0, (a2)+
+    addq.b  #1, d7
+.nolfo22:
     tst.b   repatch                       ; Q/X command or FM edit -> append the patch to THIS push
     beq.s   .noym
     move.b  #0, repatch
@@ -6784,15 +6791,7 @@ ym_build_patch:
     move.b  (i_fb,a3), d0
 .havefb:
     move.b  d0, eff_fb
-    moveq   #0, d4                        ; $22: global LFO (enable bit 3 | rate 0-2)
-    moveq   #0, d0
-    move.b  g_lfo, d0
-    beq.s   .nolfo
-    subq.b  #1, d0
-    ori.b   #$08, d0
-.nolfo:
-    move.b  #$22, d2
-    bsr     .emit
+    ; ($22 global LFO is no longer emitted here -- it's a per-push emit in push_scb, off any channel)
     moveq   #0, d6                        ; operator slot 0..3 (rows are in register order)
 .op:                                      ; params: MUL DT TL RS AR AM D1 D2 RR SL
     move.w  d6, d5
@@ -7269,8 +7268,8 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     moveq   #8, d3
     moveq   #1, d4
     bsr     adj_field
-    move.b  #1, repatch                      ; $22 (global LFO) is emitted with F1's patch -> re-push
-    rts                                       ;   it now so the new rate is heard without touching AMS/FMS
+    move.b  #1, g_lfo_dirty                   ; re-emit $22 on the next push -> new rate heard at once
+    rts
 .ep_tmpo:                                 ; L/R +-1, U/D +-10, clamp [32,255]
     moveq   #0, d0
     move.b  proj_tmpo, d0
