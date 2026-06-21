@@ -1615,9 +1615,9 @@ adj_field:
     beq.s   .af4
     sub.w   d4, d0
 .af4:
-    cmpi.w  #255, d3                       ; max 255 = a signed-byte field (TSP): wrap $00<->$FF so
+    cmpi.b  #$FF, d3                        ; max FF = a signed-byte field (TSP): wrap $00<->$FF so
     bne.s   .af_clamp                       ;   dialling down from 0 gives FF (-1), not a clamp at 0
-    andi.w  #$00FF, d0
+    andi.w  #$00FF, d0                       ;   (low byte test: works whether d3 came from moveq or move.b)
     bra.s   .afwr
 .af_clamp:
     tst.w   d0                              ; else clamp to [0,max] (hold to slam to min/max)
