@@ -105,6 +105,12 @@ PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write pa
 YM_CAP     equ 43                  ; max ym_count before emitting a note's freq/key
 lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $B0 value (FB<<3|ALGO)
 lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
+lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
+lx_dirty   equ $00FFE1AE           ; X command: per-channel flag -> recompute carrier $40 (TL)
+lo_b4      equ $00FFE1B8           ; O command: per-channel live $B4 value ((pan<<6)|(AMS<<4)|FMS)
+lo_dirty   equ $00FFE1C2           ; O command: per-channel flag -> emit lo_b4 for this channel
+lu_off     equ $00FFE1CC           ; U command: per-channel modulator TL offset 0-127
+lu_dirty   equ $00FFE1D6           ; U command: per-channel flag -> recompute modulator $40 (TL)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4466,8 +4472,8 @@ engine_play_reset:
 .rps:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
-    lea     lq_dirty, a0                  ; clear Q-command live overrides
-    moveq   #NCH-1, d0
+    lea     lq_b0, a0                     ; clear all FM live-command slots (Q/X/O/U dirty + values)
+    move.w  #(lu_dirty+NCH)-lq_b0-1, d0
 .rlq:
     move.b  #0, (a0)+
     dbra    d0, .rlq
@@ -4893,6 +4899,10 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_x
     cmpi.b  #9, d2                         ; I xx = iteration: gate the note by a repeat mask
     beq     .cmd_i
+    cmpi.b  #15, d2                        ; O xy = pan (FM L/R)
+    beq     .cmd_o
+    cmpi.b  #21, d2                        ; U xx = modulator TL (brightness)
+    beq     .cmd_u
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -4937,8 +4947,58 @@ advance_ch:                               ; a6 = channel
     bne     .cmddone
     move.b  (3,a1,d1.w), d2               ; PR = new volume 0-15
     andi.b  #$0F, d2
-    move.b  d2, live_vol                   ; TRANSIENT override
-    move.b  #1, repatch
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     lx_vol, a4
+    move.b  d2, (a4,d3.w)                 ; lx_vol[track] = live volume (this channel)
+    lea     lx_dirty, a4
+    move.b  #1, (a4,d3.w)
+    bra     .cmddone
+.cmd_o:
+    cmpi.b  #1, c_type(a6)                 ; FM channels (DAC pan TBD)
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = x(L) y(R) nibbles -> $B4 pan bits 7/6
+    moveq   #0, d3
+    move.b  d2, d0
+    andi.b  #$F0, d0                       ; x nibble set -> left on (bit7)
+    beq.s   .o_nol
+    ori.b   #$80, d3
+.o_nol:
+    andi.b  #$0F, d2                       ; y nibble set -> right on (bit6)
+    beq.s   .o_nor
+    ori.b   #$40, d3
+.o_nor:
+    moveq   #0, d0                          ; preserve the instrument's AMS/FMS
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    adda.w  d0, a4
+    move.b  (i_ams,a4), d0
+    andi.b  #3, d0
+    lsl.b   #4, d0
+    or.b    d0, d3
+    move.b  (i_fms,a4), d0
+    andi.b  #7, d0
+    or.b    d0, d3
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    lea     lo_b4, a4
+    move.b  d3, (a4,d0.w)
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d0.w)
+    bra     .cmddone
+.cmd_u:
+    cmpi.b  #1, c_type(a6)
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = modulator TL offset 0-127 (added above stored TL)
+    andi.b  #$7F, d2
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     lu_off, a4
+    move.b  d2, (a4,d3.w)
+    lea     lu_dirty, a4
+    move.b  #1, (a4,d3.w)
+    bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
     moveq   #0, d2
@@ -5440,6 +5500,40 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  (a4,d0.w), (a5)+
     addq.w  #1, d5
 .cf_noq:
+    moveq   #0, d0                          ; X command: live carrier volume -> recompute carrier $40
+    move.b  c_track(a6), d0
+    lea     lx_dirty, a4
+    tst.b   (a4,d0.w)
+    beq.s   .cf_nox
+    move.b  #0, (a4,d0.w)
+    lea     lx_vol, a4
+    move.b  (a4,d0.w), d1
+    bsr     emit_x_tl
+.cf_nox:
+    moveq   #0, d0                          ; O command: live $B4 (pan / AMS / FMS)
+    move.b  c_track(a6), d0
+    lea     lo_dirty, a4
+    tst.b   (a4,d0.w)
+    beq.s   .cf_noo
+    move.b  #0, (a4,d0.w)
+    move.b  c_ympart(a6), (a5)+
+    move.b  #$B4, d1
+    add.b   c_ymchreg(a6), d1
+    move.b  d1, (a5)+
+    lea     lo_b4, a4
+    move.b  (a4,d0.w), (a5)+
+    addq.w  #1, d5
+.cf_noo:
+    moveq   #0, d0                          ; U command: live modulator TL offset -> recompute mod $40
+    move.b  c_track(a6), d0
+    lea     lu_dirty, a4
+    tst.b   (a4,d0.w)
+    beq.s   .cf_nou
+    move.b  #0, (a4,d0.w)
+    lea     lu_off, a4
+    move.b  (a4,d0.w), d1
+    bsr     emit_u_tl
+.cf_nou:
     move.b  c_trig(a6), d0
     beq     .nochg
     moveq   #0, d0                          ; per-channel operator patch: emit only when the instrument
@@ -5601,6 +5695,95 @@ emit_ch_patch:
     move.b  d1, (a5)+
     move.b  d0, (a5)+
     addq.w  #1, d5
+    rts
+
+; X command helper: emit the channel's carrier $40 (TL) with live volume d1 (0-15).
+; carrier TL = stored TL + (15-vol)*8, clamped 127. a6=ch, a5/d5=SCB.
+emit_x_tl:
+    movem.l d1-d4/d6/a3-a4, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a3
+    adda.w  d0, a3
+    moveq   #15, d4
+    sub.b   d1, d4
+    lsl.b   #3, d4                          ; d4 = atten = (15-vol)*8
+    moveq   #0, d6
+.ext_op:
+    moveq   #0, d0                          ; carrier in this algorithm?
+    move.b  (i_algo,a3), d0
+    andi.w  #7, d0
+    lea     carrier_mask, a4
+    btst    d6, (a4,d0.w)
+    beq.s   .ext_next
+    move.w  d6, d2                          ; param base = i_op + slot*FM_NPARM
+    mulu.w  #FM_NPARM, d2
+    addi.w  #i_op, d2
+    move.b  (2,a3,d2.w), d0                 ; carrier TL + atten, clamp 127
+    add.b   d4, d0
+    cmpi.b  #127, d0
+    bls.s   .ext_clamp
+    moveq   #127, d0
+.ext_clamp:
+    move.b  c_ympart(a6), (a5)+
+    move.w  d6, d2                          ; reg = $40 + slot*4 + chreg
+    lsl.w   #2, d2
+    move.b  c_ymchreg(a6), d3
+    add.b   d3, d2
+    move.b  #$40, d3
+    add.b   d2, d3
+    move.b  d3, (a5)+
+    move.b  d0, (a5)+
+    addq.w  #1, d5
+.ext_next:
+    addq.w  #1, d6
+    cmpi.w  #4, d6
+    bne     .ext_op
+    movem.l (sp)+, d1-d4/d6/a3-a4
+    rts
+
+; U command helper: emit the channel's modulator $40 (TL) = stored TL + offset d1, clamp 127.
+emit_u_tl:
+    movem.l d1-d4/d6/a3-a4, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a3
+    adda.w  d0, a3
+    move.b  d1, d4                          ; d4 = TL offset
+    moveq   #0, d6
+.eut_op:
+    moveq   #0, d0                          ; modulator (NOT a carrier) in this algorithm?
+    move.b  (i_algo,a3), d0
+    andi.w  #7, d0
+    lea     carrier_mask, a4
+    btst    d6, (a4,d0.w)
+    bne.s   .eut_next
+    move.w  d6, d2
+    mulu.w  #FM_NPARM, d2
+    addi.w  #i_op, d2
+    move.b  (2,a3,d2.w), d0
+    add.b   d4, d0
+    cmpi.b  #127, d0
+    bls.s   .eut_clamp
+    moveq   #127, d0
+.eut_clamp:
+    move.b  c_ympart(a6), (a5)+
+    move.w  d6, d2
+    lsl.w   #2, d2
+    move.b  c_ymchreg(a6), d3
+    add.b   d3, d2
+    move.b  #$40, d3
+    add.b   d2, d3
+    move.b  d3, (a5)+
+    move.b  d0, (a5)+
+    addq.w  #1, d5
+.eut_next:
+    addq.w  #1, d6
+    cmpi.w  #4, d6
+    bne     .eut_op
+    movem.l (sp)+, d1-d4/d6/a3-a4
     rts
 
 ; d0 = note (0-95) -> d1 = $A4 value (block<<3 | fnum hi), d2 = $A0 value (fnum lo)
