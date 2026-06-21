@@ -39,7 +39,7 @@ runs both columns; voice-type-specific commands no-op on inapplicable voices.
 | `V` | Vibrato (one-shot) | tone/FM | partial (PSG) | **FM path TBD vs LFO bank** (§3.3) |
 | `W` | Wait-skip (shorten row) | global | ✗ | as spec'd |
 | `X` | volume (PSG atten / FM carrier TL) | all | **✓ (F1-only)** | **make per-channel** (§3.1) |
-| `Y` | fm Voice (adopt patch xx) | FM | ✗ | **per-channel patch swap** (§3.1) |
+| `Y` | fm lfo depth (AMS x / FMS y) | FM | ✗ | **per-note FM LFO sensitivity via $B4** (§3.1) |
 | `Z` | reserved (random) | — | — | keep — the RNG counterpart to `I` |
 
 Built: **4 / 24** (H, I, Q, X). Q and X work **only on F1**.
@@ -76,7 +76,7 @@ and matches the diff/shadow philosophy ("only update the regs that need updating
 | `X xx` carrier TL | `$40+slot` for each **carrier** slot ← TL + atten |
 | `U xx` modulator TL | `$40+slot` for each **modulator** slot ← base TL + offset |
 | `O xy` pan | `$B4` ← `(pan<<6)\|(AMS<<4)\|FMS` (preserve AMS/FMS) |
-| `Y xx` patch adopt | full `emit_ch_patch` but sourced from instrument *xx* (one-shot timbre swap; does not change `c_instr`, and must update `pshadow` so the channel re-patches back on the next note) |
+| `Y xy` lfo depth | sets $B4 AMS (`x`, 0-3) + FMS (`y`, 0-7) for this note, keeping the instrument pan; one-shot (reverts next note) via O's `lo_b4`/`lo_dirty`; **needs the global LFO `$22` on** to be audible |
 
 **Justification.** Keeps the editor's F1 live-edit path (`repatch` + `ym_build_patch`)
 untouched for *editing*, but playback commands stop borrowing it. Targeted writes also keep
@@ -178,7 +178,7 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
   into `c_pfine` each tick (clamp ±127). v1: the bend persists into the next note until `P00`.
 - **R xx** retrigger (**PSG + FM**) → per-channel `c_rtper`/`c_rtctr`; `hold_tick` re-keys every
   xx ticks (`c_trig`=1 for FM; `c_estate`=1/`c_ectr`=0 to restart the PSG envelope).
-- **Y xx** FM patch swap (**FM**) → per-channel one-shot `c_ypatch`; `compose_fm` emits instrument
+- **Y xy** FM LFO depth (**FM**) → AMS/FMS composed into `$B4` via `lo_b4`/`lo_dirty` (one-shot,
   xx's operator patch (via the now-parameterised `emit_ch_patch`, instrument # in `d1`) and sets
   `pshadow`, so it reverts on the next note. Budget-gated (1 patch/tick, `PATCH_CAP`).
 - **J xy** repeat-gated transpose (**FM + PSG — all voices**) → sibling of `I`. `.cmd_j` mirrors
@@ -199,8 +199,6 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
 All FM live commands are now per-channel/targeted (§3.1) — F1-F6, not F1-only, no repatch.
 
 **Remaining — grouped by the engine hook each needs (next batches):**
-- *Patch-source*: **Y xx** (adopt instrument xx's patch; needs `emit_ch_patch` from a chosen
-  instr + a per-note revert).
 - *Time-varying pitch* — **C** chord/arp, **P** bend, **L** slide. These change pitch *every
   tick*, but **FM only sends frequency on note-trigger today** — so they need a new per-tick
   FM-freq update path (PSG already recomputes its period each tick, so the PSG side is ready).

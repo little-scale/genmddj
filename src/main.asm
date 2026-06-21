@@ -5232,11 +5232,29 @@ advance_ch:                               ; a6 = channel
 .cmd_y:
     cmpi.b  #1, c_type(a6)                ; FM channels only
     bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; Y xx = adopt instrument xx's patch this note
+    move.b  (3,a1,d1.w), d2               ; Y xy = FM LFO depth: x=AMS (0-3), y=FMS (0-7).
+    moveq   #0, d3                         ; Builds $B4 = (instrument pan)<<6 | AMS<<4 | FMS and
+    move.b  c_instr(a6), d3               ; rides O's lo_b4/lo_dirty shadow -> emitted now, reverts
+    mulu.w  #INSTR_SIZE, d3               ; to the instrument next note (needs the global LFO $22 on
+    lea     instrum, a4                    ; to be audible).
+    adda.w  d3, a4
     moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     c_ypatch, a4
-    move.b  d2, (a4,d3.w)
+    move.b  (i_pan,a4), d3                ; keep the instrument's pan bits
+    lsl.b   #6, d3
+    move.b  d2, d1                         ; AMS = high nibble -> bits 5-4
+    lsr.b   #4, d1
+    andi.b  #3, d1
+    lsl.b   #4, d1
+    or.b    d1, d3
+    move.b  d2, d1                         ; FMS = low nibble -> bits 2-0
+    andi.b  #7, d1
+    or.b    d1, d3
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    lea     lo_b4, a4
+    move.b  d3, (a4,d2.w)
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d2.w)
     bra     .cmddone
 .cmd_w:
     move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
