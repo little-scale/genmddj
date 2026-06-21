@@ -1730,7 +1730,7 @@ edit_fm:
     moveq   #0, d1
     move.b  (a1,d0.w), d1
     lea     0(a3,d1.w), a1
-    cmpi.b  #8, d0                         ; TBL field -> -- / 0..NTABLE-1 cycle (shared with PSG)
+    cmpi.b  #4, d0                         ; TBL field -> -- / 0..NTABLE-1 cycle (shared with PSG)
     beq     edit_tbl_field
     lea     voice_max, a2
     moveq   #0, d3
@@ -4025,7 +4025,7 @@ render_fm:                                ; a0 = VDP_CTRL
 .vrow:
     move.w  d6, d3                          ; label at (FM_VTOP+idx, col1)
     addi.w  #FM_VTOP, d3
-    cmpi.w  #4, d6                          ; blank row after TSP (splits channel | FM items)
+    cmpi.w  #6, d6                          ; blank row after TBS (splits channel+table | FM items)
     blo.s   .vng1
     addq.w  #1, d3
 .vng1:
@@ -4038,7 +4038,7 @@ render_fm:                                ; a0 = VDP_CTRL
     moveq   #0, d0                          ; value at (FM_VTOP+idx, col8)
     move.w  d6, d0
     addi.w  #FM_VTOP, d0
-    cmpi.w  #4, d6
+    cmpi.w  #6, d6
     blo.s   .vng2
     addq.w  #1, d0
 .vng2:
@@ -7880,11 +7880,11 @@ str_pitch:  dc.b "PITCHED ",0
 type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
-voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_algo, str_fb, str_ams, str_fms, str_tbl, str_tbs  ; 10
-voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_algo, i_fb, i_ams, i_fms, i_tbl, i_tbs
-voice_max:  dc.b 15, 15, 3, 255, 7, 7, 3, 7, 31, 15
-voice_step: dc.b 4, 4, 1, 12, 4, 4, 1, 4, 16, 4          ; HLD VOL PAN TSP | ALGO FB AMS FMS | TBL TBS
-voice_fmt:  dc.b 0, 0, 0, 1, 0, 0, 0, 0, 4, 0            ; TSP=hex2 signed; TBL=4 (-- or hex2); rest hex1
+voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_tbl, str_tbs, str_algo, str_fb, str_ams, str_fms  ; 10
+voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_tbl, i_tbs, i_algo, i_fb, i_ams, i_fms
+voice_max:  dc.b 15, 15, 3, 255, 31, 15, 7, 7, 3, 7
+voice_step: dc.b 4, 4, 1, 12, 16, 4, 4, 4, 1, 4          ; HLD VOL PAN TSP TBL TBS | ALGO FB AMS FMS
+voice_fmt:  dc.b 0, 0, 0, 1, 4, 0, 0, 0, 0, 0            ; TSP=hex2 signed; TBL=4 (-- or hex2); rest hex1
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
