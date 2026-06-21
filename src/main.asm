@@ -2761,13 +2761,13 @@ FM_OHDR equ 16                            ; operator grid header (INST + gaps, n
 FM_OTOP equ 17                            ; operator grid
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
 ALGO_DIAG_ROW equ 10                      ; algorithm diagram (1x, half size)
-ALGO_DIAG_COL equ 11
+ALGO_DIAG_COL equ 13
 ENV_TW  equ 32                            ; envelope canvas: 4 ops x 8 tiles wide, 4 tall
 ENV_TH  equ 4
 ENV_TILES equ ENV_TW*ENV_TH
 ENV_W   equ ENV_TW*8                      ; canvas px (256 x 32), each op = 64px sub-column
 ENV_H   equ ENV_TH*8
-ENV_VRAM equ $3400                        ; canvas tiles -> VRAM (after the algo tiles)
+ENV_VRAM equ $3600                        ; canvas tiles -> VRAM (clears the 76 algo tiles: $2C00..$357F)
 ENV_TILEBASE equ ENV_VRAM/$20
 ENV_ROW equ 22                            ; canvas nametable position (below the op grid)
 ENV_COL equ 2
