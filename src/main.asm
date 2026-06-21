@@ -5842,7 +5842,13 @@ table_cmd:
     move.b  c_tbl(a6), d0
     cmpi.b  #$FF, d0
     beq.s   .tc_done                      ; no table
+    cmpi.b  #1, c_type(a6)               ; voice active? FM keys on c_keyon, PSG on c_estate
+    bne.s   .tc_psg
+    tst.b   c_keyon(a6)
+    bra.s   .tc_act
+.tc_psg:
     tst.b   c_estate(a6)
+.tc_act:
     beq.s   .tc_done                      ; voice off -> don't run table commands
     move.b  c_trow(a6), d1
     cmp.b   c_tcrow(a6), d1
