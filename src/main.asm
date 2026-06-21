@@ -5673,6 +5673,7 @@ env_ch:                                   ; a6 = channel
 .swpset:
     move.w  d3, c_period(a6)
 .noswp:
+    move.b  c_estate(a6), d0              ; reload: the table-arp/chord path above clobbers d0
     cmpi.b  #1, d0
     bne.s   .e_hold
     move.b  (ip_atk,a4), d1               ; state 1 = attack
