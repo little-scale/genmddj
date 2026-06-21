@@ -1995,10 +1995,25 @@ edit_value:
     rts
 .h4_phrase:
     tst.b   cur_col                          ; CHAIN col 0 = phrase#
-    bne.s   .h4r
+    bne.s   .h4_ctsp                          ; col 1 = transpose -> push it live to a playing channel
     cmpi.b  #NPHRASES, d0
     bhs.s   .h4r
     move.b  d0, last_phrase
+    rts
+.h4_ctsp:                                     ; edited a chain step's transpose: update any channel
+    lea     ch_state, a6                       ;   currently on this chain+step, so it's heard now and
+    move.b  cur_chain, d1                      ;   not only when the chain next loops back to the step
+    move.b  cur_row, d2
+    moveq   #NCH-1, d3
+.hct:
+    cmp.b   c_chain(a6), d1
+    bne.s   .hct_n
+    cmp.b   c_cstep(a6), d2
+    bne.s   .hct_n
+    move.b  d0, c_transp(a6)
+.hct_n:
+    lea     CHSIZE(a6), a6
+    dbra    d3, .hct
     rts
 .cmd:
     bsr     get_field_addr
