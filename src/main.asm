@@ -5425,10 +5425,8 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d3
     move.b  c_instr(a6), d3
     mulu.w  #INSTR_SIZE, d3
-    move.b  (i_type,a4,d3.w), d1          ; KIT (1) / WAVE (2) are DAC voices -> no macro table
-    cmpi.b  #1, d1
-    beq.s   .notabl
-    cmpi.b  #2, d1
+    move.b  (i_type,a4,d3.w), d1          ; KIT (1) is a drum/sample DAC voice -> no macro table;
+    cmpi.b  #1, d1                         ;   FM/WAVE/TONE/NOISE all get one (WAVE = TSP+VOL only)
     beq.s   .notabl
     move.b  (i_tbl,a4,d3.w), c_tbl(a6)
     move.b  #$FF, c_tcrow(a6)             ; note-on: re-arm so the (re)started row's CMD column fires
@@ -5885,7 +5883,7 @@ table_cmd:
 env_ch:                                   ; a6 = channel
     move.b  #$FF, c_tvol(a6)              ; default: no table-VOL override (.tapply / FM tick sets it)
     cmpi.b  #1, c_type(a6)
-    bne.s   .ec_psg
+    bne     .ec_psg
     ; --- FM voice: tick the macro table (advance + latch c_tvol/c_ttsp), then done. The FM
     ;     envelope is the YM2612's; compose_fm consumes c_ttsp (pitch) and c_tvol (carrier TL). ---
     clr.b   c_ttsp(a6)                     ; default: no table transpose
@@ -5897,8 +5895,14 @@ env_ch:                                   ; a6 = channel
     move.b  c_instr(a6), d1
     mulu.w  #INSTR_SIZE, d1
     adda.w  d1, a4
-    tst.b   c_keyon(a6)                    ; keyed off -> hold the current row (don't churn idle)
-    beq.s   .fmt_latch
+    cmpi.b  #2, (i_type,a4)                ; WAVE gates "active" on its AHD envelope; FM on c_keyon
+    bne.s   .fmt_fmg
+    tst.b   c_estate(a6)
+    bra.s   .fmt_actg
+.fmt_fmg:
+    tst.b   c_keyon(a6)
+.fmt_actg:
+    beq.s   .fmt_latch                     ; voice idle -> hold the current row (don't churn)
     move.b  (i_tbs,a4), d2
     beq.s   .fmt_latch                     ; TBS 0 = per-note: no per-tick advance
     addq.b  #1, c_tctr(a6)
@@ -6863,8 +6867,12 @@ wave_env:
 ; shapers use their static OFFSET field as the base. a4 = instrument, a6 = channel.
 wave_lfo:
     movem.l d3-d5/a2-a3, -(sp)
-    moveq   #0, d0                          ; VOLUME: base = env level, phase slot 0
+    moveq   #0, d0                          ; VOLUME: base = table VOL override, else env level
+    move.b  c_tvol(a6), d0
+    cmpi.b  #$FF, d0
+    bne.s   .wl_tv
     move.b  c_vol(a6), d0
+.wl_tv:
     moveq   #0, d1
     move.b  (iwl_vd,a4), d1                 ; depth
     moveq   #0, d2
@@ -7034,6 +7042,12 @@ wave_play:
     movem.l d0-d7/a2-a5, -(sp)
     moveq   #0, d0                         ; note -> phase increment (notetable + 192)
     move.b  c_note(a6), d0
+    move.b  c_ttsp(a6), d1                 ; + table TSP (signed; 0 when no table)
+    ext.w   d1
+    add.w   d1, d0
+    bpl.s   .wp_lo
+    moveq   #0, d0
+.wp_lo:
     cmpi.w  #96, d0
     bhs     .wpx
     add.w   d0, d0
