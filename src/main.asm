@@ -128,7 +128,6 @@ k_set      equ $00FFE42B           ; K command: 1 if K set the gate this row (no
 c_set      equ $00FFE42C           ; C command: 1 if C set the chord this row (note-on keeps it, else clears)
 f_set      equ $00FFE42D           ; F command: 1 if F set the finetune this row (note-on keeps c_pfine)
 p_set      equ $00FFE42E           ; P command: 1 if P set the bend this row (note-on keeps c_bend)
-table_cmd_mode equ $00FFE42F        ; 1 = running a table-row CMD: .cmddone skips note resolution, returns
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -5236,13 +5235,11 @@ cut_dac_if_sample:                         ; a6=ch: if c_instr is KIT/WAVE, tell
 advance_ch:                               ; a6 = channel
     move.b  #0, hop_ctr                    ; H command: reset the per-advance hop guard
     cmpi.b  #$FF, c_chain(a6)             ; inactive (muted/empty) -> stay silent
-    bne.s   .aret1
-    rts
-.aret1:
+    beq     .ret
     move.b  c_row(a6), d0
     addq.b  #1, d0
     cmpi.b  #16, d0
-    blo.s   adv_gotrow
+    blo.s   .gotrow
     cmpi.b  #2, play_mode                 ; phrase-solo: loop the phrase
     bne.s   .nextchain
     moveq   #0, d0
@@ -5252,15 +5249,13 @@ advance_ch:                               ; a6 = channel
     adda.w  d0, a1
     move.l  a1, c_phrase(a6)
     moveq   #0, d0
-    bra.s   adv_gotrow
+    bra.s   .gotrow
 .nextchain:
     bsr     advance_chain                 ; phrase ended -> next chain step
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
-    bne.s   .aret2
-    rts
-.aret2:
+    beq     .ret
     moveq   #0, d0
-adv_gotrow:
+.gotrow:
     move.b  d0, c_row(a6)
     tst.b   d0                              ; row 0 = a new phrase began on this track
     bne.s   .nophs
@@ -5294,39 +5289,19 @@ adv_gotrow:
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
-run_cmd:                                   ; table CMD entry: a1=row (cmd@+2, prm@+3), d1=row offset,
-    move.b  (2,a1,d1.w), d2               ;   a6=channel. The table bsrs here (table_cmd_mode=1) so the
-    cmpi.b  #8, d2                         ;   same handlers run; .cmddone then skips the note + returns.
+    move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
+    cmpi.b  #8, d2                         ; H = HOP -> jump to PR row (phrase-structural, stays here)
     beq     .cmd_hop
-    cmpi.b  #17, d2                        ; Q xy = one-shot ALGO(x)+FB(y) override
-    beq     .cmd_q
-    cmpi.b  #24, d2                        ; X xx = volume (carrier TL)
-    beq     .cmd_x
     cmpi.b  #9, d2                         ; I xx = iteration: gate the note by a repeat mask
     beq     .cmd_i
-    cmpi.b  #15, d2                        ; O xy = pan (FM L/R)
-    beq     .cmd_o
-    cmpi.b  #21, d2                        ; U xx = modulator TL (brightness)
-    beq     .cmd_u
-    cmpi.b  #11, d2                        ; K xx = note cut after xx ticks
-    beq     .cmd_k
-    cmpi.b  #20, d2                        ; T xx = tempo (BPM)
-    beq     .cmd_t
-    cmpi.b  #6, d2                         ; F xx = finetune (signed period/F-num delta)
-    beq     .cmd_f
-    cmpi.b  #3, d2                         ; C xy = chord/arp (0,x,y semitones)
-    beq     .cmd_c
-    cmpi.b  #16, d2                        ; P xx = pitch bend (signed rate/tick)
-    beq     .cmd_p
-    cmpi.b  #18, d2                        ; R xx = retrigger every xx ticks
-    beq     .cmd_r
-    cmpi.b  #25, d2                        ; Y xx = adopt instrument xx's FM patch (one-shot)
-    beq     .cmd_y
-    cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (wait/skip)
-    beq     .cmd_w
     cmpi.b  #10, d2                        ; J xy = repeat-gated transpose (sibling of I)
     beq     .cmd_j
-    bra     .cmddone
+    cmpi.b  #20, d2                        ; T xx = tempo (BPM, global)
+    beq     .cmd_t
+    cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (global)
+    beq     .cmd_w
+    bsr     exec_cmd                       ; Q/X/O/U/F/C/P/R/Y/K voice commands (or none) -- shared
+    bra     .cmddone                       ; then resolve this row's note
 .cmd_i:
     moveq   #0, d2
     move.b  (3,a1,d1.w), d2              ; mask byte (one bit per repeat, mod 8)
@@ -5348,158 +5323,10 @@ run_cmd:                                   ; table CMD entry: a1=row (cmd@+2, pr
     moveq   #0, d0
     move.b  (3,a1,d1.w), d0               ; param = destination row (low nibble)
     andi.b  #$0F, d0
-    bra     adv_gotrow                        ; jump there NOW -- the H row plays no sixteenth
-.cmd_q:
-    cmpi.b  #1, c_type(a6)                 ; FM channels only
-    bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; PR = (ALGO<<4)|FB
-    move.b  d2, d3
-    lsr.b   #4, d3                         ; x nibble = ALGO 0-7
-    andi.b  #7, d3
-    andi.b  #7, d2                         ; y nibble = FB 0-7
-    lsl.b   #3, d2                         ; -> $B0 value = (FB<<3)|ALGO
-    or.b    d3, d2
-    moveq   #0, d3                         ; per-channel live slot (this running channel, not F1)
-    move.b  c_track(a6), d3
-    lea     lq_b0, a4
-    move.b  d2, (a4,d3.w)
-    lea     lq_dirty, a4
-    move.b  #1, (a4,d3.w)
-    bra     .cmddone
-.cmd_x:
-    cmpi.b  #1, c_type(a6)
-    bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; PR = new volume 0-15
-    andi.b  #$0F, d2
-    moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     lx_vol, a4
-    move.b  d2, (a4,d3.w)                 ; lx_vol[track] = live volume (this channel)
-    lea     lx_dirty, a4
-    move.b  #1, (a4,d3.w)
-    bra     .cmddone
-.cmd_o:
-    cmpi.b  #1, c_type(a6)                 ; FM channels (DAC pan TBD)
-    bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; PR = x(L) y(R) nibbles -> $B4 pan bits 7/6
-    moveq   #0, d3
-    move.b  d2, d0
-    andi.b  #$F0, d0                       ; x nibble set -> left on (bit7)
-    beq.s   .o_nol
-    ori.b   #$80, d3
-.o_nol:
-    andi.b  #$0F, d2                       ; y nibble set -> right on (bit6)
-    beq.s   .o_nor
-    ori.b   #$40, d3
-.o_nor:
-    moveq   #0, d0                          ; preserve the instrument's AMS/FMS
-    move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a4
-    adda.w  d0, a4
-    move.b  (i_ams,a4), d0
-    andi.b  #3, d0
-    lsl.b   #4, d0
-    or.b    d0, d3
-    move.b  (i_fms,a4), d0
-    andi.b  #7, d0
-    or.b    d0, d3
-    moveq   #0, d0
-    move.b  c_track(a6), d0
-    lea     lo_b4, a4
-    move.b  d3, (a4,d0.w)
-    lea     lo_dirty, a4
-    move.b  #1, (a4,d0.w)
-    bra     .cmddone
-.cmd_u:
-    cmpi.b  #1, c_type(a6)
-    bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; PR = modulator TL offset 0-127 (added above stored TL)
-    andi.b  #$7F, d2
-    moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     lu_off, a4
-    move.b  d2, (a4,d3.w)
-    lea     lu_dirty, a4
-    move.b  #1, (a4,d3.w)
-    bra     .cmddone
-.cmd_k:
-    move.b  #1, k_set                      ; this row's note-on must keep K's gate, not the HLD
-    move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks; K00 = cut now
-    bne.s   .ck_hold
-    move.b  #0, c_keyon(a6)                ; K00 = cut now: FM key-off...
-    move.b  #3, c_estate(a6)               ; ...PSG/noise -> decay/release (state 3)...
-    move.b  #0, c_ectr(a6)
-    bsr     cut_dac_if_sample              ; ...and KIT/WAVE -> stop the DAC now
-    bra     .cmddone
-.ck_hold:
-    move.b  d2, c_hold(a6)
-    bra     .cmddone
+    bra     .gotrow                        ; jump there NOW -- the H row plays no sixteenth
 .cmd_t:
     move.b  (3,a1,d1.w), d2               ; T xx = tempo (BPM); the row-advance uses 1250/proj_tmpo
     move.b  d2, proj_tmpo
-    bra     .cmddone
-.cmd_f:
-    move.b  #1, f_set                      ; F on this row -> note-on keeps c_pfine
-    move.b  (3,a1,d1.w), d2               ; F xx = signed fine pitch offset (period/F-num units)
-    moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     c_pfine, a4
-    move.b  d2, (a4,d3.w)
-    bra     .cmddone
-.cmd_c:
-    move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
-    move.b  (3,a1,d1.w), d2               ; C xy = chord offsets (x<<4)|y semitones; 0 = off
-    moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     c_chord, a4
-    move.b  d2, (a4,d3.w)
-    lea     c_cphase, a4
-    move.b  #0, (a4,d3.w)                 ; restart the arp phase
-    bra     .cmddone
-.cmd_p:
-    move.b  #1, p_set                      ; P on this row -> note-on keeps c_bend
-    move.b  (3,a1,d1.w), d2               ; P xx = signed bend rate (period/F-num units per tick)
-    moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     c_bend, a4
-    move.b  d2, (a4,d3.w)
-    bra     .cmddone
-.cmd_r:
-    move.b  (3,a1,d1.w), d2               ; R xx = retrigger every xx ticks
-    moveq   #0, d3
-    move.b  c_track(a6), d3
-    lea     c_rtper, a4
-    move.b  d2, (a4,d3.w)
-    lea     c_rtctr, a4
-    move.b  d2, (a4,d3.w)                 ; first retrig xx ticks from now
-    bra     .cmddone
-.cmd_y:
-    cmpi.b  #1, c_type(a6)                ; FM channels only
-    bne     .cmddone
-    move.b  (3,a1,d1.w), d2               ; Y xy = FM LFO depth: x=AMS (0-3), y=FMS (0-7).
-    moveq   #0, d3                         ; Builds $B4 = (instrument pan)<<6 | AMS<<4 | FMS and
-    move.b  c_instr(a6), d3               ; rides O's lo_b4/lo_dirty shadow -> emitted now, reverts
-    mulu.w  #INSTR_SIZE, d3               ; to the instrument next note (needs the global LFO $22 on
-    lea     instrum, a4                    ; to be audible).
-    adda.w  d3, a4
-    moveq   #0, d3
-    move.b  (i_pan,a4), d3                ; keep the instrument's pan bits
-    lsl.b   #6, d3
-    move.b  d2, d1                         ; AMS = high nibble -> bits 5-4
-    lsr.b   #4, d1
-    andi.b  #3, d1
-    lsl.b   #4, d1
-    or.b    d1, d3
-    move.b  d2, d1                         ; FMS = low nibble -> bits 2-0
-    andi.b  #7, d1
-    or.b    d1, d3
-    moveq   #0, d2
-    move.b  c_track(a6), d2
-    lea     lo_b4, a4
-    move.b  d3, (a4,d2.w)
-    lea     lo_dirty, a4
-    move.b  #1, (a4,d2.w)
     bra     .cmddone
 .cmd_w:
     move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
@@ -5526,12 +5353,7 @@ run_cmd:                                   ; table CMD entry: a1=row (cmd@+2, pr
 .cj_set:
     move.b  d2, cmd_tsp                    ; applied in .cmddone alongside chain/instrument transpose
     bra     .cmddone
-.cmddone:
-    tst.b   table_cmd_mode                ; a table-row CMD: its handler already ran -> no note here
-    beq.s   .cd_note
-    move.b  #0, table_cmd_mode
-    rts
-.cd_note:
+.cmddone:                                 ; phrase path only now (the table never reaches here)
     lsl.w   #2, d0
     moveq   #0, d2
     move.b  (a1,d0.w), d2                 ; note (0-95) or $FF
@@ -5826,8 +5648,189 @@ load_step:                                ; a6 = channel; d1 = chain step
     move.l  a1, c_phrase(a6)
     rts
 
-; run the active table row's CMD column (cmd@+2, prm@+3) once on row entry, via the shared
-; phrase command executor (run_cmd + table_cmd_mode). a6 = channel.
+; ============================================================
+; exec_cmd -- the shared voice-command executor: Q X O U K F C P R Y. a1 = row (cmd@+2,
+; prm@+3), d1 = row offset, a6 = channel. Runs the command's effect and returns; the CALLER
+; resolves the note (advance_ch falls into .cmddone) or not (table_cmd). The phrase-structural
+; commands (H I J) and global ones (T W) are NOT here -- advance_ch keeps those inline. The
+; local .cmddone is just an rts, so the handlers move in verbatim (they end `bra .cmddone`).
+; ============================================================
+exec_cmd:
+    move.b  (2,a1,d1.w), d2               ; command letter (A-Z = 1..26)
+    cmpi.b  #17, d2                        ; Q xy = one-shot ALGO(x)+FB(y) override
+    beq     .cmd_q
+    cmpi.b  #24, d2                        ; X xx = volume (carrier TL)
+    beq     .cmd_x
+    cmpi.b  #15, d2                        ; O xy = pan (FM L/R)
+    beq     .cmd_o
+    cmpi.b  #21, d2                        ; U xx = modulator TL (brightness)
+    beq     .cmd_u
+    cmpi.b  #11, d2                        ; K xx = note cut after xx ticks
+    beq     .cmd_k
+    cmpi.b  #6, d2                         ; F xx = finetune (signed period/F-num delta)
+    beq     .cmd_f
+    cmpi.b  #3, d2                         ; C xy = chord/arp (0,x,y semitones)
+    beq     .cmd_c
+    cmpi.b  #16, d2                        ; P xx = pitch bend (signed rate/tick)
+    beq     .cmd_p
+    cmpi.b  #18, d2                        ; R xx = retrigger every xx ticks
+    beq     .cmd_r
+    cmpi.b  #25, d2                        ; Y xy = FM LFO depth (AMS/FMS)
+    beq     .cmd_y
+    rts                                    ; not a voice command (or no command)
+.cmd_q:
+    cmpi.b  #1, c_type(a6)                 ; FM channels only
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = (ALGO<<4)|FB
+    move.b  d2, d3
+    lsr.b   #4, d3                         ; x nibble = ALGO 0-7
+    andi.b  #7, d3
+    andi.b  #7, d2                         ; y nibble = FB 0-7
+    lsl.b   #3, d2                         ; -> $B0 value = (FB<<3)|ALGO
+    or.b    d3, d2
+    moveq   #0, d3                         ; per-channel live slot (this running channel, not F1)
+    move.b  c_track(a6), d3
+    lea     lq_b0, a4
+    move.b  d2, (a4,d3.w)
+    lea     lq_dirty, a4
+    move.b  #1, (a4,d3.w)
+    bra     .cmddone
+.cmd_x:
+    cmpi.b  #1, c_type(a6)
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = new volume 0-15
+    andi.b  #$0F, d2
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     lx_vol, a4
+    move.b  d2, (a4,d3.w)                 ; lx_vol[track] = live volume (this channel)
+    lea     lx_dirty, a4
+    move.b  #1, (a4,d3.w)
+    bra     .cmddone
+.cmd_o:
+    cmpi.b  #1, c_type(a6)                 ; FM channels (DAC pan TBD)
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = x(L) y(R) nibbles -> $B4 pan bits 7/6
+    moveq   #0, d3
+    move.b  d2, d0
+    andi.b  #$F0, d0                       ; x nibble set -> left on (bit7)
+    beq.s   .o_nol
+    ori.b   #$80, d3
+.o_nol:
+    andi.b  #$0F, d2                       ; y nibble set -> right on (bit6)
+    beq.s   .o_nor
+    ori.b   #$40, d3
+.o_nor:
+    moveq   #0, d0                          ; preserve the instrument's AMS/FMS
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    adda.w  d0, a4
+    move.b  (i_ams,a4), d0
+    andi.b  #3, d0
+    lsl.b   #4, d0
+    or.b    d0, d3
+    move.b  (i_fms,a4), d0
+    andi.b  #7, d0
+    or.b    d0, d3
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    lea     lo_b4, a4
+    move.b  d3, (a4,d0.w)
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d0.w)
+    bra     .cmddone
+.cmd_u:
+    cmpi.b  #1, c_type(a6)
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; PR = modulator TL offset 0-127 (added above stored TL)
+    andi.b  #$7F, d2
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     lu_off, a4
+    move.b  d2, (a4,d3.w)
+    lea     lu_dirty, a4
+    move.b  #1, (a4,d3.w)
+    bra     .cmddone
+.cmd_k:
+    move.b  #1, k_set                      ; this row's note-on must keep K's gate, not the HLD
+    move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks; K00 = cut now
+    bne.s   .ck_hold
+    move.b  #0, c_keyon(a6)                ; K00 = cut now: FM key-off...
+    move.b  #3, c_estate(a6)               ; ...PSG/noise -> decay/release (state 3)...
+    move.b  #0, c_ectr(a6)
+    bsr     cut_dac_if_sample              ; ...and KIT/WAVE -> stop the DAC now
+    bra     .cmddone
+.ck_hold:
+    move.b  d2, c_hold(a6)
+    bra     .cmddone
+.cmd_f:
+    move.b  #1, f_set                      ; F on this row -> note-on keeps c_pfine
+    move.b  (3,a1,d1.w), d2               ; F xx = signed fine pitch offset (period/F-num units)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_pfine, a4
+    move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_c:
+    move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
+    move.b  (3,a1,d1.w), d2               ; C xy = chord offsets (x<<4)|y semitones; 0 = off
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_chord, a4
+    move.b  d2, (a4,d3.w)
+    lea     c_cphase, a4
+    move.b  #0, (a4,d3.w)                 ; restart the arp phase
+    bra     .cmddone
+.cmd_p:
+    move.b  #1, p_set                      ; P on this row -> note-on keeps c_bend
+    move.b  (3,a1,d1.w), d2               ; P xx = signed bend rate (period/F-num units per tick)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_bend, a4
+    move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_r:
+    move.b  (3,a1,d1.w), d2               ; R xx = retrigger every xx ticks
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_rtper, a4
+    move.b  d2, (a4,d3.w)
+    lea     c_rtctr, a4
+    move.b  d2, (a4,d3.w)                 ; first retrig xx ticks from now
+    bra     .cmddone
+.cmd_y:
+    cmpi.b  #1, c_type(a6)                ; FM channels only
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; Y xy = FM LFO depth: x=AMS (0-3), y=FMS (0-7).
+    moveq   #0, d3                         ; Builds $B4 = (instrument pan)<<6 | AMS<<4 | FMS and
+    move.b  c_instr(a6), d3               ; rides O's lo_b4/lo_dirty shadow -> emitted now, reverts
+    mulu.w  #INSTR_SIZE, d3               ; to the instrument next note (needs the global LFO $22 on
+    lea     instrum, a4                    ; to be audible).
+    adda.w  d3, a4
+    moveq   #0, d3
+    move.b  (i_pan,a4), d3                ; keep the instrument's pan bits
+    lsl.b   #6, d3
+    move.b  d2, d1                         ; AMS = high nibble -> bits 5-4
+    lsr.b   #4, d1
+    andi.b  #3, d1
+    lsl.b   #4, d1
+    or.b    d1, d3
+    move.b  d2, d1                         ; FMS = low nibble -> bits 2-0
+    andi.b  #7, d1
+    or.b    d1, d3
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    lea     lo_b4, a4
+    move.b  d3, (a4,d2.w)
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d2.w)
+    bra     .cmddone
+.cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
+    rts
+
+; run the active table row's CMD column (cmd@+2, prm@+3) once on row entry, via exec_cmd.
+; a6 = channel.
 table_cmd:
     move.b  c_tbl(a6), d0
     cmpi.b  #$FF, d0
@@ -5848,10 +5851,8 @@ table_cmd:
     lea     tbl_ram, a1
     adda.w  d2, a1
     moveq   #0, d1                        ; a1 already points at the row -> offset 0
-    move.b  #1, table_cmd_mode
-    bsr     run_cmd
-    move.b  #0, table_cmd_mode            ; never leak the flag past a table CMD, even if a handler
-.tc_done:                                 ;   were to return without passing through .cmddone
+    bsr     exec_cmd                      ; run the row's voice command -- no note resolution
+.tc_done:
     rts
 
 ; software AHD volume envelope for PSG voices, driven by the playing instrument's
