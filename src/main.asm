@@ -1993,7 +1993,14 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     beq.s   .ev4
     subq.b  #4, d0
 .ev4:
-    andi.b  #$0F, d0                          ; keep 0-15
+    tst.b   d0                                ; clamp 0-15 (no wrap -> min/max reachable)
+    bpl.s   .ev_lo
+    moveq   #0, d0
+.ev_lo:
+    cmpi.b  #15, d0
+    bls.s   .ev_hi
+    moveq   #15, d0
+.ev_hi:
     move.b  d0, (a1)
     rts
 .et_tblsel:                                   ; TBL selector (cur_row 0): L/R/U/D cycle cur_table (wrap)
