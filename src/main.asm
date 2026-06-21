@@ -5666,6 +5666,39 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     move.b  (a1,d0.w), d0
     ext.w   d0
     sub.w   d0, d2
+    cmpi.b  #$FF, c_tbl(a6)                 ; C command (PSG): plain note only -- env_ch already
+    bne.s   .fp_clamp                       ;   applies the chord on table notes (avoid double)
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    lea     c_chord, a1
+    moveq   #0, d3
+    move.b  (a1,d0.w), d3                  ; packed (x<<4)|y
+    beq.s   .fp_clamp
+    lea     c_cphase, a1
+    move.b  (a1,d0.w), d0                  ; arp phase
+    beq.s   .fp_clamp                       ; phase 0 -> +0
+    cmpi.b  #1, d0
+    bne.s   .fc_y
+    lsr.b   #4, d3                          ; phase 1 -> +x
+    bra.s   .fc_off
+.fc_y:
+    andi.b  #$0F, d3                        ; phase 2 -> +y
+.fc_off:
+    moveq   #0, d0
+    move.b  c_note(a6), d0
+    add.w   d3, d0                          ; offset note = note + arp offset
+    cmpi.w  #96, d0
+    bhs.s   .fp_clamp                       ; out of range -> no arp this tick
+    add.w   d0, d0
+    lea     notetable, a1
+    move.w  (a1,d0.w), d0                  ; period[note+offset]
+    moveq   #0, d3
+    move.b  c_note(a6), d3
+    add.w   d3, d3
+    sub.w   (a1,d3.w), d0                  ; - period[note] = delta (higher note -> lower period)
+    add.w   d0, d2
+.fp_clamp:
+    tst.w   d2                              ; clamp period to [1, 1023]
     bgt.s   .fp_hi
     moveq   #1, d2
     bra.s   .fp_done
