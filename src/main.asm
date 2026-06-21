@@ -37,6 +37,7 @@ c_shadowp  equ 8                    ; word
 c_shadowa  equ 10
 c_psgt     equ 11                   ; PSG tone-latch base ($80/$A0/$C0)
 c_psgv     equ 12                   ; PSG volume base ($90/$B0/$D0)
+c_tvol     equ 13                   ; live table VOL override ($FF = none -> use the envelope c_vol)
 c_phrase   equ 16                   ; long: current phrase ptr (cached from chain)
 c_chain    equ 20                   ; current chain (from song[songpos][track])
 c_cstep    equ 21                   ; chain step 0-15 ($FF = pre-start)
@@ -553,9 +554,9 @@ VBlankInt:
     beq.s   .nc
     bsr     clear_grid
     moveq   #3, d3                        ; header at row3 col1
-    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: header drops to row 4 (TBL selector sits at row 3)
+    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: header at row 5 (TBL selector row 3, blank row 4)
     bne.s   .hdr_r
-    moveq   #4, d3
+    moveq   #5, d3
 .hdr_r:
     moveq   #1, d4
     bsr     screen_ptr                     ; a1 = hdr table entry
@@ -5801,6 +5802,7 @@ load_step:                                ; a6 = channel; d1 = chain step
 ; software AHD volume envelope for PSG voices, driven by the playing instrument's
 ; VOL/ATK/HLD/DCY (FM voices use the YM2612 hardware envelope instead).
 env_ch:                                   ; a6 = channel
+    move.b  #$FF, c_tvol(a6)              ; default: no table-VOL override (.tapply sets it if a table)
     cmpi.b  #1, c_type(a6)
     beq     .e_done
     move.b  c_estate(a6), d0
@@ -5832,6 +5834,7 @@ env_ch:                                   ; a6 = channel
     lsl.w   #2, d1                          ; row * TROW
     add.w   d1, d3
     lea     tbl_ram, a1                    ; editable RAM tables
+    move.b  (t_vol,a1,d3.w), c_tvol(a6)   ; VOL column ($FF = no change) -> live override
     move.b  (t_tsp,a1,d3.w), d3            ; signed TSP offset (column 1)
     ext.w   d3
     moveq   #0, d1
@@ -5950,7 +5953,12 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     bra     compose_fm
 .square:
     moveq   #15, d1
-    sub.b   c_vol(a6), d1                 ; attenuation
+    move.b  c_tvol(a6), d0                ; live table VOL ($FF = none) overrides the envelope
+    cmpi.b  #$FF, d0
+    bne.s   .sq_tv
+    move.b  c_vol(a6), d0
+.sq_tv:
+    sub.b   d0, d1                        ; attenuation = 15 - volume
     bsr     psg_tremolo                   ; d1 += tremolo LFO
     move.w  c_period(a6), d2
     bsr     psg_vibrato                   ; d2 += vibrato LFO (preserves d1)
@@ -6029,7 +6037,12 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
 ; PSG noise compose: control byte ($E0|mode from c_period) + vol ($F0|atten)
 compose_noise:                            ; a6=ch; a3/d6=PSG buf
     moveq   #15, d1
-    sub.b   c_vol(a6), d1
+    move.b  c_tvol(a6), d0                ; live table VOL ($FF = none) overrides the envelope
+    cmpi.b  #$FF, d0
+    bne.s   .no_tv
+    move.b  c_vol(a6), d0
+.no_tv:
+    sub.b   d0, d1
     move.w  c_period(a6), d2
     cmp.w   c_shadowp(a6), d2
     beq.s   .nv
