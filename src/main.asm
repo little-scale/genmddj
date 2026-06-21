@@ -1014,6 +1014,8 @@ input_tick:
 .ne:
     rts
 .cheld:                                   ; C = 2D map navigation
+    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: C+Up/Down switch the table (not map up/down)
+    beq     .ch_table
     btst    #0, d5                         ; C+Up -> up a column on the map
     beq.s   .ncu
     bsr     grid_up
@@ -1063,6 +1065,31 @@ input_tick:
     bsr     clamp_col
 .done:
     rts
+.ch_table:                                ; TABLE: C+Up next table, C+Down prev (wrap); C+L/R still screen-nav
+    btst    #0, d5
+    beq.s   .cht_d
+    moveq   #0, d0
+    move.b  cur_table, d0
+    addq.b  #1, d0
+    cmpi.b  #NTABLE, d0
+    blo.s   .cht_uw
+    moveq   #0, d0
+.cht_uw:
+    move.b  d0, cur_table
+    move.b  #1, vdirty
+.cht_d:
+    btst    #1, d5
+    beq     .ncdmap
+    move.b  cur_table, d0
+    bne.s   .cht_dd
+    move.b  #NTABLE-1, d0
+    bra.s   .cht_dw
+.cht_dd:
+    subq.b  #1, d0
+.cht_dw:
+    move.b  d0, cur_table
+    move.b  #1, vdirty
+    bra     .ncdmap
 
 .aheld:                                   ; A + Left/Right -> switch channel (CHAIN/PHRASE only;
     move.b  cur_screen, d0                 ;   INSTR uses the INST field to pick the instrument)
@@ -1550,11 +1577,13 @@ do_cut:                                   ; clear field under cursor
 
 get_field_addr:                           ; -> a1 = cursor field byte
     move.b  cur_screen, d0
-    beq.s   .phrase
+    beq     .phrase
     cmpi.b  #SCR_SONG, d0
-    beq.s   .song
+    beq     .song
     cmpi.b  #SCR_INSTR, d0
-    beq.s   .instr
+    beq     .instr
+    cmpi.b  #SCR_TABLE, d0
+    beq     .table_fa                      ; TABLE: tbl_ram[cur_table] + row*TROW + col
     lea     chains, a1                     ; CHAIN: chains[cur_chain] + row*2 + col
     moveq   #0, d0
     move.b  cur_chain, d0
@@ -1573,6 +1602,20 @@ get_field_addr:                           ; -> a1 = cursor field byte
     moveq   #0, d0
     move.b  cur_row, d0
     mulu.w  #NCH, d0                        ; row * NCH
+    moveq   #0, d1
+    move.b  cur_col, d1
+    add.w   d1, d0
+    adda.w  d0, a1
+    rts
+.table_fa:                                ; tbl_ram[cur_table]*64 + row*TROW + col
+    lea     tbl_ram, a1
+    moveq   #0, d0
+    move.b  cur_table, d0
+    lsl.w   #6, d0                          ; table * 64 (TBL_ROWS*TROW)
+    moveq   #0, d1
+    move.b  cur_row, d1
+    lsl.w   #2, d1                          ; row * TROW
+    add.w   d1, d0
     moveq   #0, d1
     move.b  cur_col, d1
     add.w   d1, d0
