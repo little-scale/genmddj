@@ -82,11 +82,38 @@ checksum covers, so this is required, not optional.
 ## 7. Sibling: the font patcher
 
 The font is the same kind of asset — UI tiles in ROM — and a font patcher is the **same machinery**
-(import → locate-by-marker → edit/import tiles → re-checksum → export), so it's cheap once §5/§6
-exist. Tile rips of Sega-game fonts are widely available (tile-ripping archives); MD glyphs are 8×8
-tiles, and genmddj's own font is built by `tools/makefont.py` from `font8x8_basic.h`. A `font/` tool
-would import a ROM (or a tile-sheet PNG), edit the glyph tiles, and patch them in place. Lower
-priority than palette (cosmetic), but on-theme — "reskin your tracker from the Sega heritage,"
+(import → locate by the `GMDJFON0` marker → edit/import tiles → re-checksum → export), so it's cheap
+once §5/§6 exist. But the genmddj font is **not plain ASCII**, and a naïve "drop a Sega-game rip over
+the whole set" would break the UI. Two things the tool must respect:
+
+**192 tiles, two linked sets.** `makefont.py` emits **96 normal** glyphs (`$20–$7F`, the SMSGGDJ 5×7
+set in an 8×8 cell) then **96 inverse** copies (foreground/background swapped) — loaded at VRAM `$20`
+and `$80`, so `inverse tile = ASCII + $60`. The inverse set is the **cursor / playhead highlight
+block** (colour 0 is transparent on the MD planes, so a true filled-cell highlight needs a real
+inverse glyph, not just a palette swap). **Editing a glyph means editing both its normal and inverse
+tile**, or the highlighted/playhead version goes stale.
+
+**Reserved system glyphs.** Several ASCII slots are repurposed as UI symbols, not letters — lock
+these by default (offer an "edit system glyphs" advanced mode):
+
+| code | slot | UI symbol |
+|---|---|---|
+| `$3C` | `<` | live-queue marker (hollow ▶) |
+| `$3E` | `>` | live-queue marker (solid ▶) |
+| `$40` | `@` | SYNC IN (◀) |
+| `$5C` | `\` | SYNC PULSE (clock pulse) |
+| `$60` | `` ` `` | θ phase (FM-LFO column header) |
+| `$7B` | `{` | **toggle box OFF** (hollow) |
+| `$7C` | `\|` | DIR arrow **DOWN** |
+| `$7D` | `}` | **toggle box ON** (solid) |
+| `$7E` | `~` | DIR arrow **UP** |
+| `$7F` | DEL | DIR arrow **BOTH** |
+
+So the patcher should freely swap **letters / digits / punctuation** from a rip while **protecting
+the slots above**, and propagate every edit to the matching inverse tile. (Lowercase `$61–$7A`
+currently fall back to uppercase — a rip *adding* real lowercase there is safe and a nice upgrade.)
+
+Lower priority than palette (cosmetic), but on-theme — "reskin your tracker from the Sega heritage,"
 mirroring how the extractors pull *patches* from games. It and the palette tool share a small
 **ROM-patcher core** (binary read, marker-find, checksum, file I/O) worth factoring out once both exist.
 
