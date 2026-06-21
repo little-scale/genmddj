@@ -114,6 +114,7 @@ lu_dirty   equ $00FFE1D6           ; U command: per-channel flag -> recompute mo
 c_pfine    equ $00FFE1E0           ; F command: per-channel signed fine pitch (period/F-num delta)
 c_chord    equ $00FFE1EA           ; C command: per-channel chord offsets (x<<4)|y semitones, 0=off
 c_cphase   equ $00FFE1F4           ; C command: per-channel arp phase 0-2 (0,+x,+y)
+c_bend     equ $00FFE400           ; P command: per-channel signed pitch-bend rate (added to c_pfine/tick)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4480,6 +4481,11 @@ engine_play_reset:
 .rlq:
     move.b  #0, (a0)+
     dbra    d0, .rlq
+    lea     c_bend, a0                    ; clear P bend rates
+    moveq   #NCH-1, d0
+.rlb:
+    move.b  #0, (a0)+
+    dbra    d0, .rlb
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .r:
@@ -4845,6 +4851,26 @@ hold_tick:                                ; a6 = channel
 .hcph:
     move.b  d1, (a1,d0.w)
 .hnochord:
+    moveq   #0, d0                          ; P command: accumulate bend rate into c_pfine (clamp +-127)
+    move.b  c_track(a6), d0
+    lea     c_bend, a1
+    move.b  (a1,d0.w), d1
+    beq.s   .hnobend
+    ext.w   d1
+    lea     c_pfine, a1
+    move.b  (a1,d0.w), d2
+    ext.w   d2
+    add.w   d1, d2
+    cmpi.w  #127, d2
+    ble.s   .hbc1
+    moveq   #127, d2
+.hbc1:
+    cmpi.w  #-127, d2
+    bge.s   .hbc2
+    move.w  #-127, d2
+.hbc2:
+    move.b  d2, (a1,d0.w)
+.hnobend:
     move.b  c_hold(a6), d0
     cmpi.b  #$FF, d0
     beq.s   .hret
@@ -4928,6 +4954,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_f
     cmpi.b  #3, d2                         ; C xy = chord/arp (0,x,y semitones)
     beq     .cmd_c
+    cmpi.b  #16, d2                        ; P xx = pitch bend (signed rate/tick)
+    beq     .cmd_p
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5047,6 +5075,13 @@ advance_ch:                               ; a6 = channel
     move.b  d2, (a4,d3.w)
     lea     c_cphase, a4
     move.b  #0, (a4,d3.w)                 ; restart the arp phase
+    bra     .cmddone
+.cmd_p:
+    move.b  (3,a1,d1.w), d2               ; P xx = signed bend rate (period/F-num units per tick)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_bend, a4
+    move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
@@ -5654,11 +5689,15 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .nochg:
     tst.b   c_keyon(a6)                     ; per-tick FM-freq re-send: only while the note is on
     beq.s   .nofreqres
-    moveq   #0, d0                          ; ...and only if a pitch-mod (chord) is active
+    moveq   #0, d0                          ; ...and only if a pitch-mod (chord or bend) is active
     move.b  c_track(a6), d0
     lea     c_chord, a4
     tst.b   (a4,d0.w)
+    bne.s   .dofreqres
+    lea     c_bend, a4
+    tst.b   (a4,d0.w)
     beq.s   .nofreqres
+.dofreqres:
     bsr     fm_freq_send
 .nofreqres:
     move.b  c_keyon(a6), d0               ; key state changed (e.g. stop -> off)?
