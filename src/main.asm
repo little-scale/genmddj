@@ -5850,7 +5850,8 @@ table_cmd:
     moveq   #0, d1                        ; a1 already points at the row -> offset 0
     move.b  #1, table_cmd_mode
     bsr     run_cmd
-.tc_done:
+    move.b  #0, table_cmd_mode            ; never leak the flag past a table CMD, even if a handler
+.tc_done:                                 ;   were to return without passing through .cmddone
     rts
 
 ; software AHD volume envelope for PSG voices, driven by the playing instrument's

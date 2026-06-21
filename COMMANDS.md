@@ -9,6 +9,16 @@ implementing. Companion to DESIGN.md §8 — when a decision here changes §8, u
 The command column is a phrase/table cell `(letter A–Z = 1..26, param byte)`. One executor
 runs both columns; voice-type-specific commands no-op on inapplicable voices.
 
+> **Shared executor — built 2026-06-22.** The table CMD column now runs through the *exact*
+> phrase command handlers: a `run_cmd` entry at the dispatch's command-read + a `table_cmd_mode`
+> flag that makes `.cmddone` skip note-resolution and return (a table row's offset 0 is `t_vol`,
+> not a note). The table CMD column allows **Q X O U F C P R Y K** and excludes **A/G/I/J/T/W**
+> (phrase-structural / global-timing). PSG voices only for now. See DESIGN.md §5.2.
+>
+> *NB: the per-command status table below is stale (pre-dates this session's per-channel +
+> table work — e.g. C/P/K/R/F/O/U/Y are built now). Refresh it against TESTING.md before relying
+> on it.*
+
 ---
 
 ## 1. Status at a glance
