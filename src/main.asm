@@ -1633,6 +1633,45 @@ adj_field:
     move.b  d0, (a1)
     rts
 
+; TBL field: a1 = field addr, d2 = dpad. Cycles [-- ($FF), 0 .. NTABLE-1] with wrap; -- = no table.
+edit_tbl_field:
+    move.b  (a1), d0
+    btst    #3, d2                          ; Right / Up = forward
+    bne.s   .etf_fwd
+    btst    #0, d2
+    bne.s   .etf_fwd
+    btst    #2, d2                          ; Left / Down = back
+    bne.s   .etf_bwd
+    btst    #1, d2
+    bne.s   .etf_bwd
+    rts
+.etf_fwd:
+    cmpi.b  #$FF, d0                        ; -- -> 0
+    bne.s   .etf_finc
+    moveq   #0, d0
+    bra.s   .etf_w
+.etf_finc:
+    addq.b  #1, d0
+    cmpi.b  #NTABLE, d0                     ; past the last table -> --
+    blo.s   .etf_w
+    move.b  #$FF, d0
+    bra.s   .etf_w
+.etf_bwd:
+    cmpi.b  #$FF, d0                        ; -- -> last table
+    bne.s   .etf_bdec
+    move.b  #NTABLE-1, d0
+    bra.s   .etf_w
+.etf_bdec:
+    tst.b   d0                              ; 0 -> --
+    bne.s   .etf_b2
+    move.b  #$FF, d0
+    bra.s   .etf_w
+.etf_b2:
+    subq.b  #1, d0
+.etf_w:
+    move.b  d0, (a1)
+    rts
+
 ; FM cell edit: d2 = dpad bits; L/R = +-1, U/D = +-step, wrapping
 edit_fm:
     lea     instrum, a3
@@ -1824,6 +1863,8 @@ edit_psg:
     moveq   #0, d1
     move.b  (a1,d0.w), d1
     lea     0(a3,d1.w), a1                  ; field address
+    cmpi.b  #8, d0                          ; TBL field (idx 8) -> wrap-cycle [-- , 0..NTABLE-1]
+    beq     edit_tbl_field
     lea     psg_max, a2
     moveq   #0, d3
     move.b  (a2,d0.w), d3                   ; field max
@@ -3756,6 +3797,18 @@ render_psg:                               ; d7 = field count; a0 = VDP_CTRL
 .pnh:
     lea     psg_fmt, a1                    ; format dispatch
     move.b  (a1,d6.w), d0
+    cmpi.b  #4, d0                          ; TBL: "--" when none ($FF), else the table # in hex2
+    bne.s   .nottbl4
+    cmpi.b  #$FF, d1
+    bne.s   .ptbl_hex
+    lea     str_none, a1                   ; no table -> "--"
+    move.w  d5, d3
+    moveq   #8, d4
+    bsr     print_hl
+    bra     .pnext
+.ptbl_hex:
+    moveq   #1, d0                          ; has a table -> fall through as hex2
+.nottbl4:
     cmpi.b  #2, d0
     beq.s   .pmode
     cmpi.b  #3, d0
@@ -7468,6 +7521,7 @@ str_vib:    dc.b "VIB",0
 str_trm:    dc.b "TRM",0
 str_tbl:    dc.b "TBL",0
 str_tbs:    dc.b "TBS",0
+str_none:   dc.b "--",0
 str_mode:   dc.b "MODE",0
 str_rate:   dc.b "RATE",0
 str_t_fm:   dc.b "FM",0
@@ -7496,7 +7550,7 @@ psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, 
 psg_off:    dc.b ip_vol, ip_atk, ip_hld, ip_dcy, ip_tsp, ip_swp, ip_vib, ip_trm, i_tbl, i_tbs, ip_mode, ip_rate
 psg_max:    dc.b 15, 15, 15, 15, 255, 255, 255, 255, 31, 15, 1, 3
 psg_step:   dc.b 4, 4, 4, 4, 12, 16, 16, 16, 16, 4, 1, 1   ; TSP=12; SWP/VIB/TRM/TBL=16
-psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE text, 3 RATE text
+psg_fmt:    dc.b 0, 0, 0, 0, 1, 1, 1, 1, 4, 0, 2, 3   ; 0 hex1, 1 hex2, 2 MODE, 3 RATE, 4 TBL(-- or hex2)
     even
 ; WAVE instrument field set (11 fields)
 wave_lbl:   dc.l str_w_wave, str_vol, str_atk, str_hld, str_dcy, str_warp, str_drive, str_fold, str_crush, str_tbl, str_tbs
