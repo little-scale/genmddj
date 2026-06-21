@@ -123,6 +123,8 @@ cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose 
 hop_ctr    equ $00FFE42A           ; H command: hops taken this advance (runaway guard; 0 each advance)
 k_set      equ $00FFE42B           ; K command: 1 if K set the gate this row (note-on must not override)
 c_set      equ $00FFE42C           ; C command: 1 if C set the chord this row (note-on keeps it, else clears)
+f_set      equ $00FFE42D           ; F command: 1 if F set the finetune this row (note-on keeps c_pfine)
+p_set      equ $00FFE42E           ; P command: 1 if P set the bend this row (note-on keeps c_bend)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -5022,6 +5024,8 @@ advance_ch:                               ; a6 = channel
     move.b  #0, cmd_tsp                    ; J command: clear this row's repeat-gated transpose
     move.b  #0, k_set                      ; K command: clear this row's gate-override flag
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
+    move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
+    move.b  #0, p_set                      ; P command: clear this row's bend-set flag
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
     beq     .cmd_hop
@@ -5167,6 +5171,7 @@ advance_ch:                               ; a6 = channel
     move.b  d2, proj_tmpo
     bra     .cmddone
 .cmd_f:
+    move.b  #1, f_set                      ; F on this row -> note-on keeps c_pfine
     move.b  (3,a1,d1.w), d2               ; F xx = signed fine pitch offset (period/F-num units)
     moveq   #0, d3
     move.b  c_track(a6), d3
@@ -5184,6 +5189,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, (a4,d3.w)                 ; restart the arp phase
     bra     .cmddone
 .cmd_p:
+    move.b  #1, p_set                      ; P on this row -> note-on keeps c_bend
     move.b  (3,a1,d1.w), d2               ; P xx = signed bend rate (period/F-num units per tick)
     moveq   #0, d3
     move.b  c_track(a6), d3
@@ -5267,15 +5273,25 @@ advance_ch:                               ; a6 = channel
     cmpi.w  #96, d2
     bhs     .ret
     move.b  d2, c_note(a6)
-    tst.b   c_set                          ; C command: a new note with no C this row clears the chord
-    bne.s   .csok                          ;   (so the arp doesn't latch onto following notes)
-    movem.l d0/a0, -(sp)                    ; scratch d0/a0; d2 still holds the note this path needs
-    move.b  c_track(a6), d0
-    andi.w  #$00FF, d0
+    movem.l d0/a0, -(sp)                    ; per-note state resets (d2 still holds the note this path needs):
+    move.b  c_track(a6), d0                 ;   a new note clears C/F/P state unless that command is on its row,
+    andi.w  #$00FF, d0                       ;   so chord/finetune/bend don't latch onto following notes
+    tst.b   c_set
+    bne.s   .crc
     lea     c_chord, a0
     clr.b   (a0,d0.w)
+.crc:
+    tst.b   f_set
+    bne.s   .crf
+    lea     c_pfine, a0                     ; no F this row -> drop the finetune (start at pitch)
+    clr.b   (a0,d0.w)
+.crf:
+    tst.b   p_set
+    bne.s   .crp
+    lea     c_bend, a0                      ; no P this row -> stop the bend (c_pfine cleared above unless F)
+    clr.b   (a0,d0.w)
+.crp:
     movem.l (sp)+, d0/a0
-.csok:
     bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
     cmpi.b  #1, c_type(a6)               ; PSG: (re)start the instrument's macro table
