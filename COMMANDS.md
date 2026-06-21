@@ -172,6 +172,9 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
 - **T xx** tempo → `proj_tmpo` (row-advance = `1250/proj_tmpo`).
 - **F xx** finetune → per-channel signed `c_pfine`, added to the PSG period (each tick) and
   the FM 11-bit F-number (at the freq send). Static detune; rides the existing freq path.
+- **C xy** chord/arp (**PSG side**) → per-channel `c_chord`/`c_cphase`; `hold_tick` cycles the
+  phase 0→1→2, `env_ch` adds `[0,+x,+y]` to the effective note each tick. FM side waits on the
+  per-tick FM-freq path.
 
 All FM live commands are now per-channel/targeted (§3.1) — F1-F6, not F1-only, no repatch.
 

@@ -112,6 +112,8 @@ lo_dirty   equ $00FFE1C2           ; O command: per-channel flag -> emit lo_b4 f
 lu_off     equ $00FFE1CC           ; U command: per-channel modulator TL offset 0-127
 lu_dirty   equ $00FFE1D6           ; U command: per-channel flag -> recompute modulator $40 (TL)
 c_pfine    equ $00FFE1E0           ; F command: per-channel signed fine pitch (period/F-num delta)
+c_chord    equ $00FFE1EA           ; C command: per-channel chord offsets (x<<4)|y semitones, 0=off
+c_cphase   equ $00FFE1F4           ; C command: per-channel arp phase 0-2 (0,+x,+y)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4473,8 +4475,8 @@ engine_play_reset:
 .rps:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
-    lea     lq_b0, a0                     ; clear all FM live-command slots (Q/X/O/U + F fine pitch)
-    move.w  #(c_pfine+NCH)-lq_b0-1, d0
+    lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
+    move.w  #(c_cphase+NCH)-lq_b0-1, d0
 .rlq:
     move.b  #0, (a0)+
     dbra    d0, .rlq
@@ -4829,6 +4831,20 @@ wave_silence:
 
 ; gate countdown: $FF = held; else decrement, and request key-off when it hits 0
 hold_tick:                                ; a6 = channel
+    moveq   #0, d0                          ; C command: advance the chord arp phase (0->1->2->0)
+    move.b  c_track(a6), d0
+    lea     c_chord, a1
+    tst.b   (a1,d0.w)
+    beq.s   .hnochord
+    lea     c_cphase, a1
+    move.b  (a1,d0.w), d1
+    addq.b  #1, d1
+    cmpi.b  #3, d1
+    blo.s   .hcph
+    moveq   #0, d1
+.hcph:
+    move.b  d1, (a1,d0.w)
+.hnochord:
     move.b  c_hold(a6), d0
     cmpi.b  #$FF, d0
     beq.s   .hret
@@ -4910,6 +4926,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_t
     cmpi.b  #6, d2                         ; F xx = finetune (signed period/F-num delta)
     beq     .cmd_f
+    cmpi.b  #3, d2                         ; C xy = chord/arp (0,x,y semitones)
+    beq     .cmd_c
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5020,6 +5038,15 @@ advance_ch:                               ; a6 = channel
     move.b  c_track(a6), d3
     lea     c_pfine, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_c:
+    move.b  (3,a1,d1.w), d2               ; C xy = chord offsets (x<<4)|y semitones; 0 = off
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_chord, a4
+    move.b  d2, (a4,d3.w)
+    lea     c_cphase, a4
+    move.b  #0, (a4,d3.w)                 ; restart the arp phase
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
@@ -5237,7 +5264,7 @@ env_ch:                                   ; a6 = channel
     moveq   #0, d3                         ; macro table: advance at TBS, arp the period
     move.b  c_tbl(a6), d3
     cmpi.b  #$FF, d3
-    beq.s   .notbl
+    beq     .notbl
     move.b  (i_tbs,a4), d2
     beq.s   .tapply                         ; TBS 0 = per-note: no per-tick advance
     addq.b  #1, c_tctr(a6)
@@ -5261,6 +5288,24 @@ env_ch:                                   ; a6 = channel
     moveq   #0, d1
     move.b  c_note(a6), d1
     add.w   d1, d3                          ; effective note
+    moveq   #0, d0                          ; C command: add the chord arp offset (0,+x,+y)
+    move.b  c_track(a6), d0
+    lea     c_chord, a1
+    move.b  (a1,d0.w), d1
+    beq.s   .echord_no
+    lea     c_cphase, a1
+    move.b  (a1,d0.w), d0
+    beq.s   .echord_no
+    cmpi.b  #1, d0
+    bne.s   .echord_y
+    lsr.b   #4, d1                          ; phase 1 -> +x
+    bra.s   .echord_add
+.echord_y:
+    andi.b  #$0F, d1                        ; phase 2 -> +y
+.echord_add:
+    ext.w   d1
+    add.w   d1, d3
+.echord_no:
     bmi.s   .notbl
     cmpi.w  #96, d3
     bhs.s   .notbl
