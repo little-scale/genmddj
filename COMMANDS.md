@@ -170,15 +170,18 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
 - **U xx** modulator TL offset → modulator `$40` via `emit_u_tl` (brightness/filter).
 - **K xx** note cut after xx ticks → `c_hold` (the gate countdown). *(PCM-abort TBD)*
 - **T xx** tempo → `proj_tmpo` (row-advance = `1250/proj_tmpo`).
+- **F xx** finetune → per-channel signed `c_pfine`, added to the PSG period (each tick) and
+  the FM 11-bit F-number (at the freq send). Static detune; rides the existing freq path.
 
 All FM live commands are now per-channel/targeted (§3.1) — F1-F6, not F1-only, no repatch.
 
 **Remaining — grouped by the engine hook each needs (next batches):**
 - *Patch-source*: **Y xx** (adopt instrument xx's patch; needs `emit_ch_patch` from a chosen
   instr + a per-note revert).
-- *Per-channel pitch offset* (one shared mechanism, then cheap): **F** finetune, **P** pitch
-  bend, **L** slide, **C** chord/arp — a per-channel cents/period delta applied before the
-  F-number / PSG-period lookup each tick (the vibrato path already perturbs pitch — extend it).
+- *Time-varying pitch* — **C** chord/arp, **P** bend, **L** slide. These change pitch *every
+  tick*, but **FM only sends frequency on note-trigger today** — so they need a new per-tick
+  FM-freq update path (PSG already recomputes its period each tick, so the PSG side is ready).
+  This is the real next sub-batch (F already added the per-channel `c_pfine` offset they build on).
 - *Trigger / gate timing*: **D** delay (hold the trigger N ticks), **R** retrig (re-key every
   N, step vol).
 - *Global timing*: **G** groove (needs the groove array — DESIGN §9; the engine currently runs

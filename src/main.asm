@@ -111,6 +111,7 @@ lo_b4      equ $00FFE1B8           ; O command: per-channel live $B4 value ((pan
 lo_dirty   equ $00FFE1C2           ; O command: per-channel flag -> emit lo_b4 for this channel
 lu_off     equ $00FFE1CC           ; U command: per-channel modulator TL offset 0-127
 lu_dirty   equ $00FFE1D6           ; U command: per-channel flag -> recompute modulator $40 (TL)
+c_pfine    equ $00FFE1E0           ; F command: per-channel signed fine pitch (period/F-num delta)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4472,8 +4473,8 @@ engine_play_reset:
 .rps:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
-    lea     lq_b0, a0                     ; clear all FM live-command slots (Q/X/O/U dirty + values)
-    move.w  #(lu_dirty+NCH)-lq_b0-1, d0
+    lea     lq_b0, a0                     ; clear all FM live-command slots (Q/X/O/U + F fine pitch)
+    move.w  #(c_pfine+NCH)-lq_b0-1, d0
 .rlq:
     move.b  #0, (a0)+
     dbra    d0, .rlq
@@ -4907,6 +4908,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_k
     cmpi.b  #20, d2                        ; T xx = tempo (BPM)
     beq     .cmd_t
+    cmpi.b  #6, d2                         ; F xx = finetune (signed period/F-num delta)
+    beq     .cmd_f
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5010,6 +5013,13 @@ advance_ch:                               ; a6 = channel
 .cmd_t:
     move.b  (3,a1,d1.w), d2               ; T xx = tempo (BPM); the row-advance uses 1250/proj_tmpo
     move.b  d2, proj_tmpo
+    bra     .cmddone
+.cmd_f:
+    move.b  (3,a1,d1.w), d2               ; F xx = signed fine pitch offset (period/F-num units)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_pfine, a4
+    move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
@@ -5349,6 +5359,20 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     bsr     psg_tremolo                   ; d1 += tremolo LFO
     move.w  c_period(a6), d2
     bsr     psg_vibrato                   ; d2 += vibrato LFO (preserves d1)
+    moveq   #0, d0                          ; F command: add the channel's fine pitch to the period
+    move.b  c_track(a6), d0
+    lea     c_pfine, a1
+    move.b  (a1,d0.w), d0
+    ext.w   d0
+    add.w   d0, d2
+    bgt.s   .fp_hi
+    moveq   #1, d2
+    bra.s   .fp_done
+.fp_hi:
+    cmpi.w  #1023, d2
+    bls.s   .fp_done
+    move.w  #1023, d2
+.fp_done:
     cmp.w   c_shadowp(a6), d2
     beq.s   .sp
     move.w  d2, c_shadowp(a6)
@@ -5555,16 +5579,16 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     cmp.b   (a4,d0.w), d1
     beq.s   .cf_keys
     tst.b   patch_done
-    bne.s   .cf_defer
+    bne     .cf_defer
     cmpi.w  #PATCH_CAP, d5
-    bhi.s   .cf_defer
+    bhi     .cf_defer
     move.b  d1, (a4,d0.w)                   ; pshadow[track] = c_instr
     move.b  #1, patch_done
     bsr     emit_ch_patch                   ; append this channel's operator patch (before key-on)
     bra.s   .cf_emit
 .cf_keys:
     cmpi.w  #YM_CAP, d5
-    bhi.s   .cf_defer
+    bhi     .cf_defer
 .cf_emit:
     move.b  #0, c_trig(a6)
     move.b  #0, (a5)+                       ; key-off: part0, $28, ymkey
@@ -5574,6 +5598,33 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     moveq   #0, d0
     move.b  c_note(a6), d0
     bsr     fm_freq                        ; d1=$A4 val, d2=$A0 val
+    moveq   #0, d3                          ; F command: add fine pitch to the 11-bit F-number
+    move.b  c_track(a6), d3
+    lea     c_pfine, a4
+    move.b  (a4,d3.w), d3
+    beq.s   .cf_nofine
+    ext.w   d3
+    move.w  d1, d4                          ; fnum = ((d1&7)<<8) | d2
+    andi.w  #7, d4
+    lsl.w   #8, d4
+    move.w  d2, d0
+    andi.w  #$FF, d0
+    or.w    d0, d4
+    add.w   d3, d4                          ; += fine, clamp 0..2047
+    bpl.s   .cf_fhi
+    moveq   #0, d4
+.cf_fhi:
+    cmpi.w  #2047, d4
+    bls.s   .cf_fset
+    move.w  #2047, d4
+.cf_fset:
+    move.b  d4, d2                          ; $A0 = fnum low
+    andi.b  #$F8, d1                        ; keep block bits, re-pack fnum high
+    move.w  d4, d0
+    lsr.w   #8, d0
+    andi.b  #7, d0
+    or.b    d0, d1
+.cf_nofine:
     move.b  c_ympart(a6), (a5)+            ; freq hi: part, $A4+chreg, d1
     move.b  #$A4, d3
     add.b   c_ymchreg(a6), d3
