@@ -99,6 +99,11 @@ start:
     ld   a, $FF
     ld   (PSG), a
 
+    ld   a, $2A                 ; pre-park ch6 DAC at centre ($80); $2A is undefined at YM reset,
+    ld   (YM_A0), a             ; so the first $2B-enable starts from centre, not garbage (no boot
+    ld   a, $80                 ; click). $2B left disabled here -> F6 FM is unaffected.
+    ld   (YM_D0), a
+
     ld   a, $24                 ; YM2612 Timer A = DAC clock; 1024-TA=10 -> 5327 Hz
     ld   (YM_A0), a             ; (highest rate the polled feed paces 1:1 -- output measured
     ld   a, $FD                 ;  = 440 on a 440 sine; >5327 over-runs + pitches down. M9 =
