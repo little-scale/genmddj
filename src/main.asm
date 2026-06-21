@@ -734,6 +734,12 @@ VBlankInt:
     bsr     print_at
     bsr     draw_map                      ; map at row5 col35
     bsr     amp_refresh                   ; smooth per-frame AMP bars (LFO screen + playing)
+    cmpi.b  #SCR_TABLE, cur_screen        ; animate the TABLE playhead each frame while playing
+    bne.s   .ntblph
+    tst.b   playing
+    beq.s   .ntblph
+    bsr     render_table_playhead
+.ntblph:
     tst.b   env_ready                     ; push an envelope chunk every frame (budget OK)
     beq.s   .vbend
     cmpi.b  #SCR_INSTR, cur_screen
@@ -2600,15 +2606,45 @@ draw_rowhdr:                              ; d6 = row; a0 = VDP_CTRL
     move.w  d1, VDP_DATA
     rts
 
+; TABLE playhead: redraw just the 16 row-header playhead cells (col 3) each frame so it tracks
+; c_trow as the table arps (the full table only re-renders on eng_adv -- too slow). a0 = VDP_CTRL.
+render_table_playhead:
+    bsr     get_playrow
+    move.b  d0, play_row
+    moveq   #0, d6
+.rtp:
+    moveq   #0, d0
+    move.w  d6, d0
+    addi.w  #GRID_TOP, d0
+    lsl.w   #6, d0
+    addi.w  #3, d0                          ; col 3 (the playhead column)
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  #$20, d1                        ; space
+    move.b  play_row, d0
+    cmp.b   d6, d0
+    bne.s   .rtpn
+    move.w  #$1F, d1                        ; playhead triangle
+.rtpn:
+    move.w  d1, VDP_DATA
+    addq.w  #1, d6
+    cmpi.w  #16, d6
+    bne.s   .rtp
+    rts
+
 ; compute the playhead row for the current screen -> d0 ($FF if not shown)
 get_playrow:                              ; shared single playhead (PHRASE/CHAIN only)
     tst.b   playing
-    beq.s   .none
+    beq     .none
     move.b  cur_screen, d1
-    beq.s   .phrase
+    beq     .phrase
     cmpi.b  #SCR_CHAIN, d1
-    bne.s   .none                         ; SONG uses per-track markers; others none
-    bra.s   .chain
+    beq     .chain
+    cmpi.b  #SCR_TABLE, d1                 ; TABLE: the playing table's current row (c_trow)
+    beq     .table
+    bra     .none                          ; SONG uses per-track markers; others none
 .phrase:                                  ; row of a channel playing cur_phrase
     moveq   #0, d2
     move.b  cur_phrase, d2
@@ -2626,7 +2662,7 @@ get_playrow:                              ; shared single playhead (PHRASE/CHAIN
 .pnext:
     lea     CHSIZE(a6), a6
     dbra    d2, .pl
-    bra.s   .none
+    bra     .none
 .pf:
     move.b  c_row(a6), d0
     rts
@@ -2640,9 +2676,26 @@ get_playrow:                              ; shared single playhead (PHRASE/CHAIN
     beq.s   .cf
     lea     CHSIZE(a6), a6
     dbra    d2, .cl
-    bra.s   .none
+    bra     .none
 .cf:
     move.b  c_cstep(a6), d0
+    rts
+.table:                                   ; row of a channel currently playing cur_table
+    move.b  cur_table, d3
+    lea     ch_state, a6
+    moveq   #NCH-1, d2
+.tbl_l:
+    cmpi.b  #$FF, c_chain(a6)             ; skip inactive channels
+    beq.s   .tbl_n
+    move.b  c_tbl(a6), d0
+    cmp.b   d3, d0
+    beq.s   .tbl_f
+.tbl_n:
+    lea     CHSIZE(a6), a6
+    dbra    d2, .tbl_l
+    bra     .none
+.tbl_f:
+    move.b  c_trow(a6), d0
     rts
 .none:
     moveq   #-1, d0                       ; $FF -> no row matches
