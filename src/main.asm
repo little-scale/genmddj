@@ -5304,6 +5304,27 @@ advance_ch:                               ; a6 = channel
     addq.b  #1, Z80_RAM+$1FF4            ; bump WV_OFF -> Z80 wave_off disables ch6 DAC
     move.w  #$0000, Z80_BUSREQ
 .fm_nodac:
+    moveq   #0, d2                        ; Q revert: unless a Q sets ALGO/FB on this very row,
+    move.b  c_track(a6), d2               ;   re-assert the instrument's $B0 so a stale Q can't stick
+    lea     lq_dirty, a4
+    tst.b   (a4,d2.w)
+    bne.s   .fm_qok
+    moveq   #0, d1
+    move.b  c_instr(a6), d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a4
+    adda.w  d1, a4
+    move.b  (i_fb,a4), d1
+    andi.b  #7, d1
+    lsl.b   #3, d1
+    move.b  (i_algo,a4), d0
+    andi.b  #7, d0
+    or.b    d0, d1                        ; d1 = instrument $B0 = (FB<<3)|ALGO
+    lea     lq_b0, a4
+    move.b  d1, (a4,d2.w)
+    lea     lq_dirty, a4
+    move.b  #1, (a4,d2.w)                 ; force compose_fm to emit it -> reverts ALGO/FB
+.fm_qok:
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
     lea     instrum, a4                  ; HLD: gate time from the channel's instrument
