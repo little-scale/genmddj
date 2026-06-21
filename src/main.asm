@@ -6287,6 +6287,11 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  (a4,d0.w), d1
     bsr     emit_x_tl
 .cf_nox:
+    move.b  c_tvol(a6), d1                ; table VOL column -> carrier TL (overrides X; per tick)
+    cmpi.b  #$FF, d1
+    beq.s   .cf_notvol
+    bsr     emit_x_tl
+.cf_notvol:
     moveq   #0, d0                          ; O command: live $B4 (pan / AMS / FMS)
     move.b  c_track(a6), d0
     lea     lo_dirty, a4
