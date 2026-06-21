@@ -5304,26 +5304,64 @@ advance_ch:                               ; a6 = channel
     addq.b  #1, Z80_RAM+$1FF4            ; bump WV_OFF -> Z80 wave_off disables ch6 DAC
     move.w  #$0000, Z80_BUSREQ
 .fm_nodac:
-    moveq   #0, d2                        ; Q revert: unless a Q sets ALGO/FB on this very row,
-    move.b  c_track(a6), d2               ;   re-assert the instrument's $B0 so a stale Q can't stick
-    lea     lq_dirty, a4
-    tst.b   (a4,d2.w)
-    bne.s   .fm_qok
+    ; on an FM note-on, revert each live override (Q/X/O/U) to the instrument's value -- unless
+    ; that command is on this very row (its dirty flag was just set by the dispatch). Else a stale
+    ; override sticks forever (same-instrument retriggers skip the patch re-emit).
+    moveq   #0, d2
+    move.b  c_track(a6), d2
     moveq   #0, d1
     move.b  c_instr(a6), d1
     mulu.w  #INSTR_SIZE, d1
-    lea     instrum, a4
-    adda.w  d1, a4
-    move.b  (i_fb,a4), d1
+    lea     instrum, a3
+    adda.w  d1, a3                          ; a3 = the channel's instrument
+    lea     lq_dirty, a4                    ; Q -> $B0 = (FB<<3)|ALGO
+    tst.b   (a4,d2.w)
+    bne.s   .fm_rq
+    move.b  (i_fb,a3), d1
     andi.b  #7, d1
     lsl.b   #3, d1
-    move.b  (i_algo,a4), d0
+    move.b  (i_algo,a3), d0
     andi.b  #7, d0
-    or.b    d0, d1                        ; d1 = instrument $B0 = (FB<<3)|ALGO
+    or.b    d0, d1
     lea     lq_b0, a4
     move.b  d1, (a4,d2.w)
     lea     lq_dirty, a4
-    move.b  #1, (a4,d2.w)                 ; force compose_fm to emit it -> reverts ALGO/FB
+    move.b  #1, (a4,d2.w)
+.fm_rq:
+    lea     lx_dirty, a4                    ; X -> carrier volume = instrument i_vol
+    tst.b   (a4,d2.w)
+    bne.s   .fm_rx
+    move.b  (i_vol,a3), d1
+    lea     lx_vol, a4
+    move.b  d1, (a4,d2.w)
+    lea     lx_dirty, a4
+    move.b  #1, (a4,d2.w)
+.fm_rx:
+    lea     lo_dirty, a4                    ; O -> $B4 = (pan<<6)|(AMS<<4)|FMS
+    tst.b   (a4,d2.w)
+    bne.s   .fm_ro
+    move.b  (i_pan,a3), d1
+    andi.b  #3, d1
+    lsl.b   #6, d1
+    move.b  (i_ams,a3), d0
+    andi.b  #3, d0
+    lsl.b   #4, d0
+    or.b    d0, d1
+    move.b  (i_fms,a3), d0
+    andi.b  #7, d0
+    or.b    d0, d1
+    lea     lo_b4, a4
+    move.b  d1, (a4,d2.w)
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d2.w)
+.fm_ro:
+    lea     lu_dirty, a4                    ; U -> modulator TL offset = 0 (instrument's stored TL)
+    tst.b   (a4,d2.w)
+    bne.s   .fm_qok
+    lea     lu_off, a4
+    clr.b   (a4,d2.w)
+    lea     lu_dirty, a4
+    move.b  #1, (a4,d2.w)
 .fm_qok:
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
