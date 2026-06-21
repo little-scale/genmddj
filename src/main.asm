@@ -1850,22 +1850,39 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     rts
 .et_cmd:
     move.b  (a1), d0
-    btst    #3, d2                           ; Right -> next command (wrap at 27)
+    btst    #3, d2                           ; Right -> next command (skip A/I/J, wrap 0-26)
     beq.s   .etcl
+.et_up:
     addq.b  #1, d0
     cmpi.b  #27, d0
-    blo.s   .etcl
+    blo.s   .et_uc
     moveq   #0, d0
+.et_uc:
+    bsr     tbl_cmd_excl                     ; A/I/J don't apply in tables -> step past them
+    beq.s   .et_up
+    bra.s   .etcw
 .etcl:
-    btst    #2, d2                           ; Left -> previous command (wrap to 26)
+    btst    #2, d2                           ; Left -> previous command (skip A/I/J, wrap 26-0)
     beq.s   .etcw
+.et_dn:
     tst.b   d0
-    bne.s   .etcd
+    bne.s   .et_dc
     moveq   #27, d0
-.etcd:
+.et_dc:
     subq.b  #1, d0
+    bsr     tbl_cmd_excl
+    beq.s   .et_dn
 .etcw:
     move.b  d0, (a1)
+    rts
+
+tbl_cmd_excl:                               ; Z=1 if d0 is a table-excluded command: A=1, I=9, J=10
+    cmpi.b  #1, d0
+    beq.s   .tce_done
+    cmpi.b  #9, d0
+    beq.s   .tce_done
+    cmpi.b  #10, d0
+.tce_done:
     rts
 
 edit_value:
