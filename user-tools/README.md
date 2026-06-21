@@ -22,15 +22,19 @@ data flow:   user-tools  ──CSV / .gmdj──▶  tools/baker  ──▶  ROM
 |---|---|---|---|
 | `instrument/` | browser FM editor (Web Audio + JS/WASM YM2612 — audition patches) | instrument CSV | `PRESETS.md` §4 |
 | `kit/`      | **kit/sample patcher** (`kitpatch.html`, exists) — pads, per-pad fade/gain | kit/sample build data | `DESIGN.md` §10.3 |
-| `palette/`  | **UI palette editor** (planned) — the UI schemes, 3 colours each (bg / text / cursor), MD 9-bit `$0BGR` | palette include → ROM `pal_table` | (TBD) |
+| `palette/`  | **UI palette editor** (planned) — 8 schemes × 3 colours, MD 9-bit `$0BGR`, NTSC/PAL preview | patched `.bin` | `PALETTE.md` |
+| `font/`     | **UI font patcher** (planned) — edit/import the 8×8 glyph tiles | patched `.bin` | `PALETTE.md` §7 |
 | `extract/`  | game patch extractors — **SMPS**, **GEMS**, **VGM** (native re-packs) | instrument CSV | `PRESETS.md` §5 |
 | `ableton/`  | **`.adv`** (one Operator → instrument) + **`.als`** (song + FM adaptation) | instrument CSV / song | `ALS.md` |
 | `savetool/` | list/export/import/build `.srm`/`.gmdj`; config read/write | `.gmdj` / `.srm` | `SAVEFORMAT.md` §"tools/savetool" |
 
-The three **browser editors** (`instrument/`, `kit/`, `palette/`) are siblings: each authors a
-slice of ROM data and exports through a build-time baker (the FM editor → `makeinstruments.py`,
-the palette editor → a small `makepalette.py`, kit → the sample build). `kit/` already ships
-(`kitpatch.html`, moved here from `tools/`); the FM and palette editors are new.
+Two families inside the suite:
+- **Bakers' upstreams** (`instrument/`, `kit/`) author data that a build-time baker assembles into
+  the ROM — the FM editor → `tools/makeinstruments.py`, kit → the sample build.
+- **ROM-patchers** (`palette/`, `font/`, `savetool/`) operate on a **finished `.bin`/`.srm`** — no
+  rebuild — locating their data by an embedded marker, editing, and re-checksumming on export. They
+  share a small ROM-patcher core (binary I/O, marker-find, checksum) worth factoring out once both
+  the palette and font tools exist. `kit/` already ships (`kitpatch.html`, moved from `tools/`).
 
 **Five front-ends, one schema.** The editor + the three extractors + the two Ableton adapters all
 converge on the **instrument CSV**. The split that matters: the game extractors are **native
