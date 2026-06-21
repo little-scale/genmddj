@@ -115,6 +115,8 @@ c_pfine    equ $00FFE1E0           ; F command: per-channel signed fine pitch (p
 c_chord    equ $00FFE1EA           ; C command: per-channel chord offsets (x<<4)|y semitones, 0=off
 c_cphase   equ $00FFE1F4           ; C command: per-channel arp phase 0-2 (0,+x,+y)
 c_bend     equ $00FFE400           ; P command: per-channel signed pitch-bend rate (added to c_pfine/tick)
+c_rtper    equ $00FFE40A           ; R command: per-channel retrigger period (ticks, 0=off)
+c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4481,8 +4483,8 @@ engine_play_reset:
 .rlq:
     move.b  #0, (a0)+
     dbra    d0, .rlq
-    lea     c_bend, a0                    ; clear P bend rates
-    moveq   #NCH-1, d0
+    lea     c_bend, a0                    ; clear P bend rates + R retrig slots
+    move.w  #(c_rtctr+NCH)-c_bend-1, d0
 .rlb:
     move.b  #0, (a0)+
     dbra    d0, .rlb
@@ -4871,6 +4873,22 @@ hold_tick:                                ; a6 = channel
 .hbc2:
     move.b  d2, (a1,d0.w)
 .hnobend:
+    moveq   #0, d0                          ; R command: retrigger countdown
+    move.b  c_track(a6), d0
+    lea     c_rtper, a1
+    move.b  (a1,d0.w), d1
+    beq.s   .hnort
+    lea     c_rtctr, a1
+    move.b  (a1,d0.w), d2
+    subq.b  #1, d2
+    bne.s   .hrtset
+    move.b  d1, d2                          ; reached 0 -> reload period + re-trigger
+    move.b  #1, c_trig(a6)                  ; FM: re-key
+    move.b  #1, c_estate(a6)               ; PSG: restart the envelope attack
+    move.b  #0, c_ectr(a6)
+.hrtset:
+    move.b  d2, (a1,d0.w)
+.hnort:
     move.b  c_hold(a6), d0
     cmpi.b  #$FF, d0
     beq.s   .hret
@@ -4935,7 +4953,7 @@ advance_ch:                               ; a6 = channel
 .noreset:
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
-    beq.s   .cmd_hop
+    beq     .cmd_hop
     cmpi.b  #17, d2                        ; Q xy = one-shot ALGO(x)+FB(y) override
     beq     .cmd_q
     cmpi.b  #24, d2                        ; X xx = volume (carrier TL)
@@ -4956,6 +4974,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_c
     cmpi.b  #16, d2                        ; P xx = pitch bend (signed rate/tick)
     beq     .cmd_p
+    cmpi.b  #18, d2                        ; R xx = retrigger every xx ticks
+    beq     .cmd_r
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5082,6 +5102,15 @@ advance_ch:                               ; a6 = channel
     move.b  c_track(a6), d3
     lea     c_bend, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_r:
+    move.b  (3,a1,d1.w), d2               ; R xx = retrigger every xx ticks
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_rtper, a4
+    move.b  d2, (a4,d3.w)
+    lea     c_rtctr, a4
+    move.b  d2, (a4,d3.w)                 ; first retrig xx ticks from now
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
