@@ -14,8 +14,8 @@ runs both columns; voice-type-specific commands no-op on inapplicable voices.
 > inline and `bsr exec_cmd`s the rest before resolving the note; the table calls `exec_cmd` with no
 > note-resolution (a table row's offset 0 is `t_vol`, not a note). So phrase + table run the *exact
 > same* handlers. The table CMD column allows **Q X O U F C P R Y K** and excludes **A/G/I/J/T/W**
-> (phrase-structural / global-timing). Runs on **PSG and FM** voices (KIT/WAVE/DAC excluded). See
-> DESIGN.md §5.2.
+> (phrase-structural / global-timing). The CMD column runs on **PSG and FM** voices; **WAVE** tables
+> are TSP+VOL only (CMD skipped) and **KIT** is excluded entirely. See DESIGN.md §5.2.
 >
 > *NB: the per-command status table below is stale (pre-dates this session's per-channel +
 > table work — e.g. C/P/K/R/F/O/U/Y are built now). Refresh it against TESTING.md before relying
