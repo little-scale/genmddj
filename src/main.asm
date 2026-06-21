@@ -1615,7 +1615,12 @@ adj_field:
     beq.s   .af4
     sub.w   d4, d0
 .af4:
-    tst.w   d0                              ; clamp to [0,max] (hold to slam to min/max)
+    cmpi.w  #255, d3                       ; max 255 = a signed-byte field (TSP): wrap $00<->$FF so
+    bne.s   .af_clamp                       ;   dialling down from 0 gives FF (-1), not a clamp at 0
+    andi.w  #$00FF, d0
+    bra.s   .afwr
+.af_clamp:
+    tst.w   d0                              ; else clamp to [0,max] (hold to slam to min/max)
     bpl.s   .afnlo
     moveq   #0, d0
 .afnlo:
@@ -1654,10 +1659,7 @@ edit_fm:
     move.b  (a2,d0.w), d4
     bra.s   .adj
 .typeedit:
-    lea     (i_type,a3), a1
-    moveq   #NITYPE-1, d3
-    moveq   #1, d4
-    bra.s   .adj
+    bra     edit_psg                       ; TYPE cycles + wraps both ways (shared with the PSG editor)
 .instedit:                                ; row 0: select which instrument to edit (wraps)
     move.b  cur_instr, d0
     btst    #2, d2                          ; Left -> previous
@@ -7045,7 +7047,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     bne.s   .ps
     moveq   #$60, d4
 .ps:
-    bsr     draw_dec_s
+    bsr     draw_hex2                       ; raw byte: 01+ = up, FF- = down (like every TSP field)
     moveq   #7, d3
     moveq   #1, d4
     lea     str_mode, a1
@@ -7277,35 +7279,11 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
 .et6:
     move.b  d0, proj_tmpo
     rts
-.ep_tsp:                                  ; L/R +-1, U/D +-12, clamp [-48,48]
-    move.b  proj_tsp, d0
-    ext.w   d0
-    btst    #2, d2
-    beq.s   .ts1
-    subq.w  #1, d0
-.ts1:
-    btst    #3, d2
-    beq.s   .ts2
-    addq.w  #1, d0
-.ts2:
-    btst    #0, d2
-    beq.s   .ts3
-    addi.w  #12, d0
-.ts3:
-    btst    #1, d2
-    beq.s   .ts4
-    subi.w  #12, d0
-.ts4:
-    cmpi.w  #-48, d0
-    bge.s   .ts5
-    moveq   #-48, d0
-.ts5:
-    cmpi.w  #48, d0
-    ble.s   .ts6
-    moveq   #48, d0
-.ts6:
-    move.b  d0, proj_tsp
-    rts
+.ep_tsp:                                  ; signed-byte transpose like every other TSP: L/R +-1,
+    lea     proj_tsp, a1                    ;   U/D +-octave, wrap $00<->$FF (01+ up, FF- down)
+    moveq   #255, d3
+    moveq   #12, d4
+    bra     adj_field
 
 proj_action:                              ; B-tap on PROJECT: trigger the GO fields
     move.b  cur_row, d0
