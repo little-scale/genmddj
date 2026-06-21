@@ -4942,7 +4942,28 @@ hold_tick:                                ; a6 = channel
     move.b  #3, c_estate(a6)               ; ...and PSG -> decay/release (env state 3); harmless on FM
     move.b  #0, c_ectr(a6)
     move.b  #$FF, c_hold(a6)
+    bsr     cut_dac_if_sample              ; ...and a KIT/WAVE instrument -> stop the DAC playback
 .hret:
+    rts
+
+cut_dac_if_sample:                         ; a6=ch: if c_instr is KIT/WAVE, tell the Z80 to stop the DAC
+    movem.l d0/a0, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a0
+    move.b  (i_type,a0,d0.w), d0
+    subq.b  #1, d0                          ; KIT(1)/WAVE(2) -> 0/1; FM/TONE/NOISE out of range
+    cmpi.b  #1, d0
+    bhi.s   .cds_no
+    move.w  #$0100, Z80_BUSREQ
+.cds_w:
+    btst    #0, Z80_BUSREQ
+    bne.s   .cds_w
+    addq.b  #1, Z80_RAM+$1FF4              ; bump WV_OFF -> Z80 stops the DAC sample/wave
+    move.w  #$0000, Z80_BUSREQ
+.cds_no:
+    movem.l (sp)+, d0/a0
     rts
 
 advance_ch:                               ; a6 = channel
@@ -5132,8 +5153,9 @@ advance_ch:                               ; a6 = channel
     move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks; K00 = cut now
     bne.s   .ck_hold
     move.b  #0, c_keyon(a6)                ; K00 = cut now: FM key-off...
-    move.b  #3, c_estate(a6)               ; ...and PSG/noise -> decay/release (state 3)
+    move.b  #3, c_estate(a6)               ; ...PSG/noise -> decay/release (state 3)...
     move.b  #0, c_ectr(a6)
+    bsr     cut_dac_if_sample              ; ...and KIT/WAVE -> stop the DAC now
     bra     .cmddone
 .ck_hold:
     move.b  d2, c_hold(a6)
