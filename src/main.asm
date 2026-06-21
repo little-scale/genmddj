@@ -1014,8 +1014,6 @@ input_tick:
 .ne:
     rts
 .cheld:                                   ; C = 2D map navigation
-    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: C+Up/Down switch the table (not map up/down)
-    beq     .ch_table
     btst    #0, d5                         ; C+Up -> up a column on the map
     beq.s   .ncu
     bsr     grid_up
@@ -1065,31 +1063,6 @@ input_tick:
     bsr     clamp_col
 .done:
     rts
-.ch_table:                                ; TABLE: C+Up next table, C+Down prev (wrap); C+L/R still screen-nav
-    btst    #0, d5
-    beq.s   .cht_d
-    moveq   #0, d0
-    move.b  cur_table, d0
-    addq.b  #1, d0
-    cmpi.b  #NTABLE, d0
-    blo.s   .cht_uw
-    moveq   #0, d0
-.cht_uw:
-    move.b  d0, cur_table
-    move.b  #1, vdirty
-.cht_d:
-    btst    #1, d5
-    beq     .ncdmap
-    move.b  cur_table, d0
-    bne.s   .cht_dd
-    move.b  #NTABLE-1, d0
-    bra.s   .cht_dw
-.cht_dd:
-    subq.b  #1, d0
-.cht_dw:
-    move.b  d0, cur_table
-    move.b  #1, vdirty
-    bra     .ncdmap
 
 .aheld:                                   ; A + Left/Right -> switch channel (CHAIN/PHRASE only;
     move.b  cur_screen, d0                 ;   INSTR uses the INST field to pick the instrument)
@@ -1194,7 +1167,7 @@ grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
     lea     scr_grid, a1
     move.b  (a1,d6.w), d0
     cmpi.b  #$FF, d0
-    beq     .gn_skip                       ; empty -> keep stepping
+    beq     .gn_ret                        ; empty cell (a gap) -> no move; don't hop to the next screen
     cmp.b   cur_screen, d0
     beq     .gn_ret                        ; wrapped back to self -> no move
     moveq   #0, d1                          ; target cursor row (0 = top of the new screen)
@@ -1958,12 +1931,14 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     adda.w  d0, a1
     cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0-26, wrap)
     beq.s   .et_cmd
+    cmpi.b  #t_vol, d0                       ; VOL = 4-bit: +-1 (L/R), +-4 (U/D), masked 0-15
+    beq     .et_vol
     moveq   #$10, d4                         ; coarse step = high nibble...
     cmpi.b  #t_tsp, d0                       ; ...TSP = transpose -> octave
     bne.s   .ets
     moveq   #12, d4
 .ets:
-    move.b  (a1), d0                         ; VOL/TSP/PRM: +-1 (L/R), +-step (U/D)
+    move.b  (a1), d0                         ; TSP/PRM: +-1 (L/R), +-step (U/D)
     btst    #2, d2
     beq.s   .et1
     subq.b  #1, d0
@@ -1980,6 +1955,28 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     beq.s   .et4
     sub.b   d4, d0
 .et4:
+    move.b  d0, (a1)
+    rts
+.et_vol:                                      ; VOL column: 4-bit volume, like the instrument VOL field
+    move.b  (a1), d0
+    andi.w  #$0F, d0                          ; $FF (no change) -> 0-15
+    btst    #2, d2                            ; Left -1
+    beq.s   .ev1
+    subq.b  #1, d0
+.ev1:
+    btst    #3, d2                            ; Right +1
+    beq.s   .ev2
+    addq.b  #1, d0
+.ev2:
+    btst    #0, d2                            ; Up +4
+    beq.s   .ev3
+    addq.b  #4, d0
+.ev3:
+    btst    #1, d2                            ; Down -4
+    beq.s   .ev4
+    subq.b  #4, d0
+.ev4:
+    andi.b  #$0F, d0                          ; keep 0-15
     move.b  d0, (a1)
     rts
 .et_cmd:
