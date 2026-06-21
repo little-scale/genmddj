@@ -99,6 +99,10 @@ last_phrase equ $00FFE3AC          ; CHAIN insert memory: last phrase# placed (s
 btap_frame equ $00FFE3AE           ; g_ticks at the last B-tap (word) -- double-tap window
 btap_addr  equ $00FFE3B0           ; field address of the last B-tap (long) -- double-tap = same cell
 DBLTAP_FRAMES equ 16               ; max frames between B-taps to count as a double-tap
+pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
+patch_done equ $00FFE3BE           ; 1 = an FM operator patch was emitted this tick (budget 1/tick)
+PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write patch (SCB headroom)
+YM_CAP     equ 43                  ; max ym_count before emitting a note's freq/key
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4455,6 +4459,11 @@ engine_play_reset:
 .rpc:
     clr.b   (a0)+
     dbra    d0, .rpc
+    lea     pshadow, a0                   ; FM patch shadows -> "none": each channel repatches on its
+    moveq   #NCH-1, d0                    ; first note (loads the instrument before key-on, then deltas)
+.rps:
+    move.b  #$FF, (a0)+
+    dbra    d0, .rps
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .r:
@@ -4694,6 +4703,7 @@ fmlfo_ptab:
 FMLFO_NPARM equ 34
     even
 engine_tick:
+    move.b  #0, patch_done                ; FM operator-patch budget: one per tick
     tst.b   playing
     bne.s   .play
     ; stopped: silence all channels (compose emits the change once)
@@ -5405,7 +5415,25 @@ psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
 ; FM compose: emit YM writes (part,reg,value triples) into a5, count in d5
 compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  c_trig(a6), d0
-    beq.s   .nochg
+    beq     .nochg
+    moveq   #0, d0                          ; per-channel operator patch: emit only when the instrument
+    move.b  c_track(a6), d0                 ; differs from what's loaded on this channel (1 patch/tick,
+    lea     pshadow, a4                     ; and only if the SCB has room -- else defer to next tick)
+    move.b  c_instr(a6), d1
+    cmp.b   (a4,d0.w), d1
+    beq.s   .cf_keys
+    tst.b   patch_done
+    bne.s   .cf_defer
+    cmpi.w  #PATCH_CAP, d5
+    bhi.s   .cf_defer
+    move.b  d1, (a4,d0.w)                   ; pshadow[track] = c_instr
+    move.b  #1, patch_done
+    bsr     emit_ch_patch                   ; append this channel's operator patch (before key-on)
+    bra.s   .cf_emit
+.cf_keys:
+    cmpi.w  #YM_CAP, d5
+    bhi.s   .cf_defer
+.cf_emit:
     move.b  #0, c_trig(a6)
     move.b  #0, (a5)+                       ; key-off: part0, $28, ymkey
     move.b  #$28, (a5)+
@@ -5434,6 +5462,8 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     addq.w  #1, d5
     move.b  #1, c_kshadow(a6)
     rts
+.cf_defer:
+    rts                                     ; c_trig stays set -> retry next tick (no key-on yet)
 .nochg:
     move.b  c_keyon(a6), d0               ; key state changed (e.g. stop -> off)?
     cmp.b   c_kshadow(a6), d0
@@ -5449,6 +5479,102 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  d3, (a5)+
     addq.w  #1, d5
 .done:
+    rts
+
+; Append channel a6's full FM operator patch (operators $30-$80 + $B0/$B4) into the SCB at (a5)+,
+; advancing the triple count d5. Channel-aware: emits to c_ympart / (reg + c_ymchreg), reads c_instr.
+emit_ch_patch:
+    movem.l d1-d4/d6/a3-a4, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a3
+    adda.w  d0, a3                          ; a3 = the channel's instrument
+    moveq   #0, d6                          ; operator slot 0..3 (register order)
+.ecp_op:
+    move.w  d6, d4                          ; param base = i_op + slot*FM_NPARM
+    mulu.w  #FM_NPARM, d4
+    addi.w  #i_op, d4
+    move.w  d6, d2                          ; reg offset = slot*4 + channel reg
+    lsl.w   #2, d2
+    moveq   #0, d1
+    move.b  c_ymchreg(a6), d1
+    add.w   d1, d2
+    move.b  (1,a3,d4.w), d1                 ; $30: (DT<<4)|MUL
+    lsl.b   #4, d1
+    move.b  (0,a3,d4.w), d0
+    or.b    d1, d0
+    move.b  #$30, d3
+    bsr     .ecp_emit
+    move.b  (2,a3,d4.w), d0                 ; $40: TL (+ carrier VOL attenuation)
+    moveq   #0, d1
+    move.b  (i_algo,a3), d1
+    andi.w  #7, d1
+    lea     carrier_mask, a4
+    btst    d6, (a4,d1.w)
+    beq.s   .ecp_nov
+    moveq   #15, d1
+    sub.b   (i_vol,a3), d1
+    lsl.b   #3, d1
+    add.b   d1, d0
+    cmpi.b  #127, d0
+    bls.s   .ecp_nov
+    moveq   #127, d0
+.ecp_nov:
+    move.b  #$40, d3
+    bsr     .ecp_emit
+    move.b  (3,a3,d4.w), d1                 ; $50: (RS<<6)|AR
+    lsl.b   #6, d1
+    move.b  (4,a3,d4.w), d0
+    or.b    d1, d0
+    move.b  #$50, d3
+    bsr     .ecp_emit
+    move.b  (5,a3,d4.w), d1                 ; $60: (AM<<7)|D1R
+    lsl.b   #7, d1
+    move.b  (6,a3,d4.w), d0
+    or.b    d1, d0
+    move.b  #$60, d3
+    bsr     .ecp_emit
+    move.b  (7,a3,d4.w), d0                 ; $70: D2R
+    move.b  #$70, d3
+    bsr     .ecp_emit
+    move.b  (9,a3,d4.w), d1                 ; $80: (SL<<4)|RR
+    lsl.b   #4, d1
+    move.b  (8,a3,d4.w), d0
+    or.b    d1, d0
+    move.b  #$80, d3
+    bsr     .ecp_emit
+    addq.w  #1, d6
+    cmpi.w  #4, d6
+    bne     .ecp_op
+    moveq   #0, d2                          ; $B0: (FB<<3)|ALGO -- reg = $B0 + channel reg
+    move.b  c_ymchreg(a6), d2
+    move.b  (i_fb,a3), d1
+    lsl.b   #3, d1
+    move.b  (i_algo,a3), d0
+    or.b    d1, d0
+    move.b  #$B0, d3
+    bsr     .ecp_emit
+    move.b  (i_pan,a3), d0                  ; $B4: (pan<<6)|(AMS<<4)|FMS
+    lsl.b   #6, d0
+    move.b  (i_ams,a3), d1
+    andi.b  #3, d1
+    lsl.b   #4, d1
+    or.b    d1, d0
+    move.b  (i_fms,a3), d1
+    andi.b  #7, d1
+    or.b    d1, d0
+    move.b  #$B4, d3
+    bsr     .ecp_emit
+    movem.l (sp)+, d1-d4/d6/a3-a4
+    rts
+.ecp_emit:                                  ; emit triple (c_ympart, d3+d2, d0) -> (a5)+, d5++
+    move.b  c_ympart(a6), (a5)+
+    move.b  d3, d1
+    add.b   d2, d1
+    move.b  d1, (a5)+
+    move.b  d0, (a5)+
+    addq.w  #1, d5
     rts
 
 ; d0 = note (0-95) -> d1 = $A4 value (block<<3 | fnum hi), d2 = $A0 value (fnum lo)
