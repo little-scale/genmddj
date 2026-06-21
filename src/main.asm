@@ -2059,12 +2059,18 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     move.b  d0, (a1)
     rts
 
-tbl_cmd_excl:                               ; Z=1 if d0 is a table-excluded command: A=1, I=9, J=10
-    cmpi.b  #1, d0
+tbl_cmd_excl:                               ; Z=1 if d0 is table-excluded: A=1 G=7 I=9 J=10 T=20 W=23
+    cmpi.b  #1, d0                           ; A (table nesting)
     beq.s   .tce_done
-    cmpi.b  #9, d0
+    cmpi.b  #7, d0                           ; G (groove -- global timing)
     beq.s   .tce_done
-    cmpi.b  #10, d0
+    cmpi.b  #9, d0                           ; I (iteration -- phrase repeats)
+    beq.s   .tce_done
+    cmpi.b  #10, d0                          ; J (repeat transpose)
+    beq.s   .tce_done
+    cmpi.b  #20, d0                          ; T (tempo -- global)
+    beq.s   .tce_done
+    cmpi.b  #23, d0                          ; W (wait -- per-row frame override)
 .tce_done:
     rts
 
