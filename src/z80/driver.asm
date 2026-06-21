@@ -99,9 +99,13 @@ start:
     ld   a, $FF
     ld   (PSG), a
 
-    ld   a, $2A                 ; pre-park ch6 DAC at centre ($80); $2A is undefined at YM reset,
-    ld   (YM_A0), a             ; so the first $2B-enable starts from centre, not garbage (no boot
-    ld   a, $80                 ; click). $2B left disabled here -> F6 FM is unaffected.
+    ld   a, $2A                 ; pre-park ch6 DAC at centre ($80) so the first $2B-enable starts
+    ld   (YM_A0), a             ; from centre, not the undefined reset value (no boot click)
+    ld   a, $80
+    ld   (YM_D0), a
+    ld   a, $2B                 ; explicitly DISABLE ch6 DAC at boot -> ch6 = FM mode from power-on
+    ld   (YM_A0), a             ; (YM reset doesn't guarantee $2B=0, so don't rely on it -> artifacts)
+    xor  a
     ld   (YM_D0), a
 
     ld   a, $24                 ; YM2612 Timer A = DAC clock; 1024-TA=10 -> 5327 Hz
