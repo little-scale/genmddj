@@ -38,6 +38,7 @@ c_shadowa  equ 10
 c_psgt     equ 11                   ; PSG tone-latch base ($80/$A0/$C0)
 c_psgv     equ 12                   ; PSG volume base ($90/$B0/$D0)
 c_tvol     equ 13                   ; live table VOL override ($FF = none -> use the envelope c_vol)
+c_tcrow    equ 14                   ; last table row the CMD column ran for ($FF = none -> run on entry)
 c_phrase   equ 16                   ; long: current phrase ptr (cached from chain)
 c_chain    equ 20                   ; current chain (from song[songpos][track])
 c_cstep    equ 21                   ; chain step 0-15 ($FF = pre-start)
@@ -127,6 +128,7 @@ k_set      equ $00FFE42B           ; K command: 1 if K set the gate this row (no
 c_set      equ $00FFE42C           ; C command: 1 if C set the chord this row (note-on keeps it, else clears)
 f_set      equ $00FFE42D           ; F command: 1 if F set the finetune this row (note-on keeps c_pfine)
 p_set      equ $00FFE42E           ; P command: 1 if P set the bend this row (note-on keeps c_bend)
+table_cmd_mode equ $00FFE42F        ; 1 = running a table-row CMD: .cmddone skips note resolution, returns
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -5090,6 +5092,7 @@ engine_tick:
     lea     ch_state, a6
 .ch:
     bsr     env_ch
+    bsr     table_cmd                     ; run the active table row's CMD column once per row entry
     bsr     hold_tick
     bsr     compose_ch
     lea     CHSIZE(a6), a6
@@ -5233,11 +5236,13 @@ cut_dac_if_sample:                         ; a6=ch: if c_instr is KIT/WAVE, tell
 advance_ch:                               ; a6 = channel
     move.b  #0, hop_ctr                    ; H command: reset the per-advance hop guard
     cmpi.b  #$FF, c_chain(a6)             ; inactive (muted/empty) -> stay silent
-    beq     .ret
+    bne.s   .aret1
+    rts
+.aret1:
     move.b  c_row(a6), d0
     addq.b  #1, d0
     cmpi.b  #16, d0
-    blo.s   .gotrow
+    blo.s   adv_gotrow
     cmpi.b  #2, play_mode                 ; phrase-solo: loop the phrase
     bne.s   .nextchain
     moveq   #0, d0
@@ -5247,13 +5252,15 @@ advance_ch:                               ; a6 = channel
     adda.w  d0, a1
     move.l  a1, c_phrase(a6)
     moveq   #0, d0
-    bra.s   .gotrow
+    bra.s   adv_gotrow
 .nextchain:
     bsr     advance_chain                 ; phrase ended -> next chain step
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
-    beq     .ret
+    bne.s   .aret2
+    rts
+.aret2:
     moveq   #0, d0
-.gotrow:
+adv_gotrow:
     move.b  d0, c_row(a6)
     tst.b   d0                              ; row 0 = a new phrase began on this track
     bne.s   .nophs
@@ -5287,8 +5294,9 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
-    move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
-    cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
+run_cmd:                                   ; table CMD entry: a1=row (cmd@+2, prm@+3), d1=row offset,
+    move.b  (2,a1,d1.w), d2               ;   a6=channel. The table bsrs here (table_cmd_mode=1) so the
+    cmpi.b  #8, d2                         ;   same handlers run; .cmddone then skips the note + returns.
     beq     .cmd_hop
     cmpi.b  #17, d2                        ; Q xy = one-shot ALGO(x)+FB(y) override
     beq     .cmd_q
@@ -5340,7 +5348,7 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d0
     move.b  (3,a1,d1.w), d0               ; param = destination row (low nibble)
     andi.b  #$0F, d0
-    bra     .gotrow                        ; jump there NOW -- the H row plays no sixteenth
+    bra     adv_gotrow                        ; jump there NOW -- the H row plays no sixteenth
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
     bne     .cmddone
@@ -5519,6 +5527,11 @@ advance_ch:                               ; a6 = channel
     move.b  d2, cmd_tsp                    ; applied in .cmddone alongside chain/instrument transpose
     bra     .cmddone
 .cmddone:
+    tst.b   table_cmd_mode                ; a table-row CMD: its handler already ran -> no note here
+    beq.s   .cd_note
+    move.b  #0, table_cmd_mode
+    rts
+.cd_note:
     lsl.w   #2, d0
     moveq   #0, d2
     move.b  (a1,d0.w), d2                 ; note (0-95) or $FF
@@ -5580,6 +5593,7 @@ advance_ch:                               ; a6 = channel
     move.b  c_instr(a6), d3
     mulu.w  #INSTR_SIZE, d3
     move.b  (i_tbl,a4,d3.w), c_tbl(a6)
+    move.b  #$FF, c_tcrow(a6)             ; note-on: re-arm so the (re)started row's CMD column fires
     tst.b   (i_tbs,a4,d3.w)               ; TBS 0 = per-note: step the playhead (don't restart)
     bne.s   .tbreset
     move.b  c_trow(a6), d1
@@ -5810,6 +5824,33 @@ load_step:                                ; a6 = channel; d1 = chain step
     lea     phrases, a1
     adda.w  d3, a1
     move.l  a1, c_phrase(a6)
+    rts
+
+; run the active table row's CMD column (cmd@+2, prm@+3) once on row entry, via the shared
+; phrase command executor (run_cmd + table_cmd_mode). a6 = channel.
+table_cmd:
+    move.b  c_tbl(a6), d0
+    cmpi.b  #$FF, d0
+    beq.s   .tc_done                      ; no table
+    tst.b   c_estate(a6)
+    beq.s   .tc_done                      ; voice off -> don't run table commands
+    move.b  c_trow(a6), d1
+    cmp.b   c_tcrow(a6), d1
+    beq.s   .tc_done                      ; same row -> its CMD already ran
+    move.b  d1, c_tcrow(a6)               ; mark this row's CMD done
+    moveq   #0, d2                        ; a1 = tbl_ram + table*64 + row*TROW
+    move.b  d0, d2
+    lsl.w   #6, d2
+    moveq   #0, d0
+    move.b  d1, d0
+    lsl.w   #2, d0
+    add.w   d0, d2
+    lea     tbl_ram, a1
+    adda.w  d2, a1
+    moveq   #0, d1                        ; a1 already points at the row -> offset 0
+    move.b  #1, table_cmd_mode
+    bsr     run_cmd
+.tc_done:
     rts
 
 ; software AHD volume envelope for PSG voices, driven by the playing instrument's
