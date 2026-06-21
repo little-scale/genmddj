@@ -5932,37 +5932,27 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  (a4,d0.w), d1
     bsr     emit_u_tl
 .cf_nou:
-    moveq   #0, d0                          ; Y command: one-shot FM patch swap to instrument c_ypatch
+    move.b  c_trig(a6), d0                  ; on a note trigger, emit this channel's operator patch,
+    beq     .nochg                          ;   preferring the Y one-shot's instrument over the note's own
+    moveq   #0, d0                          ;   (1 patch/tick, only if the SCB has room -- else defer)
     move.b  c_track(a6), d0
     lea     c_ypatch, a4
-    move.b  (a4,d0.w), d1
+    move.b  (a4,d0.w), d1                   ; Y instrument this note, or $FF if none
+    move.b  #$FF, (a4,d0.w)                 ; consume the Y one-shot (no-op if there was none)
     cmpi.b  #$FF, d1
-    beq.s   .cf_noy
-    tst.b   patch_done                      ; respect the 1-patch/tick + SCB budget
-    bne.s   .cf_noy
-    cmpi.w  #PATCH_CAP, d5
-    bhi.s   .cf_noy
-    move.b  #$FF, (a4,d0.w)                 ; consume the one-shot
-    move.b  #1, patch_done
+    bne.s   .cf_pat                         ; Y active -> patch with the swapped instrument...
+    move.b  c_instr(a6), d1                 ; ...else with the note's own instrument
+.cf_pat:
     lea     pshadow, a4
-    move.b  d1, (a4,d0.w)                   ; pshadow[track] = the swapped instrument
-    bsr     emit_ch_patch                   ; d1 = the Y instrument
-.cf_noy:
-    move.b  c_trig(a6), d0
-    beq     .nochg
-    moveq   #0, d0                          ; per-channel operator patch: emit only when the instrument
-    move.b  c_track(a6), d0                 ; differs from what's loaded on this channel (1 patch/tick,
-    lea     pshadow, a4                     ; and only if the SCB has room -- else defer to next tick)
-    move.b  c_instr(a6), d1
     cmp.b   (a4,d0.w), d1
-    beq.s   .cf_keys
+    beq.s   .cf_keys                        ; that patch already loaded on this channel -> just key
     tst.b   patch_done
     bne     .cf_defer
     cmpi.w  #PATCH_CAP, d5
     bhi     .cf_defer
-    move.b  d1, (a4,d0.w)                   ; pshadow[track] = c_instr
-    move.b  #1, patch_done
-    bsr     emit_ch_patch                   ; append this channel's operator patch (before key-on)
+    move.b  d1, (a4,d0.w)                   ; pshadow[track] = instrument loaded (Y or own); a later plain
+    move.b  #1, patch_done                  ;   note then has pshadow != c_instr -> re-patches = Y reverts
+    bsr     emit_ch_patch                   ; d1 = chosen instrument's operator patch (before key-on)
     bra.s   .cf_emit
 .cf_keys:
     cmpi.w  #YM_CAP, d5
