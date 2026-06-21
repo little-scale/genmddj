@@ -198,9 +198,13 @@ wave_off:
     xor  a
     ld   (D_PLAY), a
     ld   (D_WMODE), a
-    ld   a, $2A                 ; park ch6 DAC at centre (leave it enabled -> no click)
+    ld   a, $2A                 ; park ch6 DAC at centre, then drop ch6 out of DAC mode
     ld   (YM_A0), a
     ld   a, $80
+    ld   (YM_D0), a
+    ld   a, $2B                 ; disable ch6 DAC -> back to FM (so F6 can play FM).
+    ld   (YM_A0), a             ; centre->FM-idle is centre->centre (voice keyed off) = no click
+    xor  a
     ld   (YM_D0), a
     ret
 
@@ -259,10 +263,14 @@ df_rem:
     jr   nz, df_pace
 df_end:
     xor  a
-    ld   (D_PLAY), a           ; finished -> park the DAC at centre, leave it enabled
-    ld   a, $2A                 ; (disabling ch6 would step to the FM idle level = a click)
+    ld   (D_PLAY), a           ; finished -> park at centre, then drop ch6 out of DAC mode so
+    ld   a, $2A                 ; F6 can play FM and idle ch6 sits at true zero (no half-rail DC)
     ld   (YM_A0), a
     ld   a, $80
+    ld   (YM_D0), a
+    ld   a, $2B                 ; disable ch6 DAC -> FM mode (centre->FM-idle = no click)
+    ld   (YM_A0), a
+    xor  a
     ld   (YM_D0), a
 df_pace:
     ret                        ; Timer A paces the feed now; no busy-wait needed
