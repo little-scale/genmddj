@@ -5640,48 +5640,7 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), (a5)+
     addq.w  #1, d5
-    moveq   #0, d0
-    move.b  c_note(a6), d0
-    bsr     fm_freq                        ; d1=$A4 val, d2=$A0 val
-    moveq   #0, d3                          ; F command: add fine pitch to the 11-bit F-number
-    move.b  c_track(a6), d3
-    lea     c_pfine, a4
-    move.b  (a4,d3.w), d3
-    beq.s   .cf_nofine
-    ext.w   d3
-    move.w  d1, d4                          ; fnum = ((d1&7)<<8) | d2
-    andi.w  #7, d4
-    lsl.w   #8, d4
-    move.w  d2, d0
-    andi.w  #$FF, d0
-    or.w    d0, d4
-    add.w   d3, d4                          ; += fine, clamp 0..2047
-    bpl.s   .cf_fhi
-    moveq   #0, d4
-.cf_fhi:
-    cmpi.w  #2047, d4
-    bls.s   .cf_fset
-    move.w  #2047, d4
-.cf_fset:
-    move.b  d4, d2                          ; $A0 = fnum low
-    andi.b  #$F8, d1                        ; keep block bits, re-pack fnum high
-    move.w  d4, d0
-    lsr.w   #8, d0
-    andi.b  #7, d0
-    or.b    d0, d1
-.cf_nofine:
-    move.b  c_ympart(a6), (a5)+            ; freq hi: part, $A4+chreg, d1
-    move.b  #$A4, d3
-    add.b   c_ymchreg(a6), d3
-    move.b  d3, (a5)+
-    move.b  d1, (a5)+
-    addq.w  #1, d5
-    move.b  c_ympart(a6), (a5)+            ; freq lo: part, $A0+chreg, d2
-    move.b  #$A0, d3
-    add.b   c_ymchreg(a6), d3
-    move.b  d3, (a5)+
-    move.b  d2, (a5)+
-    addq.w  #1, d5
+    bsr     fm_freq_send                   ; effective note (+ chord arp + fine) -> emit $A4/$A0
     move.b  #0, (a5)+                       ; key-on: part0, $28, $F0|ymkey
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), d3
@@ -5693,6 +5652,15 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .cf_defer:
     rts                                     ; c_trig stays set -> retry next tick (no key-on yet)
 .nochg:
+    tst.b   c_keyon(a6)                     ; per-tick FM-freq re-send: only while the note is on
+    beq.s   .nofreqres
+    moveq   #0, d0                          ; ...and only if a pitch-mod (chord) is active
+    move.b  c_track(a6), d0
+    lea     c_chord, a4
+    tst.b   (a4,d0.w)
+    beq.s   .nofreqres
+    bsr     fm_freq_send
+.nofreqres:
     move.b  c_keyon(a6), d0               ; key state changed (e.g. stop -> off)?
     cmp.b   c_kshadow(a6), d0
     beq.s   .done
@@ -5892,6 +5860,71 @@ emit_u_tl:
     cmpi.w  #4, d6
     bne     .eut_op
     movem.l (sp)+, d1-d4/d6/a3-a4
+    rts
+
+; emit the FM channel's frequency ($A4/$A0) from c_note + chord arp offset + c_pfine fine.
+; a6=ch, a5/d5=SCB. Clobbers d0-d4/a4 (compose-context scratch). Used at trigger + per-tick re-send.
+fm_freq_send:
+    moveq   #0, d0
+    move.b  c_note(a6), d0                  ; effective note = c_note + chord arp offset
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_chord, a4
+    move.b  (a4,d3.w), d1
+    beq.s   .ffs_nochord
+    lea     c_cphase, a4
+    move.b  (a4,d3.w), d3
+    beq.s   .ffs_nochord
+    cmpi.b  #1, d3
+    bne.s   .ffs_cy
+    lsr.b   #4, d1                          ; phase 1 -> +x
+    bra.s   .ffs_cadd
+.ffs_cy:
+    andi.b  #$0F, d1                        ; phase 2 -> +y
+.ffs_cadd:
+    ext.w   d1
+    add.w   d1, d0
+.ffs_nochord:
+    bsr     fm_freq                         ; d1=$A4, d2=$A0
+    moveq   #0, d3                          ; F command fine -> add to the 11-bit fnum
+    move.b  c_track(a6), d3
+    lea     c_pfine, a4
+    move.b  (a4,d3.w), d3
+    beq.s   .ffs_nofine
+    ext.w   d3
+    move.w  d1, d4
+    andi.w  #7, d4
+    lsl.w   #8, d4
+    move.w  d2, d0
+    andi.w  #$FF, d0
+    or.w    d0, d4
+    add.w   d3, d4
+    bpl.s   .ffs_fhi
+    moveq   #0, d4
+.ffs_fhi:
+    cmpi.w  #2047, d4
+    bls.s   .ffs_fset
+    move.w  #2047, d4
+.ffs_fset:
+    move.b  d4, d2
+    andi.b  #$F8, d1
+    move.w  d4, d0
+    lsr.w   #8, d0
+    andi.b  #7, d0
+    or.b    d0, d1
+.ffs_nofine:
+    move.b  c_ympart(a6), (a5)+            ; freq hi: part, $A4+chreg, d1
+    move.b  #$A4, d3
+    add.b   c_ymchreg(a6), d3
+    move.b  d3, (a5)+
+    move.b  d1, (a5)+
+    addq.w  #1, d5
+    move.b  c_ympart(a6), (a5)+            ; freq lo: part, $A0+chreg, d2
+    move.b  #$A0, d3
+    add.b   c_ymchreg(a6), d3
+    move.b  d3, (a5)+
+    move.b  d2, (a5)+
+    addq.w  #1, d5
     rts
 
 ; d0 = note (0-95) -> d1 = $A4 value (block<<3 | fnum hi), d2 = $A0 value (fnum lo)
