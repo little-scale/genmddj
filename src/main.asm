@@ -6918,6 +6918,7 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     rts
 
 ; ---- 8 UI palettes: c0 background, c1 text/cursor-block, c2 cursor glyph (= bg). MD $0BGR. ----
+    dc.b    "GMDJPAL0"              ; locator for the browser palette ROM-patcher (PALETTE.md §5)
 pal_table:                          ; SMSGGDJ's 8 schemes (SMS 2:2:2 -> MD: 1->$4 2->$A 3->$E)
     dc.w $0E40, $00EE, $0E40        ; 0 KIDD  yellow on sky blue (default; SMSGGDJ $34/$0F)
     dc.w $0000, $0EEE, $0000        ; 1 WHT   white on black
@@ -7453,6 +7454,7 @@ algo_tiles:
 algo_maps:
     incbin "build/algo_maps.bin"
     even
+    dc.b    "GMDJFON0"              ; locator for the browser font ROM-patcher (PALETTE.md §7)
 font_data:
     incbin "build/font.bin"
 font_end:
