@@ -1397,7 +1397,12 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     beq.s   .fm
     cmpi.b  #SCR_INSTR, d0
     beq.s   .fm
-    moveq   #15, d1                          ; grid screens (PHRASE/CHAIN/SONG/TABLE): 16 rows
+    cmpi.b  #SCR_TABLE, d0
+    bne.s   .rmg15
+    moveq   #16, d1                          ; TABLE: row 0 = TBL selector, rows 1-16 = the 16 rows
+    rts
+.rmg15:
+    moveq   #15, d1                          ; grid screens (PHRASE/CHAIN/SONG): 16 rows
     rts
 .zero:
     moveq   #0, d1
@@ -1587,6 +1592,10 @@ get_field_addr:                           ; -> a1 = cursor field byte
     lsl.w   #6, d0                          ; table * 64 (TBL_ROWS*TROW)
     moveq   #0, d1
     move.b  cur_row, d1
+    subq.b  #1, d1                          ; cur_row 1-16 -> table row 0-15 (row 0 = selector -> floor 0)
+    bpl.s   .tfa_r
+    moveq   #0, d1
+.tfa_r:
     lsl.w   #2, d1                          ; row * TROW
     add.w   d1, d0
     moveq   #0, d1
@@ -1917,12 +1926,15 @@ edit_psg:
     rts
 
 edit_table:                               ; left/right = +-1, up/down = +-$10 on the cursor cell
+    tst.b   cur_row                         ; row 0 = the TBL selector field (pick which table)
+    beq     .et_tblsel
     lea     tbl_ram, a1
     moveq   #0, d0
     move.b  cur_table, d0
     lsl.w   #6, d0
     moveq   #0, d1
     move.b  cur_row, d1
+    subq.b  #1, d1                          ; cur_row 1-16 -> table row 0-15
     lsl.w   #2, d1
     add.w   d1, d0
     adda.w  d0, a1
@@ -1930,7 +1942,7 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     move.b  cur_col, d0
     adda.w  d0, a1
     cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0-26, wrap)
-    beq.s   .et_cmd
+    beq     .et_cmd
     cmpi.b  #t_vol, d0                       ; VOL = 4-bit: +-1 (L/R), +-4 (U/D), masked 0-15
     beq     .et_vol
     moveq   #$10, d4                         ; coarse step = high nibble...
@@ -1978,6 +1990,34 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
 .ev4:
     andi.b  #$0F, d0                          ; keep 0-15
     move.b  d0, (a1)
+    rts
+.et_tblsel:                                   ; TBL selector (cur_row 0): L/R/U/D cycle cur_table (wrap)
+    move.b  cur_table, d0
+    btst    #3, d2                            ; Right +1
+    bne.s   .ets_up
+    btst    #0, d2                            ; Up +1
+    bne.s   .ets_up
+    btst    #2, d2                            ; Left -1
+    bne.s   .ets_dn
+    btst    #1, d2                            ; Down -1
+    bne.s   .ets_dn
+    rts
+.ets_up:
+    addq.b  #1, d0
+    cmpi.b  #NTABLE, d0
+    blo.s   .ets_w
+    moveq   #0, d0
+    bra.s   .ets_w
+.ets_dn:
+    tst.b   d0
+    bne.s   .ets_dd
+    move.b  #NTABLE-1, d0
+    bra.s   .ets_w
+.ets_dd:
+    subq.b  #1, d0
+.ets_w:
+    move.b  d0, cur_table
+    move.b  #1, vdirty
     rts
 .et_cmd:
     move.b  (a1), d0
@@ -2366,7 +2406,19 @@ pad_read:
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
 render_table:                             ; V(vol) TSP(transpose) CMD(cmd+prm), SMSGGDJ-style
-    moveq   #0, d6                         ; row 0-15
+    moveq   #4, d3                          ; TBL selector field (cur_row 0): "TBL ##" at row 4
+    moveq   #1, d4
+    lea     str_tbl, a1
+    bsr     print_at
+    move.l  #$420A0003, (a0)               ; table # at row 4 col 5
+    move.b  cur_table, d3
+    moveq   #0, d4
+    tst.b   cur_row                         ; cur_row 0 -> highlight the TBL selector
+    bne.s   .rt_nsel
+    moveq   #$60, d4
+.rt_nsel:
+    bsr     draw_hex2
+    moveq   #0, d6                         ; table rows 0-15 (cursor rows 1-16)
 .tr:
     bsr     draw_rowhdr                    ; row number + playhead at the left
     moveq   #0, d5                         ; column 0-3 (vol, arp, cmd, prm)
@@ -2393,6 +2445,7 @@ render_table:                             ; V(vol) TSP(transpose) CMD(cmd+prm), 
     adda.w  d0, a1
     moveq   #0, d4                         ; highlight if cursor on this cell
     move.b  cur_row, d0
+    subq.b  #1, d0                          ; cur_row 1-16 -> table rows 0-15 (row 0 = TBL selector)
     cmp.b   d6, d0
     bne.s   .tnh
     move.b  cur_col, d0
