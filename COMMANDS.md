@@ -9,10 +9,11 @@ implementing. Companion to DESIGN.md §8 — when a decision here changes §8, u
 The command column is a phrase/table cell `(letter A–Z = 1..26, param byte)`. One executor
 runs both columns; voice-type-specific commands no-op on inapplicable voices.
 
-> **Shared executor — built 2026-06-22.** The table CMD column now runs through the *exact*
-> phrase command handlers: a `run_cmd` entry at the dispatch's command-read + a `table_cmd_mode`
-> flag that makes `.cmddone` skip note-resolution and return (a table row's offset 0 is `t_vol`,
-> not a note). The table CMD column allows **Q X O U F C P R Y K** and excludes **A/G/I/J/T/W**
+> **Shared executor — built 2026-06-22.** The ten voice commands live in a standalone `exec_cmd`
+> routine (each ends in `rts`). `advance_ch` keeps the phrase-structural/global commands (H I J T W)
+> inline and `bsr exec_cmd`s the rest before resolving the note; the table calls `exec_cmd` with no
+> note-resolution (a table row's offset 0 is `t_vol`, not a note). So phrase + table run the *exact
+> same* handlers. The table CMD column allows **Q X O U F C P R Y K** and excludes **A/G/I/J/T/W**
 > (phrase-structural / global-timing). PSG voices only for now. See DESIGN.md §5.2.
 >
 > *NB: the per-command status table below is stale (pre-dates this session's per-channel +
@@ -25,34 +26,36 @@ runs both columns; voice-type-specific commands no-op on inapplicable voices.
 
 | Cmd | Name | Voices | Built? | Reconcile (see §3/§4) |
 |---|---|---|---|---|
-| `A` | tAble (start/switch macro table) | all | ✗ | depends on M9-tables (#9) |
+| `A` | tAble (start/switch macro table) | all | ✗ | tables exist; the `A` *command* not wired |
 | `B` | wave Bank (one-shot wave#) | WAVE/sample | ✗ | **range 0–7 → 0–F** (16 waves built) |
-| `C` | Chord (0,x,y arp) | all | ✗ | as spec'd |
+| `C` | Chord (0,x,y arp) | all | **✓** | per-channel PSG+FM; phrase + table |
 | `D` | Delay (trigger +N ticks) | all | ✗ | as spec'd |
 | `E` | Envelope (re-slope AHD / FM AR-RR) | all | ✗ | FM half needs per-channel reg write |
-| `F` | Finetune (period / F-num delta) | tone/FM | ✗ | FM half = per-channel $A0/$A4 |
-| `G` | Groove switch | global | ✗ | as spec'd |
-| `H` | Hop (per-channel phrase end / table loop) | all | **✓** | OK |
+| `F` | Finetune (period / F-num delta) | tone/FM | **✓** | PSG + FM; phrase + table |
+| `G` | Groove switch | global | ✗ | blocked: no groove array yet |
+| `H` | Hop (per-channel phrase end) | all | **✓** | OK |
 | `I` | Iteration (deterministic play-mask) | all | **✓** | OK |
-| `J` | reserved | — | — | **candidate: LFO command** (§3.4) |
-| `K` | Kill (note cut after N) | all | ✗ | as spec'd; aborts PCM |
+| `J` | repeat-gated transpose (sibling of `I`) | all | **✓** | FM/PSG/KIT (KIT swaps pad) |
+| `K` | Kill (note cut after N) | all | **✓** | FM/PSG/noise + PCM; phrase + table |
 | `L` | sLide (tone portamento) | tone/FM | ✗ | FM half = per-channel F-num ramp |
 | `M` | aMp mod (tremolo) | all | partial (PSG) | **FM path TBD vs LFO bank** (§3.3) |
 | `N` | Noise mode/rate | NO | ✗ | as spec'd |
-| `O` | Output / pan (YM2612 L/R) | FM/DAC | ✗ | **per-channel $B4 write** (§3.1) |
-| `P` | Pitch bend | tone/FM | ✗ | FM half = per-channel F-num |
-| `Q` | fm timbre (ALGO+FB) | FM | **✓ (F1-only)** | **make per-channel** (§3.1) |
-| `R` | Retrig (vol-step every N) | all | ✗ | as spec'd |
+| `O` | Output / pan (YM2612 L/R) | FM/DAC | **✓** | per-channel $B4; phrase + table |
+| `P` | Pitch bend | tone/FM | **✓** | PSG + FM; phrase + table |
+| `Q` | fm timbre (ALGO+FB) | FM | **✓** | per-channel now (was F1-only); phrase + table |
+| `R` | Retrig (re-key every N) | all | **✓** | built (hw-test pending); phrase + table |
 | `S` | Speed (sample data-walk) | sample | ✗ | rate-independent; OK at 5327 (§3.2) |
-| `T` | Tempo (BPM→groove) | global | ✗ | as spec'd |
-| `U` | mod level (modulator TL sweep) | FM | ✗ | **per-channel modulator $40** (§3.1) |
+| `T` | Tempo (BPM→groove) | global | **✓** | OK |
+| `U` | mod level (modulator TL sweep) | FM | **✓** | per-channel $40; phrase + table |
 | `V` | Vibrato (one-shot) | tone/FM | partial (PSG) | **FM path TBD vs LFO bank** (§3.3) |
-| `W` | Wait-skip (shorten row) | global | ✗ | as spec'd |
-| `X` | volume (PSG atten / FM carrier TL) | all | **✓ (F1-only)** | **make per-channel** (§3.1) |
-| `Y` | fm lfo depth (AMS x / FMS y) | FM | ✗ | **per-note FM LFO sensitivity via $B4** (§3.1) |
+| `W` | Wait-skip (shorten row) | global | **✓** | works; groove-tick semantics deferred |
+| `X` | volume (PSG atten / FM carrier TL) | all | **✓** | per-channel now (was F1-only); phrase + table |
+| `Y` | fm lfo depth (AMS x / FMS y) | FM | **✓** | built (hw-test pending); rides $B4 |
 | `Z` | reserved (random) | — | — | keep — the RNG counterpart to `I` |
 
-Built: **4 / 24** (H, I, Q, X). Q and X work **only on F1**.
+Built: **15 / 24** (C F H I J K O P Q R T U W X Y) + M/V partial (PSG only). Q and X are now
+**per-channel** (were F1-only). The table CMD column runs the subset Q X O U F C P R Y K (§ shared
+executor, above). Hardware-confirmed in TESTING.md except R and Y (built, hw-test pending).
 
 ---
 
