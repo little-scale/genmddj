@@ -5441,6 +5441,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_trow(a6)               ; TBS>0 = per-tick: restart at row 0
 .tbctr:
     move.b  #0, c_tctr(a6)
+    bsr     table_hop                      ; note-on: resolve a HOP on the (re)started row
     bra.s   .notbset
 .notabl:
     move.b  #$FF, c_tbl(a6)              ; KIT/WAVE: no macro table
@@ -5846,6 +5847,33 @@ exec_cmd:
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
 
+; table HOP: if c_trow's row has cmd H (8), jump c_trow to its param's low nibble (destination row)
+; -- the H row plays no step, so e.g. H00 on row 4 loops rows 0-3. Chains with a 16-hop runaway
+; guard. Structural (voice-agnostic: PSG/FM/WAVE), so it runs in the advance path, not table_cmd.
+; a6 = channel. Preserves d0-d2/a1 (safe to call from the note-on path).
+table_hop:
+    movem.l d0-d2/a1, -(sp)
+    moveq   #16, d2                        ; runaway guard
+.th_loop:
+    moveq   #0, d0
+    move.b  c_tbl(a6), d0
+    lsl.w   #6, d0                          ; table# * 64
+    moveq   #0, d1
+    move.b  c_trow(a6), d1
+    lsl.w   #2, d1                          ; row * TROW
+    add.w   d1, d0
+    lea     tbl_ram, a1
+    cmpi.b  #8, (t_cmd,a1,d0.w)            ; H in this row's CMD column?
+    bne.s   .th_done
+    move.b  (t_prm,a1,d0.w), d1            ; param low nibble = destination row
+    andi.b  #$0F, d1
+    move.b  d1, c_trow(a6)                 ; jump the playhead
+    subq.b  #1, d2                          ; resolve a chained HOP (guarded)
+    bne.s   .th_loop
+.th_done:
+    movem.l (sp)+, d0-d2/a1
+    rts
+
 ; run the active table row's CMD column (cmd@+2, prm@+3) once on row entry, via exec_cmd.
 ; a6 = channel.
 table_cmd:
@@ -5914,6 +5942,7 @@ env_ch:                                   ; a6 = channel
     addq.b  #1, d1
     andi.b  #$0F, d1
     move.b  d1, c_trow(a6)
+    bsr     table_hop                      ; landed on a HOP row -> jump the playhead
 .fmt_latch:
     moveq   #0, d3
     move.b  c_tbl(a6), d3
@@ -5949,6 +5978,7 @@ env_ch:                                   ; a6 = channel
     addq.b  #1, d1
     andi.b  #$0F, d1                        ; loop row 16 -> 0
     move.b  d1, c_trow(a6)
+    bsr     table_hop                      ; landed on a HOP row -> jump the playhead (d3 preserved)
 .tapply:
     lsl.w   #6, d3                          ; table# * 64  (TBL_ROWS*TROW)
     moveq   #0, d1
