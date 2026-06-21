@@ -181,6 +181,12 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
 - **Y xx** FM patch swap (**FM**) → per-channel one-shot `c_ypatch`; `compose_fm` emits instrument
   xx's operator patch (via the now-parameterised `emit_ch_patch`, instrument # in `d1`) and sets
   `pshadow`, so it reverts on the next note. Budget-gated (1 patch/tick, `PATCH_CAP`).
+- **J xy** repeat-gated transpose (**FM + PSG — all voices**) → sibling of `I`. `.cmd_j` mirrors
+  `.cmd_i` (phrase# → `phrase_plays` → `btst (count-1) mod 4, x`); on a hit it sign-extends the
+  `y` nibble (−8…+7) into a per-row temp `cmd_tsp` (cleared at `.noreset`). `.cmddone` adds
+  `cmd_tsp` to the note alongside chain-transpose + instrument TSP, then the existing out-of-range
+  guard clamps. Note-resolution-time → works on **whatever the channel plays** (FM/PSG/KIT/WAVE),
+  no per-tick path. `x=F` = constant transpose, `x=0` = off.
 - **Per-tick FM-freq path** (infrastructure) — factored the trigger freq emit into
   `fm_freq_send` (effective note + chord arp + `c_pfine`); `compose_fm` `.nochg` now re-sends
   `$A4/$A0` each tick while a note is on and a pitch-mod is active. Verified behaviour-preserving

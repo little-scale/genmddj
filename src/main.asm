@@ -119,6 +119,7 @@ c_rtper    equ $00FFE40A           ; R command: per-channel retrigger period (ti
 c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
 c_ypatch   equ $00FFE41E           ; Y command: per-channel one-shot FM patch swap (instrument #, $FF=none)
 g_wait     equ $00FFE428           ; W command: this-row frame-count override (0 = use 1250/proj_tmpo)
+cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose (signed; 0 each row)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4965,6 +4966,7 @@ advance_ch:                               ; a6 = channel
     move.b  #$FF, live_fb
     move.b  #1, repatch
 .noreset:
+    move.b  #0, cmd_tsp                    ; J command: clear this row's repeat-gated transpose
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
     beq     .cmd_hop
@@ -4994,6 +4996,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_y
     cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (wait/skip)
     beq     .cmd_w
+    cmpi.b  #10, d2                        ; J xy = repeat-gated transpose (sibling of I)
+    beq     .cmd_j
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5146,6 +5150,28 @@ advance_ch:                               ; a6 = channel
 .cmd_w:
     move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
     bra     .cmddone
+.cmd_j:                                    ; J xy: x = repeat mask (mod 4), y = signed transpose
+    moveq   #0, d2
+    move.b  (3,a1,d1.w), d2               ; param: x = mask (hi nibble), y = transpose (lo nibble)
+    move.l  a1, d3                         ; phrase # = (c_phrase - phrases) / PHRASE_SIZE
+    sub.l   #phrases, d3
+    lsr.l   #6, d3
+    lea     phrase_plays, a4
+    moveq   #0, d1
+    move.b  (a4,d3.w), d1                 ; play count (bumped at row 0 this pass)
+    subq.b  #1, d1                         ; 0-based repeat index
+    andi.w  #3, d1                         ; mod 4 -> repeat bit (0-3)
+    move.b  d2, d3
+    lsr.b   #4, d3                         ; d3 = x mask (high nibble -> bits 0-3)
+    btst    d1, d3                          ; transpose active on this repeat?
+    beq     .cmddone                       ; no -> cmd_tsp stays 0
+    andi.b  #$0F, d2                       ; y = transpose nibble
+    cmpi.b  #8, d2                         ; sign-extend the 4-bit value
+    blo.s   .cj_set
+    subi.b  #16, d2                         ; 8..F -> -8..-1
+.cj_set:
+    move.b  d2, cmd_tsp                    ; applied in .cmddone alongside chain/instrument transpose
+    bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
     moveq   #0, d2
@@ -5172,6 +5198,9 @@ advance_ch:                               ; a6 = channel
     ext.w   d3
     add.w   d3, d2
 .notsp:
+    move.b  cmd_tsp, d3                    ; + J command repeat-gated transpose (signed; 0 if inactive)
+    ext.w   d3
+    add.w   d3, d2
     tst.w   d2                             ; test the NOTE (the gate above may have left
     bmi     .ret                           ; cmpi flags -> would wrongly drop FM/KIT/WAVE)
     cmpi.w  #96, d2
