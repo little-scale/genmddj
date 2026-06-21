@@ -118,6 +118,7 @@ c_bend     equ $00FFE400           ; P command: per-channel signed pitch-bend ra
 c_rtper    equ $00FFE40A           ; R command: per-channel retrigger period (ticks, 0=off)
 c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
 c_ypatch   equ $00FFE41E           ; Y command: per-channel one-shot FM patch swap (instrument #, $FF=none)
+g_wait     equ $00FFE428           ; W command: this-row frame-count override (0 = use 1250/proj_tmpo)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4484,6 +4485,7 @@ engine_play_reset:
 .rpy:
     move.b  #$FF, (a0)+
     dbra    d0, .rpy
+    move.b  #0, g_wait                     ; W row-override off
     lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
     move.w  #(c_cphase+NCH)-lq_b0-1, d0
 .rlq:
@@ -4770,9 +4772,15 @@ engine_tick:
     moveq   #1, d1                         ; guard (proj_tmpo is clamped >=32 anyway)
 .tdiv:
     divu.w  d1, d0                         ; d0 low word = frames per row
+    tst.b   g_wait                          ; W command: this-row frame-count override?
+    beq.s   .nowait
+    moveq   #0, d0
+    move.b  g_wait, d0
+.nowait:
     cmp.b   g_gctr, d0
     bhi.s   .noadv                         ; not enough frames elapsed yet
     move.b  #0, g_gctr
+    move.b  #0, g_wait                      ; W is one row only
     move.b  #1, eng_adv                   ; playheads moved -> redraw the grid
     moveq   #NCH-1, d7
     lea     ch_state, a6
@@ -4984,6 +4992,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_r
     cmpi.b  #25, d2                        ; Y xx = adopt instrument xx's FM patch (one-shot)
     beq     .cmd_y
+    cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (wait/skip)
+    beq     .cmd_w
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5128,6 +5138,9 @@ advance_ch:                               ; a6 = channel
     move.b  c_track(a6), d3
     lea     c_ypatch, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_w:
+    move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
