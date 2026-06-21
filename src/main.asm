@@ -2054,7 +2054,7 @@ do_insert:
     move.b  d0, last_chain
     rts
 .chain_ins:
-    tst.b   cur_col                          ; col 0 = phrase# (col 1 = transpose -> leave)
+    tst.b   cur_col                          ; col 0 = phrase# (col 1 = transpose)
     bne     .ret
     bsr     chk_dbltap                       ; double B-tap -> allocate a new (unused) phrase
     tst.b   d2
@@ -2062,12 +2062,14 @@ do_insert:
     cmpi.b  #$FF, (a1)                      ; single B-tap -> repeat last_phrase on an empty cell
     bne     .ret
     move.b  last_phrase, (a1)
+    move.b  #0, 1(a1)                        ; fresh chain step -> transpose 0 (not the $FF fill)
     rts
 .chain_new:
     bsr     find_free_phrase
     cmpi.b  #NPHRASES, d0
     bhs     .ret
     move.b  d0, (a1)
+    move.b  #0, 1(a1)                        ; fresh chain step -> transpose 0 (not the $FF fill)
     move.b  d0, last_phrase
     rts
 .ins_note:
