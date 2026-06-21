@@ -121,6 +121,7 @@ c_ypatch   equ $00FFE41E           ; Y command: per-channel one-shot FM patch sw
 g_wait     equ $00FFE428           ; W command: this-row frame-count override (0 = use 1250/proj_tmpo)
 cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose (signed; 0 each row)
 hop_ctr    equ $00FFE42A           ; H command: hops taken this advance (runaway guard; 0 each advance)
+k_set      equ $00FFE42B           ; K command: 1 if K set the gate this row (note-on must not override)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4995,6 +4996,7 @@ advance_ch:                               ; a6 = channel
     move.b  #1, repatch
 .noreset:
     move.b  #0, cmd_tsp                    ; J command: clear this row's repeat-gated transpose
+    move.b  #0, k_set                      ; K command: clear this row's gate-override flag
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row
     beq     .cmd_hop
@@ -5124,6 +5126,7 @@ advance_ch:                               ; a6 = channel
     move.b  #1, (a4,d3.w)
     bra     .cmddone
 .cmd_k:
+    move.b  #1, k_set                      ; this row's note-on must keep K's gate, not the HLD
     move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks; K00 = cut now
     bne.s   .ck_hold
     move.b  #0, c_keyon(a6)
@@ -5365,6 +5368,8 @@ advance_ch:                               ; a6 = channel
 .fm_qok:
     move.b  #1, c_trig(a6)               ; FM: (re)trigger the note
     move.b  #1, c_keyon(a6)
+    tst.b   k_set                         ; K on this row -> keep its gate, skip the instrument HLD
+    bne.s   .fm_hdone
     lea     instrum, a4                  ; HLD: gate time from the channel's instrument
     moveq   #0, d2                       ; (c_instr -- NOT cur_instr: the editor's current
     move.b  c_instr(a6), d2             ;  instrument must not change a playing FM voice's gate)
@@ -5373,6 +5378,7 @@ advance_ch:                               ; a6 = channel
     cmpi.b  #15, d2                      ; $F = hold until the next note
     bne.s   .hldcnt
     move.b  #$FF, c_hold(a6)
+.fm_hdone:
     rts
 .hldcnt:
     add.b   d2, d2                       ; HLD*2 (+1 so HLD=0 still gates, and != $FF)
