@@ -103,6 +103,8 @@ pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrumen
 patch_done equ $00FFE3BE           ; 1 = an FM operator patch was emitted this tick (budget 1/tick)
 PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write patch (SCB headroom)
 YM_CAP     equ 43                  ; max ym_count before emitting a note's freq/key
+lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $B0 value (FB<<3|ALGO)
+lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4464,6 +4466,11 @@ engine_play_reset:
 .rps:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
+    lea     lq_dirty, a0                  ; clear Q-command live overrides
+    moveq   #NCH-1, d0
+.rlq:
+    move.b  #0, (a0)+
+    dbra    d0, .rlq
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .r:
@@ -4915,10 +4922,15 @@ advance_ch:                               ; a6 = channel
     move.b  d2, d3
     lsr.b   #4, d3                         ; x nibble = ALGO 0-7
     andi.b  #7, d3
-    move.b  d3, live_algo                  ; TRANSIENT overrides (reset on play/stop)
     andi.b  #7, d2                         ; y nibble = FB 0-7
-    move.b  d2, live_fb
-    move.b  #1, repatch                    ; engine appends the patch to this tick's SCB push
+    lsl.b   #3, d2                         ; -> $B0 value = (FB<<3)|ALGO
+    or.b    d3, d2
+    moveq   #0, d3                         ; per-channel live slot (this running channel, not F1)
+    move.b  c_track(a6), d3
+    lea     lq_b0, a4
+    move.b  d2, (a4,d3.w)
+    lea     lq_dirty, a4
+    move.b  #1, (a4,d3.w)
     bra     .cmddone
 .cmd_x:
     cmpi.b  #1, c_type(a6)
@@ -5414,6 +5426,20 @@ psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
 
 ; FM compose: emit YM writes (part,reg,value triples) into a5, count in d5
 compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
+    moveq   #0, d0                          ; Q command: live $B0 (ALGO+FB) override for this channel?
+    move.b  c_track(a6), d0
+    lea     lq_dirty, a4
+    tst.b   (a4,d0.w)
+    beq.s   .cf_noq
+    move.b  #0, (a4,d0.w)
+    move.b  c_ympart(a6), (a5)+            ; emit $B0 + chreg = lq_b0[track] (morph the live timbre)
+    move.b  #$B0, d1
+    add.b   c_ymchreg(a6), d1
+    move.b  d1, (a5)+
+    lea     lq_b0, a4
+    move.b  (a4,d0.w), (a5)+
+    addq.w  #1, d5
+.cf_noq:
     move.b  c_trig(a6), d0
     beq     .nochg
     moveq   #0, d0                          ; per-channel operator patch: emit only when the instrument

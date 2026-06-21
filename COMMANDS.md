@@ -143,15 +143,25 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
 
 ---
 
-## 5. Open questions to settle on remote
-- **§3.1:** do the F1 editor-audition overrides keep `live_*`, or also move to targeted
-  writes (one path)? Leaning one-path once the editor is comfortable.
-- **§3.3:** confirm FM `M`/`V` → chip LFO (shared rate) is acceptable, or do we want a
-  per-channel software FM LFO after all.
+## 5. Decisions (settled 2026-06-21) + remaining open items
+
+**Settled:**
+- **FM audition target** (§3.1): the FM live-edit / audition voice = **the last FM instrument
+  selected in a phrase AND the last track that phrase was on** (not always F1). Track an
+  `aud_track` (the FM channel) + `aud_instr` and route `ym_build_patch` / the editor audition
+  to them. Playback commands still target their own running channel.
+- **FM `M`/`V`** (§3.3): use the **chip global LFO** (`$22`) + per-instrument **AMS/FMS** —
+  the shared rate is accepted. And **expose all the chip-LFO parameters** (LFO enable + rate,
+  per-operator AMS/FMS) in the FM instrument editor (and as command params where it fits), so
+  the native FM modulation is fully reachable. No per-channel software FM LFO (the LFO bank
+  covers anything deeper).
+
+**Still open:**
 - **§3.4:** `J` LFO-command semantics — retrigger only, or enable/disable too? Tie to the
   bank's existing NOTE/PHRASE/FREE resync.
-- **Param widths / editor formatting** for each command (hex byte vs nibble pairs) — fold
-  into the same table as we implement.
+- **Param widths / editor formatting** per command — fold into the table as we implement.
 
-*Nothing in this doc is implemented yet — it is the plan + justification record requested
-before building the command set out.*
+## 6. Implementation log (as built)
+- **Q (per-channel)** — `Q xy` now writes `$B0` (`(FB<<3)|ALGO`) for the *running* channel via
+  a per-channel live slot (`lq_b0`/`lq_dirty`), emitted in `compose_fm`; no more F1-only
+  `live_*`/repatch. Proves the targeted per-channel write path of §3.1. *(first of the set)*
