@@ -553,6 +553,10 @@ VBlankInt:
     beq.s   .nc
     bsr     clear_grid
     moveq   #3, d3                        ; header at row3 col1
+    cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: header drops to row 4 (TBL selector sits at row 3)
+    bne.s   .hdr_r
+    moveq   #4, d3
+.hdr_r:
     moveq   #1, d4
     bsr     screen_ptr                     ; a1 = hdr table entry
     move.l  (a1), a1
@@ -2406,11 +2410,11 @@ pad_read:
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
 render_table:                             ; V(vol) TSP(transpose) CMD(cmd+prm), SMSGGDJ-style
-    moveq   #4, d3                          ; TBL selector field (cur_row 0): "TBL ##" at row 4
+    moveq   #3, d3                          ; TBL selector field (cur_row 0): "TBL ##" at row 3
     moveq   #1, d4
     lea     str_tbl, a1
     bsr     print_at
-    move.l  #$420A0003, (a0)               ; table # at row 4 col 5
+    move.l  #$418A0003, (a0)               ; table # at row 3 col 5
     move.b  cur_table, d3
     moveq   #0, d4
     tst.b   cur_row                         ; cur_row 0 -> highlight the TBL selector
