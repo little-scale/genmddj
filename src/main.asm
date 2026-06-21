@@ -1686,7 +1686,16 @@ edit_fm:
     moveq   #0, d4
     move.b  (a2,d1.w), d4
 .adj:
-    bra     adj_field                      ; a1=field d2=buttons d3=max d4=step -> wrap-adjust
+    bsr     adj_field                      ; a1=field d2=buttons d3=max d4=step -> wrap-adjust
+    ; an FM patch field changed -> make every playing voice adopt it (not just F1), so you can
+    ; tweak an instrument live against a looping phrase on any track
+    move.b  #1, repatch                    ; F1: re-push its patch on the next SCB push (immediate)
+    lea     pshadow, a0                     ; F2-F6: invalidate shadows -> re-patch on next note-on
+    moveq   #NCH-1, d0
+.fed:
+    move.b  #$FF, (a0)+
+    dbra    d0, .fed
+    rts
 
 ; TONE/NOISE/KIT/WAVE editor: INST (row 0), TYPE (row 1), PSG fields (row 2+)
 edit_psg:
@@ -2031,8 +2040,6 @@ edit_value:
 .nhi:
     move.b  d0, (a1)
     move.b  d0, last_note
-    move.b  d0, e_audnote
-    bsr     prelisten
     rts
 
 ; INSTRUMENT: L/R cycles the field's value (type 0..NITYPE-1)
@@ -2125,8 +2132,6 @@ do_insert:
     bne.s   .audit
     move.b  last_instr, 1(a1)
 .audit:
-    move.b  d0, e_audnote
-    bsr     prelisten
     rts
 
 find_free_chain:                          ; d0.b = lowest EMPTY chain (no placed phrases); NCHAINS if none
@@ -2186,21 +2191,6 @@ chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this 
     move.w  g_ticks, btap_frame
     rts
 
-prelisten:                                ; audition e_audnote on channel 0
-    moveq   #0, d0
-    move.b  e_audnote, d0
-    cmpi.b  #$FF, d0
-    beq.s   .pd
-    lea     ch_state, a6
-    move.b  d0, c_note(a6)
-    add.w   d0, d0
-    lea     notetable, a1
-    move.w  (a1,d0.w), c_period(a6)
-    move.b  #1, c_estate(a6)
-    move.b  #0, c_ectr(a6)
-    move.b  #0, c_vol(a6)
-.pd:
-    rts
 
 ; Read pad 1 -> d0.b = St C B A R L D U (active high). The first TH phase returns
 ; the standard buttons on BOTH 3- and 6-button pads (a 6-button pad starts each
