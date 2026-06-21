@@ -1730,6 +1730,8 @@ edit_fm:
     moveq   #0, d1
     move.b  (a1,d0.w), d1
     lea     0(a3,d1.w), a1
+    cmpi.b  #8, d0                         ; TBL field -> -- / 0..NTABLE-1 cycle (shared with PSG)
+    beq     edit_tbl_field
     lea     voice_max, a2
     moveq   #0, d3
     move.b  (a2,d0.w), d3
@@ -3012,8 +3014,8 @@ render_instr:
 
 FM_VHDR equ 6                             ; (unused; the VOICE: label was removed)
 FM_VTOP equ 6                             ; voice params start here (no VOICE: label now)
-FM_OHDR equ 16                            ; operator grid header (INST + gaps, no LFO row)
-FM_OTOP equ 17                            ; operator grid
+FM_OHDR equ 17                            ; operator grid header (shifted +1 for the TBL/TBS rows)
+FM_OTOP equ 18                            ; operator grid (absorbs the old free row below it)
 ALGO_TILEBASE equ $0160                   ; algorithm tiles -> VRAM $2C00 / $20
 ALGO_DIAG_ROW equ 10                      ; algorithm diagram (1x, half size)
 ALGO_DIAG_COL equ 13
@@ -4057,9 +4059,19 @@ render_fm:                                ; a0 = VDP_CTRL
     bne.s   .vnh
     moveq   #$60, d4
 .vnh:
-    lea     voice_fmt, a1                  ; TSP (fmt 1) draws 2 hex digits; the rest 1
-    tst.b   (a1,d6.w)
+    lea     voice_fmt, a1                  ; fmt 0 = hex1; 1 = hex2; 4 = TBL ("--" when $FF)
+    move.b  (a1,d6.w), d1
     beq.s   .vh1
+    cmpi.b  #4, d1
+    bne.s   .vhex2
+    cmpi.b  #$FF, d3                       ; TBL = none -> "--"
+    bne.s   .vhex2
+    move.w  #$2D, d0                       ; '-' tile (+ highlight offset), twice
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+    bra.s   .vdone
+.vhex2:
     move.b  d3, d2
     lsr.b   #4, d3
     bsr     draw_hex1
@@ -4071,7 +4083,7 @@ render_fm:                                ; a0 = VDP_CTRL
 .vdone:
     addq.w  #1, d6
     cmpi.w  #NVOICE, d6
-    bne.s   .vrow
+    bne     .vrow
     moveq   #FM_OHDR, d3                    ; operator grid header (LFO moved to PROJECT screen)
     moveq   #1, d4
     lea     str_hdr_fm, a1
@@ -7824,11 +7836,11 @@ str_pitch:  dc.b "PITCHED ",0
 type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
-voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_algo, str_fb, str_ams, str_fms  ; 8
-voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_algo, i_fb, i_ams, i_fms
-voice_max:  dc.b 15, 15, 3, 255, 7, 7, 3, 7
-voice_step: dc.b 4, 4, 1, 12, 4, 4, 1, 4                 ; channel: HLD VOL PAN TSP | FM: ALGO FB AMS FMS
-voice_fmt:  dc.b 0, 0, 0, 1, 0, 0, 0, 0                  ; TSP = hex2 signed; rest hex1
+voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_algo, str_fb, str_ams, str_fms, str_tbl, str_tbs  ; 10
+voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_algo, i_fb, i_ams, i_fms, i_tbl, i_tbs
+voice_max:  dc.b 15, 15, 3, 255, 7, 7, 3, 7, 31, 15
+voice_step: dc.b 4, 4, 1, 12, 4, 4, 1, 4, 16, 4          ; HLD VOL PAN TSP | ALGO FB AMS FMS | TBL TBS
+voice_fmt:  dc.b 0, 0, 0, 1, 0, 0, 0, 0, 4, 0            ; TSP=hex2 signed; TBL=4 (-- or hex2); rest hex1
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
@@ -7867,7 +7879,7 @@ str_drive:  dc.b "DRIVE",0
 str_fold:   dc.b "FOLD",0
 str_crush:  dc.b "CRUSH",0
     even
-NVOICE     equ 8                            ; channel items (HLD VOL PAN TSP) + FM items (ALGO FB AMS FMS)
+NVOICE     equ 10                           ; HLD VOL PAN TSP (channel) + ALGO FB AMS FMS + TBL TBS
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
 map_letters: dc.b "SCPIT"                   ; map order: SONG CHAIN PHRASE INSTR TABLE
 str_play:   dc.b "PLAY",0
