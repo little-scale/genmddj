@@ -2125,33 +2125,42 @@ do_insert:
     bsr     prelisten
     rts
 
-find_free_chain:                          ; d0.b = lowest chain# not referenced in the song (NCHAINS if none)
+find_free_chain:                          ; d0.b = lowest EMPTY chain (no placed phrases); NCHAINS if none
     moveq   #0, d0
 .ffc_cand:
-    lea     song, a2
-    move.w  #(NSONGROWS*NCH)-1, d1
+    lea     chains, a2
+    move.w  d0, d1
+    mulu.w  #CHAIN_SIZE, d1
+    adda.w  d1, a2                          ; a2 = chain d0
+    moveq   #15, d1                         ; 16 steps (phrase#, transpose)
 .ffc_scan:
-    cmp.b   (a2)+, d0
-    beq.s   .ffc_next
+    cmpi.b  #$FF, (a2)                      ; a placed phrase -> chain has content, not free
+    bne.s   .ffc_next
+    addq.l  #2, a2
     dbra    d1, .ffc_scan
-    rts
+    rts                                     ; all 16 steps empty -> d0 is free
 .ffc_next:
     addq.b  #1, d0
     cmpi.b  #NCHAINS, d0
     blo.s   .ffc_cand
     rts
 
-find_free_phrase:                         ; d0.b = lowest phrase# not referenced in any chain (NPHRASES if none)
+find_free_phrase:                         ; d0.b = lowest EMPTY phrase (no notes/commands); NPHRASES if none
     moveq   #0, d0
 .ffp_cand:
-    lea     chains, a2
-    move.w  #(NCHAINS*16)-1, d1            ; 16 phrase slots per chain
+    lea     phrases, a2
+    move.w  d0, d1
+    lsl.w   #6, d1                          ; * PHRASE_SIZE (64)
+    adda.w  d1, a2                          ; a2 = phrase d0
+    moveq   #15, d1                         ; 16 rows (note, instr, cmd, prm)
 .ffp_scan:
-    cmp.b   (a2), d0
-    beq.s   .ffp_next
-    addq.l  #2, a2                          ; step over the transpose byte
+    cmpi.b  #$FF, (a2)                      ; a note present -> not empty
+    bne.s   .ffp_next
+    tst.b   (2,a2)                          ; a command present -> not empty
+    bne.s   .ffp_next
+    addq.l  #4, a2
     dbra    d1, .ffp_scan
-    rts
+    rts                                     ; all 16 rows empty -> d0 is free
 .ffp_next:
     addq.b  #1, d0
     cmpi.b  #NPHRASES, d0
