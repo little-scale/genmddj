@@ -120,6 +120,7 @@ c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
 c_ypatch   equ $00FFE41E           ; Y command: per-channel one-shot FM patch swap (instrument #, $FF=none)
 g_wait     equ $00FFE428           ; W command: this-row frame-count override (0 = use 1250/proj_tmpo)
 cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose (signed; 0 each row)
+hop_ctr    equ $00FFE42A           ; H command: hops taken this advance (runaway guard; 0 each advance)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4933,6 +4934,7 @@ hold_tick:                                ; a6 = channel
     rts
 
 advance_ch:                               ; a6 = channel
+    move.b  #0, hop_ctr                    ; H command: reset the per-advance hop guard
     cmpi.b  #$FF, c_chain(a6)             ; inactive (muted/empty) -> stay silent
     beq     .ret
     move.b  c_row(a6), d0
@@ -5031,12 +5033,13 @@ advance_ch:                               ; a6 = channel
     bne     .cmddone                       ; bit set -> play the note this repeat
     bra     .ret                           ; bit clear -> suppress (rest)
 .cmd_hop:
-    moveq   #0, d2
-    move.b  (3,a1,d1.w), d2               ; param = destination row (low nibble)
-    andi.b  #$0F, d2
-    subq.b  #1, d2                         ; next advance does +1, landing on param
-    move.b  d2, c_row(a6)
-    bra     .cmddone
+    addq.b  #1, hop_ctr                    ; runaway guard: H->H->... can't hang the tick
+    cmpi.b  #32, hop_ctr
+    bhs     .cmddone                       ; too many hops this advance -> bail, play the row
+    moveq   #0, d0
+    move.b  (3,a1,d1.w), d0               ; param = destination row (low nibble)
+    andi.b  #$0F, d0
+    bra     .gotrow                        ; jump there NOW -- the H row plays no sixteenth
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
     bne     .cmddone
