@@ -174,6 +174,8 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
   the FM 11-bit F-number (at the freq send). Static detune; rides the existing freq path.
 - **C xy** chord/arp (**PSG + FM**) → per-channel `c_chord`/`c_cphase`; `hold_tick` cycles the
   phase 0→1→2 each tick; PSG adds `[0,+x,+y]` in `env_ch`, FM in `fm_freq_send`.
+- **P xx** pitch bend (**PSG + FM**) → per-channel signed `c_bend`; `hold_tick` accumulates it
+  into `c_pfine` each tick (clamp ±127). v1: the bend persists into the next note until `P00`.
 - **Per-tick FM-freq path** (infrastructure) — factored the trigger freq emit into
   `fm_freq_send` (effective note + chord arp + `c_pfine`); `compose_fm` `.nochg` now re-sends
   `$A4/$A0` each tick while a note is on and a pitch-mod is active. Verified behaviour-preserving
