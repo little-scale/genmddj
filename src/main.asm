@@ -5091,7 +5091,11 @@ advance_ch:                               ; a6 = channel
     move.b  #1, (a4,d3.w)
     bra     .cmddone
 .cmd_k:
-    move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks (the gate countdown)
+    move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks; K00 = cut now
+    bne.s   .ck_hold
+    move.b  #0, c_keyon(a6)
+    bra     .cmddone
+.ck_hold:
     move.b  d2, c_hold(a6)
     bra     .cmddone
 .cmd_t:
@@ -5773,6 +5777,8 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     tst.b   (a4,d0.w)
     beq.s   .nofreqres
 .dofreqres:
+    cmpi.w  #YM_CAP, d5                      ; SCB headroom -> drop this tick's re-send if full
+    bhi.s   .nofreqres
     bsr     fm_freq_send
 .nofreqres:
     move.b  c_keyon(a6), d0               ; key state changed (e.g. stop -> off)?
