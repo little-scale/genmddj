@@ -176,6 +176,11 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
   phase 0→1→2 each tick; PSG adds `[0,+x,+y]` in `env_ch`, FM in `fm_freq_send`.
 - **P xx** pitch bend (**PSG + FM**) → per-channel signed `c_bend`; `hold_tick` accumulates it
   into `c_pfine` each tick (clamp ±127). v1: the bend persists into the next note until `P00`.
+- **R xx** retrigger (**PSG + FM**) → per-channel `c_rtper`/`c_rtctr`; `hold_tick` re-keys every
+  xx ticks (`c_trig`=1 for FM; `c_estate`=1/`c_ectr`=0 to restart the PSG envelope).
+- **Y xx** FM patch swap (**FM**) → per-channel one-shot `c_ypatch`; `compose_fm` emits instrument
+  xx's operator patch (via the now-parameterised `emit_ch_patch`, instrument # in `d1`) and sets
+  `pshadow`, so it reverts on the next note. Budget-gated (1 patch/tick, `PATCH_CAP`).
 - **Per-tick FM-freq path** (infrastructure) — factored the trigger freq emit into
   `fm_freq_send` (effective note + chord arp + `c_pfine`); `compose_fm` `.nochg` now re-sends
   `$A4/$A0` each tick while a note is on and a pitch-mod is active. Verified behaviour-preserving

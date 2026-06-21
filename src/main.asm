@@ -117,6 +117,7 @@ c_cphase   equ $00FFE1F4           ; C command: per-channel arp phase 0-2 (0,+x,
 c_bend     equ $00FFE400           ; P command: per-channel signed pitch-bend rate (added to c_pfine/tick)
 c_rtper    equ $00FFE40A           ; R command: per-channel retrigger period (ticks, 0=off)
 c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
+c_ypatch   equ $00FFE41E           ; Y command: per-channel one-shot FM patch swap (instrument #, $FF=none)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -4478,6 +4479,11 @@ engine_play_reset:
 .rps:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
+    lea     c_ypatch, a0                  ; Y patch-swap slots -> none
+    moveq   #NCH-1, d0
+.rpy:
+    move.b  #$FF, (a0)+
+    dbra    d0, .rpy
     lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
     move.w  #(c_cphase+NCH)-lq_b0-1, d0
 .rlq:
@@ -4976,6 +4982,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_p
     cmpi.b  #18, d2                        ; R xx = retrigger every xx ticks
     beq     .cmd_r
+    cmpi.b  #25, d2                        ; Y xx = adopt instrument xx's FM patch (one-shot)
+    beq     .cmd_y
     bra     .cmddone
 .cmd_i:
     moveq   #0, d2
@@ -5111,6 +5119,15 @@ advance_ch:                               ; a6 = channel
     move.b  d2, (a4,d3.w)
     lea     c_rtctr, a4
     move.b  d2, (a4,d3.w)                 ; first retrig xx ticks from now
+    bra     .cmddone
+.cmd_y:
+    cmpi.b  #1, c_type(a6)                ; FM channels only
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2               ; Y xx = adopt instrument xx's patch this note
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_ypatch, a4
+    move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmddone:
     lsl.w   #2, d0
@@ -5679,6 +5696,22 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  (a4,d0.w), d1
     bsr     emit_u_tl
 .cf_nou:
+    moveq   #0, d0                          ; Y command: one-shot FM patch swap to instrument c_ypatch
+    move.b  c_track(a6), d0
+    lea     c_ypatch, a4
+    move.b  (a4,d0.w), d1
+    cmpi.b  #$FF, d1
+    beq.s   .cf_noy
+    tst.b   patch_done                      ; respect the 1-patch/tick + SCB budget
+    bne.s   .cf_noy
+    cmpi.w  #PATCH_CAP, d5
+    bhi.s   .cf_noy
+    move.b  #$FF, (a4,d0.w)                 ; consume the one-shot
+    move.b  #1, patch_done
+    lea     pshadow, a4
+    move.b  d1, (a4,d0.w)                   ; pshadow[track] = the swapped instrument
+    bsr     emit_ch_patch                   ; d1 = the Y instrument
+.cf_noy:
     move.b  c_trig(a6), d0
     beq     .nochg
     moveq   #0, d0                          ; per-channel operator patch: emit only when the instrument
@@ -5747,13 +5780,13 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 
 ; Append channel a6's full FM operator patch (operators $30-$80 + $B0/$B4) into the SCB at (a5)+,
 ; advancing the triple count d5. Channel-aware: emits to c_ympart / (reg + c_ymchreg), reads c_instr.
-emit_ch_patch:
+emit_ch_patch:                              ; d1 = instrument # to patch from (caller passes c_instr)
     movem.l d1-d4/d6/a3-a4, -(sp)
     moveq   #0, d0
-    move.b  c_instr(a6), d0
+    move.b  d1, d0
     mulu.w  #INSTR_SIZE, d0
     lea     instrum, a3
-    adda.w  d0, a3                          ; a3 = the channel's instrument
+    adda.w  d0, a3                          ; a3 = the patch-source instrument
     moveq   #0, d6                          ; operator slot 0..3 (register order)
 .ecp_op:
     move.w  d6, d4                          ; param base = i_op + slot*FM_NPARM
