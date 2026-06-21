@@ -187,6 +187,9 @@ single hex digit 0–F. Trivial; note it so the editor param-formatter and §8 a
   `cmd_tsp` to the note alongside chain-transpose + instrument TSP, then the existing out-of-range
   guard clamps. Note-resolution-time → works on **whatever the channel plays** (FM/PSG/KIT/WAVE),
   no per-tick path. `x=F` = constant transpose, `x=0` = off.
+  *Emergent:* on a **KIT** the pad is `c_note % 16`, so `J` doesn't pitch the drum — it **swaps the
+  sample** (deterministic per-repeat drum variation). Keep the base note in a mid octave: the
+  `[0,95]` clamp runs *before* the pad mod, so a negative `J` near note 0 drops the hit entirely.
 - **Per-tick FM-freq path** (infrastructure) — factored the trigger freq emit into
   `fm_freq_send` (effective note + chord arp + `c_pfine`); `compose_fm` `.nochg` now re-sends
   `$A4/$A0` each tick while a note is on and a pitch-mod is active. Verified behaviour-preserving
