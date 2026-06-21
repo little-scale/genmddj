@@ -200,7 +200,7 @@ NTABLE     equ 32
 TBL_ROWS   equ 16
 TROW       equ 4                    ; bytes per table row
 t_vol      equ 0                    ; volume column ($FF = no change)
-t_arp      equ 1                    ; transposition, signed semitones
+t_tsp      equ 1                    ; transposition, signed semitones
 t_cmd      equ 2                    ; command
 t_prm      equ 3                    ; command parameter
 NINSTR     equ 32
@@ -1435,7 +1435,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     beq.s   .fm
     cmpi.b  #SCR_TABLE, d1
     bne.s   .cmch
-    moveq   #3, d1                        ; TABLE: 4 columns (VOL ARP CMD PRM)
+    moveq   #3, d1                        ; TABLE: 4 columns (VOL TSP CMD PRM)
     rts
 .cmch:
     moveq   #1, d1                        ; CHAIN: PH,TR
@@ -1819,17 +1819,17 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     lsl.w   #2, d1
     add.w   d1, d0
     adda.w  d0, a1
-    moveq   #0, d0                          ; + the column under the cursor (VOL/ARP/CMD/PRM)
+    moveq   #0, d0                          ; + the column under the cursor (VOL/TSP/CMD/PRM)
     move.b  cur_col, d0
     adda.w  d0, a1
     cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0-26, wrap)
     beq.s   .et_cmd
     moveq   #$10, d4                         ; coarse step = high nibble...
-    cmpi.b  #t_arp, d0                       ; ...ARP = transpose -> octave
+    cmpi.b  #t_tsp, d0                       ; ...TSP = transpose -> octave
     bne.s   .ets
     moveq   #12, d4
 .ets:
-    move.b  (a1), d0                         ; VOL/ARP/PRM: +-1 (L/R), +-step (U/D)
+    move.b  (a1), d0                         ; VOL/TSP/PRM: +-1 (L/R), +-step (U/D)
     btst    #2, d2
     beq.s   .et1
     subq.b  #1, d0
@@ -2212,7 +2212,7 @@ pad_read:
 ; ============================================================
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
-render_table:                             ; V(vol) PIT(arp) CMD(cmd+prm), SMSGGDJ-style
+render_table:                             ; V(vol) TSP(transpose) CMD(cmd+prm), SMSGGDJ-style
     moveq   #0, d6                         ; row 0-15
 .tr:
     bsr     draw_rowhdr                    ; row number + playhead at the left
@@ -2249,8 +2249,8 @@ render_table:                             ; V(vol) PIT(arp) CMD(cmd+prm), SMSGGD
 .tnh:
     move.b  d5, d0
     beq.s   .tvol                          ; col 0 = volume (1 char, "-" = no change)
-    cmpi.b  #t_arp, d0
-    beq.s   .tpit                          ; col 1 = PIT (2 hex)
+    cmpi.b  #t_tsp, d0
+    beq.s   .tpit                          ; col 1 = TSP (2 hex)
     cmpi.b  #t_cmd, d0
     beq.s   .tcmd                          ; col 2 = command letter
     tst.b   (t_cmd,a1)                     ; col 3 = PRM: dashes when no command
@@ -2270,7 +2270,7 @@ render_table:                             ; V(vol) PIT(arp) CMD(cmd+prm), SMSGGD
     move.w  d0, VDP_DATA
     bra.s   .tadv
 .tpit:
-    move.b  (t_arp,a1), d3
+    move.b  (t_tsp,a1), d3
     bsr     draw_hex2
     bra.s   .tadv
 .tcmd:
@@ -5410,7 +5410,7 @@ env_ch:                                   ; a6 = channel
     lsl.w   #2, d1                          ; row * TROW
     add.w   d1, d3
     lea     tbl_ram, a1                    ; editable RAM tables
-    move.b  (t_arp,a1,d3.w), d3            ; signed ARP offset (column 1)
+    move.b  (t_tsp,a1,d3.w), d3            ; signed TSP offset (column 1)
     ext.w   d3
     moveq   #0, d1
     move.b  c_note(a6), d1
@@ -7184,9 +7184,9 @@ str_scr_proj: dc.b "PROJECT",0
 str_scr_wave: dc.b "WAVFORM",0
 str_scr_grv:  dc.b "GROOVE",0
 str_scr_tb: dc.b "TABLE ",0
-str_hdr_tb: dc.b "   V  PIT CMD",0
+str_hdr_tb: dc.b "   V  TSP CMD",0
     even
-table_scol: dc.b 4, 7, 11, 12             ; V(1) PIT(2) CMD-letter PRM(2) -> "A00" adjacent
+table_scol: dc.b 4, 7, 11, 12             ; V(1) TSP(2) CMD-letter PRM(2) -> "A00" adjacent
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
