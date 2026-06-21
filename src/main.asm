@@ -39,6 +39,7 @@ c_psgt     equ 11                   ; PSG tone-latch base ($80/$A0/$C0)
 c_psgv     equ 12                   ; PSG volume base ($90/$B0/$D0)
 c_tvol     equ 13                   ; live table VOL override ($FF = none -> use the envelope c_vol)
 c_tcrow    equ 14                   ; last table row the CMD column ran for ($FF = none -> run on entry)
+c_ttsp     equ 15                   ; live table TSP for this tick (signed; FM reads it in fm_freq_send)
 c_phrase   equ 16                   ; long: current phrase ptr (cached from chain)
 c_chain    equ 20                   ; current chain (from song[songpos][track])
 c_cstep    equ 21                   ; chain step 0-15 ($FF = pre-start)
@@ -5408,12 +5409,15 @@ advance_ch:                               ; a6 = channel
     movem.l (sp)+, d0/a0
     bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
-    cmpi.b  #1, c_type(a6)               ; PSG: (re)start the instrument's macro table
-    beq.s   .notbset
-    lea     instrum, a4
+    lea     instrum, a4                    ; (re)start the macro table -- FM/TONE/NOISE, not KIT/WAVE
     moveq   #0, d3
     move.b  c_instr(a6), d3
     mulu.w  #INSTR_SIZE, d3
+    move.b  (i_type,a4,d3.w), d1          ; KIT (1) / WAVE (2) are DAC voices -> no macro table
+    cmpi.b  #1, d1
+    beq.s   .notabl
+    cmpi.b  #2, d1
+    beq.s   .notabl
     move.b  (i_tbl,a4,d3.w), c_tbl(a6)
     move.b  #$FF, c_tcrow(a6)             ; note-on: re-arm so the (re)started row's CMD column fires
     tst.b   (i_tbs,a4,d3.w)               ; TBS 0 = per-note: step the playhead (don't restart)
@@ -5427,6 +5431,9 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_trow(a6)               ; TBS>0 = per-tick: restart at row 0
 .tbctr:
     move.b  #0, c_tctr(a6)
+    bra.s   .notbset
+.notabl:
+    move.b  #$FF, c_tbl(a6)              ; KIT/WAVE: no macro table
 .notbset:
     move.b  c_type(a6), d3
     beq     .square
@@ -5858,9 +5865,46 @@ table_cmd:
 ; software AHD volume envelope for PSG voices, driven by the playing instrument's
 ; VOL/ATK/HLD/DCY (FM voices use the YM2612 hardware envelope instead).
 env_ch:                                   ; a6 = channel
-    move.b  #$FF, c_tvol(a6)              ; default: no table-VOL override (.tapply sets it if a table)
+    move.b  #$FF, c_tvol(a6)              ; default: no table-VOL override (.tapply / FM tick sets it)
     cmpi.b  #1, c_type(a6)
-    beq     .e_done
+    bne.s   .ec_psg
+    ; --- FM voice: tick the macro table (advance + latch c_tvol/c_ttsp), then done. The FM
+    ;     envelope is the YM2612's; compose_fm consumes c_ttsp (pitch) and c_tvol (carrier TL). ---
+    clr.b   c_ttsp(a6)                     ; default: no table transpose
+    move.b  c_tbl(a6), d0
+    cmpi.b  #$FF, d0
+    beq     .e_done                        ; FM, no table -> nothing to latch
+    lea     instrum, a4
+    moveq   #0, d1
+    move.b  c_instr(a6), d1
+    mulu.w  #INSTR_SIZE, d1
+    adda.w  d1, a4
+    tst.b   c_keyon(a6)                    ; keyed off -> hold the current row (don't churn idle)
+    beq.s   .fmt_latch
+    move.b  (i_tbs,a4), d2
+    beq.s   .fmt_latch                     ; TBS 0 = per-note: no per-tick advance
+    addq.b  #1, c_tctr(a6)
+    move.b  c_tctr(a6), d1
+    cmp.b   d2, d1
+    blo.s   .fmt_latch
+    move.b  #0, c_tctr(a6)
+    move.b  c_trow(a6), d1
+    addq.b  #1, d1
+    andi.b  #$0F, d1
+    move.b  d1, c_trow(a6)
+.fmt_latch:
+    moveq   #0, d3
+    move.b  c_tbl(a6), d3
+    lsl.w   #6, d3
+    moveq   #0, d1
+    move.b  c_trow(a6), d1
+    lsl.w   #2, d1
+    add.w   d1, d3
+    lea     tbl_ram, a1
+    move.b  (t_vol,a1,d3.w), c_tvol(a6)   ; VOL column ($FF = no change) -> live carrier-TL override
+    move.b  (t_tsp,a1,d3.w), c_ttsp(a6)   ; signed TSP -> fm_freq_send
+    bra     .e_done
+.ec_psg:
     move.b  c_estate(a6), d0
     beq     .e_done                        ; state 0 = off
     lea     instrum, a4                    ; a4 = instrum[c_instr]
@@ -6524,7 +6568,10 @@ emit_u_tl:
 ; a6=ch, a5/d5=SCB. Clobbers d0-d4/a4 (compose-context scratch). Used at trigger + per-tick re-send.
 fm_freq_send:
     moveq   #0, d0
-    move.b  c_note(a6), d0                  ; effective note = c_note + chord arp offset
+    move.b  c_note(a6), d0                  ; effective note = c_note + table TSP + chord arp offset
+    move.b  c_ttsp(a6), d3                  ; macro-table transpose (signed; 0 when no table)
+    ext.w   d3
+    add.w   d3, d0
     moveq   #0, d3
     move.b  c_track(a6), d3
     lea     c_chord, a4
@@ -6543,6 +6590,14 @@ fm_freq_send:
     ext.w   d1
     add.w   d1, d0
 .ffs_nochord:
+    tst.w   d0                              ; clamp the effective note to the fnum table [0,95]
+    bpl.s   .ffs_clo
+    moveq   #0, d0
+.ffs_clo:
+    cmpi.w  #95, d0
+    bls.s   .ffs_chi
+    moveq   #95, d0
+.ffs_chi:
     bsr     fm_freq                         ; d1=$A4, d2=$A0
     moveq   #0, d3                          ; F command fine -> add to the 11-bit fnum
     move.b  c_track(a6), d3
