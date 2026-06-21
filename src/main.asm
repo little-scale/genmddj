@@ -4938,7 +4938,9 @@ hold_tick:                                ; a6 = channel
     subq.b  #1, d0
     move.b  d0, c_hold(a6)
     bne.s   .hret
-    move.b  #0, c_keyon(a6)               ; gate expired -> key-off
+    move.b  #0, c_keyon(a6)               ; gate expired -> FM key-off
+    move.b  #3, c_estate(a6)               ; ...and PSG -> decay/release (env state 3); harmless on FM
+    move.b  #0, c_ectr(a6)
     move.b  #$FF, c_hold(a6)
 .hret:
     rts
