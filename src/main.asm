@@ -5131,7 +5131,9 @@ advance_ch:                               ; a6 = channel
     move.b  #1, k_set                      ; this row's note-on must keep K's gate, not the HLD
     move.b  (3,a1,d1.w), d2               ; K xx = key-off after xx ticks; K00 = cut now
     bne.s   .ck_hold
-    move.b  #0, c_keyon(a6)
+    move.b  #0, c_keyon(a6)                ; K00 = cut now: FM key-off...
+    move.b  #3, c_estate(a6)               ; ...and PSG/noise -> decay/release (state 3)
+    move.b  #0, c_ectr(a6)
     bra     .cmddone
 .ck_hold:
     move.b  d2, c_hold(a6)
