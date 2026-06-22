@@ -45,6 +45,11 @@
             align-items:center; justify-content:center; z-index:100; pointer-events:none; font-size:22px; font-weight:700; color:#cfe2f5; }
   #drop-ov.on{ display:flex; }
   .empty{ color:#7d8595; padding:40px 0; text-align:center; }
+  .aud{ display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid #2a2e38; }
+  .aud .lbl{ font-size:11px; color:#7d8595; text-transform:uppercase; letter-spacing:.05em; margin-right:4px; }
+  .key{ background:#1b1f27; border:1px solid #2a2e38; color:#cfd6e0; border-radius:5px; padding:7px 9px; font-family:ui-monospace,monospace; font-size:12px; cursor:pointer; min-width:32px; }
+  .key:hover{ background:#222838; } .key.on{ background:#2b6cb0; color:#fff; border-color:#3a7ec0; }
+  .key.stop{ background:#3a2228; border-color:#5a2a32; }
 </style>
 </head>
 <body>
@@ -126,6 +131,7 @@ function numField(label,val,max,oninput,min=0){
 }
 
 function renderEditor(){
+  stopAudition();
   const el=$("#editor"); el.innerHTML='';
   // name + type + pan
   const head=document.createElement('div'); head.className='ehead';
@@ -139,6 +145,14 @@ function renderEditor(){
   head.appendChild(mksel('TYPE',TYPES,getB(sel,0),v=>setB(sel,0,v)));
   head.appendChild(mksel('PAN',PANS,getB(sel,3),v=>setB(sel,3,v)));
   el.appendChild(head);
+
+  // audition keyboard — plays the (live-edited) patch through the FM model below
+  const aud=document.createElement('div'); aud.className='aud';
+  aud.innerHTML='<span class="lbl">Audition</span>';
+  [["C3",48],["D3",50],["E3",52],["F3",53],["G3",55],["A3",57],["B3",59],["C4",60],["D4",62],["E4",64],["F4",65],["G4",67],["A4",69],["B4",71],["C5",72]]
+    .forEach(([nm,midi])=>{ const k=document.createElement('button'); k.className='key'; k.textContent=nm; k.onclick=()=>play(sel,midi,k); aud.appendChild(k); });
+  const sb=document.createElement('button'); sb.className='key stop'; sb.textContent='■'; sb.title='stop'; sb.onclick=()=>stopAudition(); aud.appendChild(sb);
+  el.appendChild(aud);
 
   // header numeric fields
   const hg=document.createElement('div'); hg.className='grid hgrid';
@@ -165,6 +179,80 @@ function renderEditor(){
   ex.appendChild(numField('TBL.SPD',getB(sel,49),15,v=>setB(sel,49,v),0));
   const tsp=getB(sel,53); ex.appendChild(numField('TRANSPOSE',tsp>127?tsp-256:tsp,48,v=>setB(sel,53,v),-48));
   el.appendChild(ex);
+}
+
+// ---- YM2612 patch audition --------------------------------------------------
+// Approximate but structurally faithful: 4 operators, the 8 algorithms, OP1 feedback,
+// OPN2 MUL ratios + DT detune, per-operator AR/D1R/D2R/RR/SL/TL envelopes. Renders the
+// patch offline via float phase-modulation, then plays it through Web Audio. Not a
+// bit-exact chip emulation — timbre, algorithm structure and envelope shape are
+// representative (tune by ear; the real YM2612 / Emulicious still has the last word).
+const MULT=[0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+const MODSCALE=5.0;                                  // modulator output -> carrier phase (radians)
+const SLOTOF=[0,2,1,3];                              // logical OP1,OP2,OP3,OP4 -> record slot
+// per algorithm: modulators feeding each logical op (idx 0..3), and the carrier set
+const ALG=[
+ {m:[[],[0],[1],[2]],  c:[3]},        // 0  1>2>3>4
+ {m:[[],[],[0,1],[2]], c:[3]},        // 1  (1+2)>3>4
+ {m:[[],[],[1],[0,2]], c:[3]},        // 2  2>3, (1+3)>4
+ {m:[[],[0],[],[1,2]], c:[3]},        // 3  1>2, (2+3)>4
+ {m:[[],[0],[],[2]],   c:[1,3]},      // 4  1>2, 3>4
+ {m:[[],[0],[0],[0]],  c:[1,2,3]},    // 5  1>(2,3,4)
+ {m:[[],[0],[],[]],    c:[1,2,3]},    // 6  1>2; 3,4 free
+ {m:[[],[],[],[]],     c:[0,1,2,3]},  // 7  additive
+];
+function rateTime(r){ r=Math.max(0,Math.min(31,r)); return 0.0007*Math.pow(2,(31-r)/3.0); }
+function patchFromRom(s){
+  const ops=SLOTOF.map(rs=>{ const b=8+rs*10; return {
+    MUL:getB(s,b),DT:getB(s,b+1),TL:getB(s,b+2),AR:getB(s,b+4),D1:getB(s,b+6),D2:getB(s,b+7),RR:getB(s,b+8),SL:getB(s,b+9) }; });
+  return { algo:getB(s,1)&7, fb:getB(s,2)&7, vol:getB(s,7)&15, ops };
+}
+function mkOp(o,freq,sr){
+  const sign=(o.DT&4)?-1:1, det=1+sign*(o.DT&3)*0.0009;
+  return { inc:freq*MULT[o.MUL]*det/sr, phase:0, tl:Math.pow(10,-(o.TL*0.75)/20), AR:o.AR,
+    sl:(o.SL>=15)?0:Math.pow(10,-(o.SL*3)/20),
+    tA:rateTime(o.AR), tD:rateTime(o.D1), tS:o.D2>0?rateTime(o.D2):Infinity, tR:rateTime(2*o.RR+1),
+    env:0, st:0, out:0, out1:0 };                    // st: 0 attack, 1 decay, 2 sustain, 3 release
+}
+function stepEnv(o,dt){
+  if(o.AR===0){ o.env=0; return; }                  // AR 0 = silent operator (unused op)
+  if(o.st===0){ o.env+=dt/Math.max(o.tA,1e-5); if(o.env>=1){ o.env=1; o.st=1; } }
+  else if(o.st===1){ o.env+=(o.sl-o.env)*(1-Math.exp(-dt/o.tD)); if(Math.abs(o.env-o.sl)<0.002) o.st=2; }
+  else if(o.st===2){ if(o.tS!==Infinity) o.env+=(0-o.env)*(1-Math.exp(-dt/o.tS)); }
+  else { o.env+=(0-o.env)*(1-Math.exp(-dt/o.tR)); }
+}
+function renderVoice(p,freq,sr){
+  const A=ALG[p.algo], dur=1.9, n=Math.floor(dur*sr), koff=Math.floor(1.3*sr);
+  const op=p.ops.map(o=>mkOp(o,freq,sr));
+  const fb=(p.fb===0)?0:Math.pow(2,p.fb-1)/16, vg=Math.max(0.06,p.vol/15);
+  const buf=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    if(i===koff) op.forEach(o=>o.st=3);              // key-off
+    for(const o of op) stepEnv(o,1/sr);
+    const outs=[0,0,0,0];
+    for(let k=0;k<4;k++){ const o=op[k]; let mod=0;
+      if(k===0 && fb>0) mod+=(o.out+o.out1)*0.5*fb;  // OP1 self-feedback
+      for(const mi of A.m[k]) mod+=outs[mi]*MODSCALE;
+      o.out1=o.out; o.out=Math.sin(2*Math.PI*o.phase+mod)*o.env*o.tl;
+      o.phase+=o.inc; if(o.phase>=1) o.phase-=1; outs[k]=o.out; }
+    let y=0; for(const c of A.c) y+=outs[c];
+    buf[i]=Math.tanh(y)*vg;
+  }
+  const fd=Math.min(1200,n); for(let i=0;i<fd;i++) buf[n-1-i]*=i/fd;   // de-click tail
+  return buf;
+}
+let actx=null, voice=null;
+const noteFreq=m=>440*Math.pow(2,(m-69)/12);
+function stopAudition(){ if(!voice) return; try{ voice.src.stop(); }catch(e){} if(voice.btn) voice.btn.classList.remove('on'); voice=null; }
+function play(slot,midi,btn){
+  if(!rom) return;
+  if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)();
+  actx.resume(); stopAudition();
+  const data=renderVoice(patchFromRom(slot), noteFreq(midi), actx.sampleRate);
+  const ab=actx.createBuffer(1,data.length,actx.sampleRate); ab.copyToChannel(data,0);
+  const src=actx.createBufferSource(); src.buffer=ab; src.connect(actx.destination);
+  src.onended=()=>{ if(voice && voice.src===src) stopAudition(); };
+  src.start(); if(btn) btn.classList.add('on'); voice={src,btn};
 }
 
 $("#romfile").onchange=e=>loadRom(e.target.files[0]);
