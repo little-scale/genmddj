@@ -5874,8 +5874,30 @@ advance_ch:                               ; a6 = channel
     andi.b  #$0F, d0
     bra     .gotrow                        ; jump there NOW -- the H row plays no sixteenth
 .cmd_t:
-    move.b  (3,a1,d1.w), d2               ; T xx = tempo (BPM); the row-advance uses 1250/proj_tmpo
-    move.b  d2, proj_tmpo
+    moveq   #0, d2                          ; T xx = flat tempo: set the ACTIVE groove flat at xx BPM
+    move.b  (3,a1,d1.w), d2               ;   (= 1250/xx ticks every row; flattens the swing)
+    beq     .cmddone                        ; T00 -> ignore (no divide-by-zero)
+    move.l  #1250, d0
+    divu.w  d2, d0
+    andi.l  #$FFFF, d0
+    bne.s   .ct_nz
+    moveq   #1, d0
+.ct_nz:
+    cmpi.w  #63, d0                         ; clamp tick count [1,63]
+    bls.s   .ct_set
+    moveq   #63, d0
+.ct_set:
+    move.l  a0, -(sp)                       ; preserve a0 (advance_ch's note path uses it)
+    moveq   #0, d2
+    move.b  groove_sel, d2
+    lsl.w   #4, d2
+    lea     grooves, a0
+    adda.w  d2, a0
+    moveq   #15, d2
+.ct_wr:
+    move.b  d0, (a0)+
+    dbra    d2, .ct_wr
+    move.l  (sp)+, a0
     bra     .cmddone
 .cmd_w:
     move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
