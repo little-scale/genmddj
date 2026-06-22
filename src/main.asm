@@ -6503,6 +6503,27 @@ advance_song:                             ; a6 = channel
     move.b  (a2,d4.w), d2                 ; chain# at new row
     cmpi.b  #$FF, d2
     bne.s   .ok
+    tst.b   proj_mode                     ; empty cell: SONG loops to row 0, LIVE to the group top
+    beq.s   .as_row0
+    move.b  c_songpos(a6), d3             ; LIVE: walk up from the last populated row to the group top
+.as_up:
+    tst.b   d3
+    beq.s   .as_top
+    move.w  d3, d4
+    subq.w  #1, d4
+    mulu.w  #NCH, d4
+    add.w   d0, d4
+    cmpi.b  #$FF, (a2,d4.w)               ; row above empty -> d3 is the group top
+    beq.s   .as_top
+    subq.b  #1, d3
+    bra.s   .as_up
+.as_top:
+    move.w  d3, d4
+    mulu.w  #NCH, d4
+    add.w   d0, d4
+    move.b  (a2,d4.w), d2
+    bra.s   .ok
+.as_row0:
     moveq   #0, d3                        ; song end -> loop to row 0
     move.b  (a2,d0.w), d2                 ; song[0][track]
 .ok:
