@@ -139,6 +139,12 @@ clip_rows  equ $00FFE435           ; clipboard block height (1 for a single fiel
 clip_cols  equ $00FFE436           ; clipboard block width
 clip_col0  equ $00FFE437           ; clipboard source start column (paste keeps columns -> type-safe)
 clip_buf   equ $00FFE438           ; clipboard cell payload (row-major); max NSONGROWS*NCH = 160 B
+echo_mode  equ $00FFE4D8           ; ECHO: 0 off, 1 F2, 2 F2+F3, 3 T2, 4 T2+T3
+echo_tap1  equ $00FFE4D9           ; tap-1 delay (engine ticks; -> groove ticks when grooves land)
+echo_tap2  equ $00FFE4DA           ; tap-2 delay
+echo_rd1   equ $00FFE4DB           ; tap-1 level reduction
+echo_rd2   equ $00FFE4DC           ; tap-2 level reduction
+echo_ster  equ $00FFE4DD           ; 0 off, 1 on (pan taps L/R; FM only)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -455,6 +461,12 @@ Start:
     move.l  #0, btap_addr
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
+    move.b  #0, echo_mode                 ; ECHO off; sensible tap/reduction defaults
+    move.b  #2, echo_tap1
+    move.b  #4, echo_tap2
+    move.b  #4, echo_rd1
+    move.b  #8, echo_rd2
+    move.b  #0, echo_ster
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -611,8 +623,9 @@ VBlankInt:
     beq     .gwavescr
     cmpi.b  #SCR_LFO, d0                   ; FM LFO bank editor
     beq     .glfo
-    cmpi.b  #SCR_ECHO, d0                  ; other placeholder screens: header only, no grid body
-    bhs     .gd
+    cmpi.b  #SCR_ECHO, d0                  ; ECHO: settings fields
+    beq     .gecho
+    bhs     .gd                             ; other placeholder screens (GROOVE): header only
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
     moveq   #0, d0
     move.b  cur_instr, d0
@@ -635,6 +648,9 @@ VBlankInt:
     bra     .gd
 .glfo:
     bsr     render_lfo
+    bra     .gd
+.gecho:
+    bsr     render_echo
     bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
@@ -1456,6 +1472,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     cmpi.b  #SCR_LFO, d0
     beq.s   .rmlfo                           ; FM LFO bank: 6 rows
     cmpi.b  #SCR_ECHO, d0
+    beq.s   .rmecho                          ; ECHO: 6 settings fields
     bhs.s   .zero                            ; other placeholder screens: cursor locked at row 0
     cmpi.b  #SCR_FM, d0
     beq.s   .fm
@@ -1479,6 +1496,9 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
+    rts
+.rmecho:
+    moveq   #5, d1                          ; ECHO: MODE TAP1 TAP2 RD1 RD2 STER
     rts
 .fm:
     lea     instrum, a1                   ; max cursor row depends on instrument type
@@ -2290,9 +2310,10 @@ edit_value:
     beq     edit_proj
     cmpi.b  #SCR_LFO, cur_screen           ; FM LFO bank editor
     beq     edit_lfo
-    cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
-    blo.s   .ev_go
-    rts
+    cmpi.b  #SCR_ECHO, cur_screen          ; ECHO settings
+    beq     edit_echo
+    blo.s   .ev_go                          ; < ECHO -> grid screens
+    rts                                      ; > ECHO (GROOVE) -> no fields
 .ev_go:
     cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the cursor cell
     beq     edit_table
@@ -7704,6 +7725,96 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
 .op:
     bra     draw_hex1
 
+render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
+    moveq   #5, d3                          ; MODE (cur_row 0)
+    moveq   #1, d4
+    lea     str_e_mode, a1
+    bsr     print_at
+    moveq   #0, d2
+    tst.b   cur_row
+    bne.s   .e_m1
+    moveq   #$60, d2
+.e_m1:
+    moveq   #0, d1
+    move.b  echo_mode, d1
+    cmpi.b  #4, d1
+    bls.s   .e_mc
+    moveq   #0, d1
+.e_mc:
+    lsl.w   #2, d1
+    lea     emode_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #5, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #7, d3                          ; TAP1 (cur_row 1) at row 7
+    moveq   #1, d4
+    lea     str_e_tap1, a1
+    bsr     print_at
+    move.l  #$43900003, (a0)
+    move.b  echo_tap1, d3
+    moveq   #0, d4
+    cmpi.b  #1, cur_row
+    bne.s   .e_t1
+    moveq   #$60, d4
+.e_t1:
+    bsr     draw_hex2
+    moveq   #8, d3                          ; TAP2 (cur_row 2) at row 8
+    moveq   #1, d4
+    lea     str_e_tap2, a1
+    bsr     print_at
+    move.l  #$44100003, (a0)
+    move.b  echo_tap2, d3
+    moveq   #0, d4
+    cmpi.b  #2, cur_row
+    bne.s   .e_t2
+    moveq   #$60, d4
+.e_t2:
+    bsr     draw_hex2
+    moveq   #10, d3                         ; RD1 (cur_row 3) at row 10
+    moveq   #1, d4
+    lea     str_e_rd1, a1
+    bsr     print_at
+    move.l  #$45100003, (a0)
+    move.b  echo_rd1, d3
+    moveq   #0, d4
+    cmpi.b  #3, cur_row
+    bne.s   .e_r1
+    moveq   #$60, d4
+.e_r1:
+    bsr     draw_hex2
+    moveq   #11, d3                         ; RD2 (cur_row 4) at row 11
+    moveq   #1, d4
+    lea     str_e_rd2, a1
+    bsr     print_at
+    move.l  #$45900003, (a0)
+    move.b  echo_rd2, d3
+    moveq   #0, d4
+    cmpi.b  #4, cur_row
+    bne.s   .e_r2
+    moveq   #$60, d4
+.e_r2:
+    bsr     draw_hex2
+    moveq   #13, d3                         ; STER (cur_row 5) at row 13
+    moveq   #1, d4
+    lea     str_e_ster, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #5, cur_row
+    bne.s   .e_s1
+    moveq   #$60, d2
+.e_s1:
+    moveq   #0, d1
+    move.b  echo_ster, d1
+    andi.w  #1, d1
+    lsl.w   #2, d1
+    lea     e_onoff_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #13, d3
+    moveq   #8, d4
+    bsr     print_hl
+    rts
+
 render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SAVE LOAD
     moveq   #5, d3
     moveq   #1, d4
@@ -7899,6 +8010,47 @@ load_config:
     move.b  #0, $A130F1
     rts
 
+edit_echo:                                ; B+dpad on ECHO: adjust MODE/TAP/RD/STER (a1 d2 d3 d4 -> adj_field)
+    move.b  cur_row, d0
+    beq.s   .ee_mode
+    cmpi.b  #1, d0
+    beq.s   .ee_tap1
+    cmpi.b  #2, d0
+    beq.s   .ee_tap2
+    cmpi.b  #3, d0
+    beq.s   .ee_rd1
+    cmpi.b  #4, d0
+    beq.s   .ee_rd2
+    lea     echo_ster, a1                  ; row 5 = STER (0/1)
+    moveq   #1, d3
+    moveq   #1, d4
+    bra     adj_field
+.ee_mode:
+    lea     echo_mode, a1                  ; 0..4 = off/F2/F2+F3/T2/T2+T3
+    moveq   #4, d3
+    moveq   #1, d4
+    bra     adj_field
+.ee_tap1:
+    lea     echo_tap1, a1
+    moveq   #63, d3
+    moveq   #4, d4
+    bra     adj_field
+.ee_tap2:
+    lea     echo_tap2, a1
+    moveq   #63, d3
+    moveq   #4, d4
+    bra     adj_field
+.ee_rd1:
+    lea     echo_rd1, a1
+    moveq   #15, d3
+    moveq   #4, d4
+    bra     adj_field
+.ee_rd2:
+    lea     echo_rd2, a1
+    moveq   #15, d3
+    moveq   #4, d4
+    bra     adj_field
+
 edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/MODE/SLOT
     move.b  cur_row, d0
     beq.s   .ep_tmpo
@@ -8061,6 +8213,22 @@ str_scr_sg: dc.b "SONG  ",0
 str_scr_in: dc.b "INSTR ",0
 str_scr_fm: dc.b "FM    ",0
 str_scr_echo: dc.b "ECHO",0
+str_e_mode: dc.b "MODE",0
+str_e_tap1: dc.b "TAP1",0
+str_e_tap2: dc.b "TAP2",0
+str_e_rd1:  dc.b "RD1",0
+str_e_rd2:  dc.b "RD2",0
+str_e_ster: dc.b "STER",0
+str_e_moff: dc.b "OFF  ",0
+str_e_f2:   dc.b "F2   ",0
+str_e_f2f3: dc.b "F2+F3",0
+str_e_t2:   dc.b "T2   ",0
+str_e_t2t3: dc.b "T2+T3",0
+str_e_soff: dc.b "OFF",0
+str_e_son:  dc.b "ON ",0
+    even
+emode_lbl:  dc.l str_e_moff, str_e_f2, str_e_f2f3, str_e_t2, str_e_t2t3
+e_onoff_lbl: dc.l str_e_soff, str_e_son
 str_scr_lfo: dc.b "FM LFO",0
 str_scr_opt:  dc.b "OPTIONS",0
 str_scr_proj: dc.b "PROJECT",0
