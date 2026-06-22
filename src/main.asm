@@ -152,6 +152,9 @@ groove_sel equ $00FFD420           ; active groove (0-15)   ($E5E0 was inside th
 groove_pos equ $00FFD421           ; row position within the active groove (cycles)
 cur_groove equ $00FFD422           ; GROOVE screen: which groove is being viewed/edited (0-15)
 proj_groove equ $00FFD423          ; song default groove (active at play-start; G switches it live)
+sync_cnt   equ $00FFD424           ; SYNC OUT: 2-bit tick counter driven on port-2 TR+TH
+sync_last  equ $00FFD425           ; SYNC IN: counter value read last frame
+sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first external clock
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -718,6 +721,17 @@ VBlankInt:
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
     dbra    d3, .tk
+    tst.b   opt_sync                      ; sync activity counter at row0 col32 (OUT=sent, IN=received)
+    beq.s   .nosyncind
+    move.l  #$40400003, (a0)
+    move.b  sync_last, d3                  ; IN: the counter read from the wire
+    cmpi.b  #2, opt_sync
+    bne.s   .syind
+    move.b  sync_cnt, d3                  ; OUT: the counter we drive
+.syind:
+    moveq   #0, d4
+    bsr     draw_hex2
+.nosyncind:
     move.l  #$40900003, (a0)             ; screen number (2 hex digits) at row1 col8
     cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens carry no number
     blo.s   .pnnum
@@ -5100,6 +5114,24 @@ engine_play_reset:
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
+    move.b  #0, sync_cnt                   ; sync transport: set the port + arm a slave
+    move.b  #0, sync_wait
+    cmpi.b  #2, opt_sync                  ; OUT -> drive TR+TH (control bits 5,6 = output)
+    bne.s   .epr_synci
+    move.b  #$60, $00A1000B               ; port 2 control: TR(5) + TH(6) output
+    move.b  #0, $00A10005                 ; counter starts at 0 on the lines
+    bra.s   .epr_syncd
+.epr_synci:
+    cmpi.b  #1, opt_sync                  ; IN -> inputs; arm + latch (stale levels must not count)
+    bne.s   .epr_syncoff
+    move.b  #0, $00A1000B                 ; port 2 control: all input
+    bsr     sync_read
+    move.b  d0, sync_last
+    move.b  #1, sync_wait                  ; armed: wait for the first external clock
+    bra.s   .epr_syncd
+.epr_syncoff:
+    move.b  #0, $00A1000B                 ; OFF -> release the lines (inputs)
+.epr_syncd:
     lea     phrase_plays, a0               ; reset I-command counts + AMP shadow at play-start
     moveq   #NPHRASES+NLFO-1, d0           ; phrase_plays (16) + lfo_amp (16) are contiguous
 .rpc:
@@ -5572,6 +5604,45 @@ groove_step:                              ; advance groove_pos to the next row's
     movem.l (sp)+, d0-d1/a0
     rts
 
+; --- Sync clock (DE-9 controller port 2; native 2-bit counter, ports from SMSGGDJ) ---------------
+; TR = data bit 5, TH = data bit 6 ($A10005); control $A1000B (bit set = that pin is an output).
+; One count per engine tick (= 24 PPQN at groove 6). MASTER drives it, SLAVE reads (read-last)&3.
+sync_read:                                ; -> d0.b = the 2-bit counter on TR+TH
+    moveq   #0, d0
+    move.b  $00A10005, d0
+    lsr.b   #5, d0
+    andi.b  #3, d0
+    rts
+
+sync_out:                                 ; OUT: bump the counter and drive it on TR+TH
+    moveq   #0, d0
+    move.b  sync_cnt, d0
+    addq.b  #1, d0
+    andi.b  #3, d0
+    move.b  d0, sync_cnt
+    lsl.b   #5, d0                          ; counter -> data bits 5,6
+    move.b  d0, $00A10005
+    rts
+
+sync_in_delta:                            ; IN: -> d3.b = engine ticks to run this frame (0-3); handles arming
+    bsr     sync_read                     ; d0 = current counter
+    moveq   #0, d3
+    move.b  d0, d3
+    sub.b   sync_last, d3                  ; d3 = (read - last) & 3 = clocks since last frame
+    andi.b  #3, d3
+    move.b  d0, sync_last
+    tst.b   sync_wait                        ; armed, still waiting for the first clock?
+    beq.s   .sid_ret
+    tst.b   d3
+    beq.s   .sid_zero                       ; no clock yet -> hold (stay armed)
+    move.b  #0, sync_wait                  ; first clock = start; count as exactly one tick
+    moveq   #1, d3                          ;   (don't over-count the idle->counter jump)
+.sid_ret:
+    rts
+.sid_zero:
+    moveq   #0, d3
+    rts
+
 engine_tick:
     move.b  #0, patch_done                ; FM operator-patch budget: one per tick
     tst.b   playing
@@ -5602,6 +5673,8 @@ engine_tick:
     bsr     wave_silence                  ; stopped -> park any sounding wave
     rts
 .play:
+    cmpi.b  #1, opt_sync                  ; SYNC IN -> external counter drives the tick (slave)
+    beq.s   .play_slave
     ; row advance is groove-driven: row lasts active-groove[groove_pos] ticks (1 tick = 1 frame)
     addq.b  #1, g_gctr
     bsr     groove_cur                    ; d0 = tick-count for the current row
@@ -5616,6 +5689,16 @@ engine_tick:
     move.b  #0, g_wait                      ; W is one row only
     bsr     groove_step                   ; step the groove to the next row's slot
     move.b  #1, eng_adv                   ; playheads moved -> redraw the grid
+    bra.s   .do_adv
+.play_slave:
+    bsr     sync_in_delta                 ; d3 = clocks received this frame (0-3)
+    moveq   #6, d0                          ; SLAVE locks to flat groove 6 (24 PPQN; ignore stored groove + W)
+    add.b   d3, g_gctr
+    cmp.b   g_gctr, d0
+    bhi.s   .noadv                         ; not enough clocks yet -> hold
+    sub.b   d0, g_gctr                      ; lossless (a multi-clock frame carries the excess)
+    move.b  #1, eng_adv
+.do_adv:
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .adv:
@@ -5627,6 +5710,10 @@ engine_tick:
     lea     CHSIZE(a6), a6
     dbra    d7, .adv
 .noadv:
+    cmpi.b  #2, opt_sync                  ; SYNC OUT -> drive the 2-bit counter (one count per tick)
+    bne.s   .noout
+    bsr     sync_out
+.noout:
     bsr     echo_tick                     ; capture input + drive echo targets (overrides their phrase)
     ; per-channel envelope + compose (PSG -> a3/d6, FM -> a5/d5)
     lea     scb_data, a3
