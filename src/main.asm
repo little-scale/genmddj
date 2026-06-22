@@ -791,7 +791,11 @@ VBlankInt:
     cmpi.b  #SCR_TABLE, d1
     beq.s   .pntb
     cmpi.b  #SCR_FM, d1
-    bne.s   .pn                           ; SONG -> 0
+    beq.s   .pninst                          ; FM -> instrument number
+    cmpi.b  #SCR_SONG, d1
+    bne.s   .pn                              ; other placeholder screens -> 0
+    move.b  song_page, d0                    ; SONG -> visible page number (00..0E)
+    bra.s   .pn
 .pninst:
     move.b  cur_instr, d0                 ; INSTR/FM -> instrument number
     bra.s   .pn
@@ -1222,12 +1226,30 @@ input_tick:
 .done:
     rts
 
-.aheld:                                   ; A + Left/Right -> switch channel (CHAIN/PHRASE only;
-    move.b  cur_screen, d0                 ;   INSTR uses the INST field to pick the instrument)
+.aheld:                                   ; A + Left/Right -> switch channel (CHAIN/PHRASE);
+    move.b  cur_screen, d0                 ;   A + Up/Down -> page the SONG view
+    cmpi.b  #SCR_SONG, d0
+    beq.s   .apage
     cmpi.b  #SCR_CHAIN, d0
     beq.s   .ado
     cmpi.b  #SCR_PHRASE, d0
     beq.s   .ado
+    rts
+.apage:
+    btst    #0, d5                          ; A+Up -> previous page
+    beq.s   .apg_d
+    tst.b   song_page
+    beq.s   .apg_d
+    subq.b  #1, song_page
+    move.b  #1, vdirty
+.apg_d:
+    btst    #1, d5                          ; A+Down -> next page
+    beq.s   .apg_done
+    cmpi.b  #14, song_page
+    bhs.s   .apg_done
+    addq.b  #1, song_page
+    move.b  #1, vdirty
+.apg_done:
     rts
 .ado:
     btst    #2, d5                         ; A+Left -> previous channel
