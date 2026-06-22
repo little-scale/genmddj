@@ -196,6 +196,7 @@ lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 9
 phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES=160 bytes, ..$D39F) for the I command
 lfo_amp    equ $00FFD3A0           ; NLFO amp bytes (0-7); sits right after phrase_plays (engine_play_reset clears both)
 song_title equ $00FFD3B0           ; 8-char song name (lives in the slot header, not the data block)
+song_page  equ $00FFD3B8           ; SONG screen: visible 16-row page 0..14 (240/16); transient view state
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -536,6 +537,7 @@ Start:
 .btitle:
     move.b  (a0)+, (a1)+
     dbra    d0, .btitle
+    move.b  #0, song_page                 ; SONG view starts on page 0
     lea     grooves, a0                   ; seed every groove straight (= the old fixed frames/row)
     move.w  #16*16-1, d0
 .gvinit:
@@ -1485,7 +1487,16 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     move.b  cur_row, d0
     subq.b  #1, d0
     bpl.s   .nuw
-    move.b  d1, d0                          ; off the top -> bottom
+    cmpi.b  #SCR_SONG, cur_screen          ; off the top: SONG pages up, others wrap
+    bne.s   .nu_wrap
+    move.b  song_page, d3
+    subq.b  #1, d3
+    bpl.s   .nu_pgok
+    moveq   #14, d3                          ; wrap to the last page
+.nu_pgok:
+    move.b  d3, song_page
+.nu_wrap:
+    move.b  d1, d0                          ; -> bottom row of the (now-previous) page
 .nuw:
     move.b  d0, cur_row
 .nu:
@@ -1495,7 +1506,17 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     addq.b  #1, d0
     cmp.b   d1, d0
     bls.s   .ndw
-    moveq   #0, d0                          ; off the bottom -> top
+    cmpi.b  #SCR_SONG, cur_screen          ; off the bottom: SONG pages down, others wrap
+    bne.s   .nd_wrap
+    move.b  song_page, d3
+    addq.b  #1, d3
+    cmpi.b  #15, d3
+    blo.s   .nd_pgok
+    moveq   #0, d3                          ; wrap to the first page
+.nd_pgok:
+    move.b  d3, song_page
+.nd_wrap:
+    moveq   #0, d0                          ; -> top row of the (now-next) page
 .ndw:
     move.b  d0, cur_row
 .nd:
@@ -3063,6 +3084,13 @@ clear_grid:                               ; a0=VDP_CTRL; blank header + grid + e
 ; draw a row's left edge: col1 = row# hex, col2 = space, col3 = playhead triangle
 ; (col3 sits directly left of the first data column at col4)
 draw_rowhdr:                              ; d6 = row; a0 = VDP_CTRL
+    moveq   #0, d3                        ; d3 = effective row (SONG adds page*16)
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .rh_d6
+    move.b  song_page, d3
+    lsl.w   #4, d3
+.rh_d6:
+    add.w   d6, d3
     moveq   #0, d0
     move.w  d6, d0
     addi.w  #GRID_TOP, d0
@@ -3072,16 +3100,23 @@ draw_rowhdr:                              ; d6 = row; a0 = VDP_CTRL
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    move.w  d6, d0                        ; col1 row# hex
+    cmpi.b  #SCR_SONG, cur_screen          ; SONG: 2-digit absolute row (00..EF) at col1-2
+    bne.s   .rh_single
+    moveq   #0, d4
+    bsr     draw_hex2                       ; draws d3 (preserves d3/d1), advances to col3
+    bra.s   .rh_ph
+.rh_single:
+    move.w  d3, d0                        ; col1 1-digit row# + col2 space
     lea     hexd, a1
     andi.w  #$000F, d0
     move.b  (a1,d0.w), d0
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
-    move.w  #' ', VDP_DATA                ; col2 space
+    move.w  #' ', VDP_DATA
+.rh_ph:
     move.w  #$20, d1                      ; col3 playhead (triangle or space)
     move.b  play_row, d0
-    cmp.b   d6, d0
+    cmp.b   d3, d0
     bne.s   .nm
     move.w  #$1F, d1
 .nm:
@@ -3293,13 +3328,20 @@ render_sfield:                            ; d5=track col, d6=row, d4=cursor off
     cmpi.b  #$FF, c_chain(a2)              ; inactive channel -> no marker
     beq.s   .nomark
     move.b  c_songpos(a2), d1
-    cmp.b   d6, d1                          ; row == this channel's song position?
+    moveq   #0, d2                          ; actual row = song_page*16 + on-screen row
+    move.b  song_page, d2
+    lsl.w   #4, d2
+    add.w   d6, d2
+    cmp.b   d2, d1                          ; c_songpos == actual row?
     bne.s   .nomark
     move.w  #$1F, d0                        ; triangle
 .nomark:
     move.w  d0, VDP_DATA
-    lea     song, a2                       ; chain# at song[row*NCH + col]
-    move.w  d6, d2
+    lea     song, a2                       ; chain# at song[(page*16+row)*NCH + col]
+    moveq   #0, d2
+    move.b  song_page, d2
+    lsl.w   #4, d2
+    add.w   d6, d2
     mulu.w  #NCH, d2
     moveq   #0, d1
     move.b  d5, d1
@@ -8953,6 +8995,7 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     move.b  #0, cur_phrase
     move.b  #0, cur_chain
     move.b  #0, cur_songrow
+    move.b  #0, song_page                   ; SONG view back to page 0
     move.b  #1, need_clear
     rts
 .pa_save:
