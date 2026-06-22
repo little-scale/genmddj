@@ -197,6 +197,11 @@ phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES=160 byte
 lfo_amp    equ $00FFD3A0           ; NLFO amp bytes (0-7); sits right after phrase_plays (engine_play_reset clears both)
 song_title equ $00FFD3B0           ; 8-char song name (lives in the slot header, not the data block)
 song_page  equ $00FFD3B8           ; SONG screen: visible 16-row page 0..14 (240/16); transient view state
+proj_armed equ $00FFD3B9           ; PROJECT destructive-action confirm: armed cur_row (0 = none)
+proj_arm_frame equ $00FFD3BA       ; g_ticks when armed (word); a 2nd tap within CONFIRM_FRAMES confirms
+saved_sum  equ $00FFD3BC           ; long checksum of the data block at the last save/load (unsaved test)
+song_dirty equ $00FFD3C0           ; 1 = data block differs from saved_sum (recomputed on PROJECT entry)
+CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -572,6 +577,10 @@ Start:
     move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
     move.b  #1, g_lfo_dirty              ; emit $22 (global LFO) on the first SCB push
+    bsr     gather_globals               ; the boot demo is the clean baseline (not "unsaved")
+    bsr     data_longsum
+    move.l  d0, saved_sum
+    clr.b   song_dirty
     move.b  #1, need_clear               ; draw header/name on first frame
 
     move.b  #1, in_splash
@@ -647,6 +656,10 @@ VBlankInt:
     bsr     screen_ptr
     move.l  4(a1), a1
     bsr     print_at
+    cmpi.b  #SCR_PROJ, cur_screen          ; entering PROJECT (full redraw): recompute unsaved state
+    bne.s   .nc_dc
+    bsr     check_dirty
+.nc_dc:
     move.b  #0, need_clear
     move.b  #1, vdirty                    ; re-render next frame (header self-heals)
     move.b  #1, env_dirty
@@ -1481,6 +1494,11 @@ dpad_fire:
     rts
 
 move_cursor:                              ; d-pad moves the cursor; edges WRAP (all screens)
+    move.b  d2, d0
+    andi.b  #$0F, d0                         ; any d-pad press disarms a pending PROJECT confirm
+    beq.s   .mc_ndis
+    clr.b   proj_armed
+.mc_ndis:
     bsr     row_max                       ; d1 = highest row for this screen/type
     btst    #0, d2                         ; Up
     beq.s   .nu
@@ -8514,7 +8532,23 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     bne.s   .plf
     moveq   #$60, d4
 .plf:
-    bra     draw_hex1
+    bsr     draw_hex1
+    moveq   #19, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
+    moveq   #1, d4
+    lea     str_saved, a1
+    tst.b   song_dirty
+    beq.s   .pp_cl
+    lea     str_unsaved, a1
+.pp_cl:
+    bsr     print_at
+    moveq   #20, d3                          ; confirm prompt when a destructive action is armed
+    moveq   #1, d4
+    lea     str_blank15, a1
+    tst.b   proj_armed
+    beq.s   .pp_na
+    lea     str_sure, a1
+.pp_na:
+    bra     print_at
 
 edit_opts:                                ; B+dpad on OPTIONS: adjust the current field
     move.b  cur_row, d0
@@ -8733,6 +8767,37 @@ data_checksum:                             ; -> d2.w = 16-bit sum of the data bl
     movem.l (sp)+, d1/d4/a0
     rts
 
+data_longsum:                              ; -> d0.l = fast long-sum of the data block (unsaved test)
+    movem.l d1/a0, -(sp)
+    lea     SAVE_BASE, a0
+    move.w  #(SAVE_DATA/32)-1, d1           ; 20832/32 = 651 iters, 8 longs each
+    moveq   #0, d0
+.dls:
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    add.l   (a0)+, d0
+    dbra    d1, .dls
+    movem.l (sp)+, d1/a0
+    rts
+
+check_dirty:                               ; song_dirty = (data block != last saved); call on PROJECT entry
+    movem.l d0/d1, -(sp)
+    bsr     gather_globals                  ; fold current globals into the head slot first
+    bsr     data_longsum
+    moveq   #1, d1
+    cmp.l   saved_sum, d0
+    bne.s   .ckd
+    moveq   #0, d1
+.ckd:
+    move.b  d1, song_dirty
+    movem.l (sp)+, d0/d1
+    rts
+
 save_song:                                 ; save the work-RAM image to SRAM slot (proj_slot-1)
     movem.l d0-d7/a0-a3, -(sp)
     move.b  proj_slot, d0                   ; refuse a slot beyond this cart's capacity (sram_slots)
@@ -8769,6 +8834,9 @@ save_song:                                 ; save the work-RAM image to SRAM slo
     adda.l  d5, a1
     dbra    d1, .sv_db
     move.b  #0, $A130F1                     ; unmap
+    bsr     data_longsum                    ; remember the saved state for the unsaved indicator
+    move.l  d0, saved_sum
+    clr.b   song_dirty
 .sv_done:
     movem.l (sp)+, d0-d7/a0-a3
     rts
@@ -8815,6 +8883,9 @@ load_song:                                 ; load SRAM slot (proj_slot-1) into t
     bsr     scatter_globals                 ; unpack the song globals
     move.b  proj_groove, groove_sel         ; loaded default groove active
     move.b  #1, g_lfo_dirty                 ; re-emit the global LFO on the next SCB push
+    bsr     data_longsum                    ; remember the loaded state for the unsaved indicator
+    move.l  d0, saved_sum
+    clr.b   song_dirty
     move.b  #1, need_clear
     bra.s   .ld_done
 .ld_bad:
@@ -8887,6 +8958,10 @@ edit_groove:                              ; B+dpad: GRV selector (row 0) or a ti
     bra     adj_field
 
 edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/MODE/SLOT
+    cmpi.b  #5, cur_row                     ; SLOT is transient -> editing it isn't a song change
+    beq.s   .ep_nodirty
+    move.b  #1, song_dirty                  ; TMPO/TSP/MODE/LFO are saved globals
+.ep_nodirty:
     move.b  cur_row, d0
     beq.s   .ep_tmpo
     cmpi.b  #1, d0
@@ -8987,23 +9062,54 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     beq.s   .pa_load
     rts
 .pa_new:
+    moveq   #3, d0                           ; destructive: needs a confirming 2nd tap
+    bsr     proj_confirm
+    bne.s   .pa_ret
     bsr     clear_song
     bra.s   .pa_done
 .pa_demo:
+    moveq   #4, d0
+    bsr     proj_confirm
+    bne.s   .pa_ret
     bsr     load_demo
+    bra.s   .pa_done
+.pa_load:
+    moveq   #7, d0
+    bsr     proj_confirm
+    bne.s   .pa_ret
+    bsr     load_song
+    bra.s   .pa_done
+.pa_save:
+    clr.b   proj_armed
+    bsr     save_song
+    rts
+.pa_ret:
+    rts
 .pa_done:
     move.b  #0, cur_phrase
     move.b  #0, cur_chain
     move.b  #0, cur_songrow
     move.b  #0, song_page                   ; SONG view back to page 0
+    clr.b   proj_armed
     move.b  #1, need_clear
     rts
-.pa_save:
-    bsr     save_song
+
+proj_confirm:                              ; d0 = this row; Z set = confirmed (proceed), Z clear = armed
+    cmp.b   proj_armed, d0
+    bne.s   .pc_arm                          ; nothing/other armed -> arm this row
+    move.w  g_ticks, d1
+    sub.w   proj_arm_frame, d1
+    cmpi.w  #CONFIRM_FRAMES, d1
+    bhi.s   .pc_arm                          ; window passed -> re-arm
+    clr.b   proj_armed                       ; second tap in time -> confirmed
+    moveq   #0, d0
     rts
-.pa_load:
-    bsr     load_song
-    bra.s   .pa_done
+.pc_arm:
+    move.b  d0, proj_armed
+    move.w  g_ticks, proj_arm_frame
+    move.b  #1, need_clear                   ; redraw so SURE? shows
+    moveq   #1, d0
+    rts
 
 load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
     lea     phrases, a2
@@ -9141,6 +9247,10 @@ str_p_slot: dc.b "SLOT",0
 str_p_lfo:  dc.b "LFO",0
 str_p_save: dc.b "SAVE",0
 str_p_load: dc.b "LOAD",0
+str_saved:    dc.b "SAVED  ",0
+str_unsaved:  dc.b "UNSAVED",0
+str_sure:     dc.b "SURE? TAP AGAIN",0
+str_blank15:  dc.b "               ",0
 str_go:     dc.b "GO",0
 str_vid_n:  dc.b "NTSC",0
 str_vid_p:  dc.b "PAL ",0
