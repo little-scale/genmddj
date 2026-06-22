@@ -5469,11 +5469,34 @@ echo_replay:                              ; d2 = target track, d0 = tap delay, d
     rts
 .er_psg:
     tst.b   2(a0)                            ; PSG target: restart the AHD envelope on a note-on edge
-    beq.s   .er_pret                         ;   (PSG mono -> no stereo; RD not applied here yet)
+    beq.s   .er_pret                         ;   (PSG mono -> no stereo; RD applied post-env in echo_psg_rd)
     move.b  #1, c_estate(a1)
     move.b  #0, c_ectr(a1)
     move.b  #0, c_vol(a1)
 .er_pret:
+    rts
+
+; PSG echo RD -- runs in the .ch loop *after* env_ch has set c_vol from the envelope (FM rides lx_vol
+; instead). For a PSG echo target, drop c_vol by the tap's RD (= +RD steps of attenuation, clamped).
+echo_psg_rd:
+    cmpi.b  #1, c_type(a6)                  ; FM target's RD goes through lx_vol -> nothing to do here
+    beq.s   .epr_ret
+    bsr     is_echo_target                  ; also confirms echo on + a6 is target1/target2 for the mode
+    tst.b   d0
+    beq.s   .epr_ret
+    move.b  echo_rd1, d2
+    cmpi.b  #8, c_track(a6)                 ; target 2 (T3) carries RD2; target 1 (T2) RD1
+    bne.s   .epr_ap
+    move.b  echo_rd2, d2
+.epr_ap:
+    moveq   #0, d1
+    move.b  c_vol(a6), d1
+    sub.b   d2, d1
+    bpl.s   .epr_v
+    moveq   #0, d1
+.epr_v:
+    move.b  d1, c_vol(a6)
+.epr_ret:
     rts
 
 engine_tick:
@@ -5548,6 +5571,7 @@ engine_tick:
     bsr     env_ch
     bsr     table_cmd                     ; run the active table row's CMD column once per row entry
     bsr     hold_tick
+    bsr     echo_psg_rd                   ; PSG echo target: attenuate by RD (after the envelope set c_vol)
     bsr     compose_ch
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
