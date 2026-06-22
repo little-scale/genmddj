@@ -131,7 +131,10 @@ f_set      equ $00FFE42D           ; F command: 1 if F set the finetune this row
 p_set      equ $00FFE42E           ; P command: 1 if P set the bend this row (note-on keeps c_bend)
 clip_screen equ $00FFE42F          ; copy/paste clipboard: source screen ($FF = empty)
 clip_col   equ $00FFE430           ; clipboard source column (type-safety on paste)
-clip_val   equ $00FFE431           ; clipboard field value
+clip_val   equ $00FFE431           ; clipboard field value (1x1); block payload lives in clip_buf
+sel_active equ $00FFE432           ; 1 = block-select mode (A+B to enter; D-pad extends)
+sel_row0   equ $00FFE433           ; block-select anchor row (the box = anchor <-> cursor)
+sel_col0   equ $00FFE434           ; block-select anchor column
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -447,6 +450,7 @@ Start:
     move.b  #0, last_phrase
     move.l  #0, btap_addr
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
+    move.b  #0, sel_active                ; not in block-select mode
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -956,8 +960,46 @@ input_tick:
     beq.s   .ndirty
     move.b  #1, vdirty
 .ndirty:
+    tst.b   sel_active                    ; block-select mode is modal: D-pad extends, B/A/C act
+    beq     .nblk
+    btst    #6, d4                        ; C tap -> cancel
+    beq.s   .blk_nc
+    move.b  #0, sel_active
+    move.b  #1, vdirty
+    rts
+.blk_nc:
+    btst    #5, d4                        ; B tap -> copy the block, exit
+    beq.s   .blk_na
+    bsr     block_copy
+    move.b  #0, sel_active
+    move.b  #1, vdirty
+    rts
+.blk_na:
+    btst    #4, d4                        ; A tap -> cut (copy + clear), exit
+    beq.s   .blk_nd
+    bsr     block_copy
+    bsr     block_clear
+    move.b  #0, sel_active
+    move.b  #1, vdirty
+    rts
+.blk_nd:
+    tst.b   d5                            ; D-pad -> move the cursor (extend the box)
+    beq     .done
+    move.b  d5, d2
+    bsr     move_cursor
+    move.b  #1, vdirty
+    rts
+.nblk:
     btst    #5, d4                        ; B tap (edge)
     beq.s   .ni
+    btst    #4, d3                        ; A held + B tap -> enter block-select (anchor at cursor)
+    beq.s   .nben
+    move.b  cur_row, sel_row0
+    move.b  cur_col, sel_col0
+    move.b  #1, sel_active
+    move.b  #1, vdirty
+    rts
+.nben:
     btst    #6, d3                        ; C held + B tap -> context playback
     beq.s   .doins
     bsr     play_context
@@ -1562,6 +1604,11 @@ clip_save:
     move.b  d0, clip_screen
     move.b  cur_col, clip_col
 .cs_no:
+    rts
+
+block_copy:                               ; (phase 2) copy the selection box into the clipboard
+    rts
+block_clear:                              ; (phase 2) clear the selection box (for cut)
     rts
 
 do_cut:                                   ; clear field under cursor (cut = save it first)
@@ -2501,6 +2548,47 @@ pad_read:
 .s:
     rts
 
+; grid cell highlight: d6 = row, d5 = col -> d4 = $60 if highlighted, else 0. In block-select mode
+; the whole box (anchor <-> cursor) lights; otherwise just the cursor cell. Preserves d0-d3.
+cell_hl:
+    movem.l d0-d3, -(sp)
+    moveq   #0, d4
+    tst.b   sel_active
+    bne.s   .ch_box
+    move.b  cur_row, d0                    ; normal: the cursor cell
+    cmp.b   d6, d0
+    bne.s   .ch_done
+    move.b  cur_col, d0
+    cmp.b   d5, d0
+    bne.s   .ch_done
+    moveq   #$60, d4
+    bra.s   .ch_done
+.ch_box:
+    move.b  sel_row0, d0                   ; row within [min,max] of anchor/cursor?
+    move.b  cur_row, d1
+    cmp.b   d1, d0
+    bls.s   .ch_r
+    exg     d0, d1
+.ch_r:
+    cmp.b   d6, d0                          ; min > d6 -> outside
+    bhi.s   .ch_done
+    cmp.b   d1, d6                          ; d6 > max -> outside
+    bhi.s   .ch_done
+    move.b  sel_col0, d2                   ; col within [min,max]?
+    move.b  cur_col, d3
+    cmp.b   d3, d2
+    bls.s   .ch_c
+    exg     d2, d3
+.ch_c:
+    cmp.b   d5, d2
+    bhi.s   .ch_done
+    cmp.b   d3, d5
+    bhi.s   .ch_done
+    moveq   #$60, d4
+.ch_done:
+    movem.l (sp)+, d0-d3
+    rts
+
 ; ============================================================
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
@@ -2610,15 +2698,7 @@ render_phrase:
     bsr     draw_rowhdr
     moveq   #0, d5
 .cl:
-    moveq   #0, d4
-    move.b  cur_row, d0
-    cmp.b   d6, d0
-    bne.s   .np
-    move.b  cur_col, d0
-    cmp.b   d5, d0
-    bne.s   .np
-    move.w  #$60, d4
-.np:
+    bsr     cell_hl
     bsr     render_field
     addq.b  #1, d5
     cmpi.b  #4, d5
@@ -2693,15 +2773,7 @@ render_chain:
     bsr     draw_rowhdr
     moveq   #0, d5
 .cl:
-    moveq   #0, d4
-    move.b  cur_row, d0
-    cmp.b   d6, d0
-    bne.s   .np
-    move.b  cur_col, d0
-    cmp.b   d5, d0
-    bne.s   .np
-    move.w  #$60, d4
-.np:
+    bsr     cell_hl
     bsr     render_cfield
     addq.b  #1, d5
     cmpi.b  #2, d5
@@ -2902,15 +2974,7 @@ render_song:
     bsr     draw_rowhdr
     moveq   #0, d5
 .cl:
-    moveq   #0, d4
-    move.b  cur_row, d0
-    cmp.b   d6, d0
-    bne.s   .np
-    move.b  cur_col, d0
-    cmp.b   d5, d0
-    bne.s   .np
-    move.w  #$60, d4
-.np:
+    bsr     cell_hl
     bsr     render_sfield
     addq.b  #1, d5
     cmpi.b  #NCH, d5
