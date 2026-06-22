@@ -146,7 +146,10 @@ echo_rd1   equ $00FFE4DB           ; tap-1 level reduction
 echo_rd2   equ $00FFE4DC           ; tap-2 level reduction
 echo_ster  equ $00FFE4DD           ; 0 off, 1 on (pan taps L/R; FM only)
 echo_head  equ $00FFE4DE           ; ECHO ring write head (0-63, wraps)
-echo_ring  equ $00FFE4E0           ; 64 entries x 4 bytes (note, keyon, trig, instr) = 256 B
+echo_ring  equ $00FFE4E0           ; 64 entries x 4 bytes (note, keyon, trig, instr) = 256 B (..$E5DF)
+grooves    equ $00FFD320           ; 16 grooves x 16 tick-counts (1 B each) = 256 B (..$D41F); free gap
+groove_sel equ $00FFD420           ; active groove (0-15)   ($E5E0 was inside the stack's range!)
+groove_pos equ $00FFD421           ; row position within the active groove (cycles)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -501,6 +504,13 @@ Start:
     move.b  #0, proj_tsp                  ;   no master transpose
     move.b  #0, proj_mode                 ;   SONG mode
     move.b  #1, proj_slot                 ;   save slot 1
+    lea     grooves, a0                   ; seed every groove straight (= the old fixed frames/row)
+    move.w  #16*16-1, d0
+.gvinit:
+    move.b  #GROOVE, (a0)+
+    dbra    d0, .gvinit
+    move.b  #0, groove_sel                ; active groove 0
+    move.b  #0, groove_pos
     move.b  #0, cur_wave                  ; WAVE screen: wave 0, step 0
     move.b  #0, cur_wstep
     lea     wave_ram, a2                  ; init waves: wave 0 = a sawtooth, 1-15 = flat centre
@@ -5072,6 +5082,7 @@ play_context:                             ; C+B: toggle audition of the current 
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
     move.b  #GROOVE, g_gctr
+    move.b  #0, groove_pos                ; restart the groove at play-start
     lea     phrase_plays, a0               ; reset I-command counts + AMP shadow at play-start
     moveq   #NPHRASES+NLFO-1, d0           ; phrase_plays (16) + lfo_amp (16) are contiguous
 .rpc:
@@ -5499,6 +5510,51 @@ echo_psg_rd:
 .epr_ret:
     rts
 
+; --- Groove clock (Phase 1) -----------------------------------------------------------------------
+; Grooves are the clock: each song row lasts active-groove[groove_pos] ticks (1 tick = 1 VBlank
+; frame); groove_pos cycles through the groove (wraps at 16 or on a 0 entry = short groove). A flat
+; groove (all GROOVE) reproduces the old fixed frames/row. TMPO/T are reconnected as a groove scaler
+; in a later phase; for now they don't drive row timing.
+; Register-clean (preserve d1/a0) as hygiene -- they run every tick on the engine's hot path.
+; Verified: with a straight groove the SCB register-write stream is byte-identical to the old
+; fixed-tempo path (audio differs only by sub-frame write phase, which is inaudible on hardware).
+groove_cur:                               ; -> d0.b = tick-count for the current row (only d0 changes)
+    movem.l d1/a0, -(sp)
+    moveq   #0, d1
+    move.b  groove_sel, d1
+    lsl.w   #4, d1                         ; groove_sel * 16 (GRVLEN)
+    moveq   #0, d0
+    move.b  groove_pos, d0
+    add.w   d0, d1
+    lea     grooves, a0
+    move.b  (a0,d1.w), d0
+    bne.s   .gc_ok
+    moveq   #GROOVE, d0                    ; empty slot -> safe fallback (don't stall on a 0)
+.gc_ok:
+    movem.l (sp)+, d1/a0
+    rts
+
+groove_step:                              ; advance groove_pos to the next row's slot (no register change)
+    movem.l d0-d1/a0, -(sp)
+    moveq   #0, d0
+    move.b  groove_pos, d0
+    addq.b  #1, d0
+    cmpi.b  #16, d0                        ; GRVLEN -> wrap
+    bhs.s   .gs_wrap
+    moveq   #0, d1                         ; next slot 0 (groove shorter than 16) -> wrap too
+    move.b  groove_sel, d1
+    lsl.w   #4, d1
+    add.w   d0, d1
+    lea     grooves, a0
+    tst.b   (a0,d1.w)
+    bne.s   .gs_set
+.gs_wrap:
+    moveq   #0, d0
+.gs_set:
+    move.b  d0, groove_pos
+    movem.l (sp)+, d0-d1/a0
+    rts
+
 engine_tick:
     move.b  #0, patch_done                ; FM operator-patch budget: one per tick
     tst.b   playing
@@ -5529,24 +5585,19 @@ engine_tick:
     bsr     wave_silence                  ; stopped -> park any sounding wave
     rts
 .play:
-    ; row advance gated by tempo: frames/row = 1250 / proj_tmpo (125 BPM -> 10 = old GROOVE)
+    ; row advance is groove-driven: row lasts active-groove[groove_pos] ticks (1 tick = 1 frame)
     addq.b  #1, g_gctr
-    move.l  #1250, d0
-    moveq   #0, d1
-    move.b  proj_tmpo, d1
-    bne.s   .tdiv
-    moveq   #1, d1                         ; guard (proj_tmpo is clamped >=32 anyway)
-.tdiv:
-    divu.w  d1, d0                         ; d0 low word = frames per row
-    tst.b   g_wait                          ; W command: this-row frame-count override?
+    bsr     groove_cur                    ; d0 = tick-count for the current row
+    tst.b   g_wait                          ; W command: this-row tick-count override?
     beq.s   .nowait
     moveq   #0, d0
     move.b  g_wait, d0
 .nowait:
     cmp.b   g_gctr, d0
-    bhi.s   .noadv                         ; not enough frames elapsed yet
+    bhi.s   .noadv                         ; not enough ticks elapsed yet
     move.b  #0, g_gctr
     move.b  #0, g_wait                      ; W is one row only
+    bsr     groove_step                   ; step the groove to the next row's slot
     move.b  #1, eng_adv                   ; playheads moved -> redraw the grid
     moveq   #NCH-1, d7
     lea     ch_state, a6
