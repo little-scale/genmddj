@@ -194,6 +194,7 @@ lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/par
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
 phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES=160 bytes, ..$D39F) for the I command
 lfo_amp    equ $00FFD3A0           ; NLFO amp bytes (0-7); sits right after phrase_plays (engine_play_reset clears both)
+song_title equ $00FFD3B0           ; 8-char song name (lives in the slot header, not the data block)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -226,6 +227,11 @@ NPHRASES   equ 160                  ; ($FFF400 chains - $FFF000 phrases) / 64
 chains     equ $00FF3260            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
+SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
+SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
+                                    ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
+SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
+SAVE_SLOT  equ SAVE_DATA+SAVE_HDR  ; $5170 per slot
 song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 240               ; full-song data depth; SONG cursor still capped at 15 until scroll lands
 instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
@@ -512,6 +518,12 @@ Start:
     move.b  #0, proj_tsp                  ;   no master transpose
     move.b  #0, proj_mode                 ;   SONG mode
     move.b  #1, proj_slot                 ;   save slot 1
+    lea     def_title, a0                 ;   default song title "SONG    "
+    lea     song_title, a1
+    moveq   #8-1, d0
+.btitle:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .btitle
     lea     grooves, a0                   ; seed every groove straight (= the old fixed frames/row)
     move.w  #16*16-1, d0
 .gvinit:
@@ -8589,6 +8601,169 @@ sram_probe:
     cmpi.b  #$22, $00200001              ; logical 0 reads B -> the boundary aliases it
     rts
 
+; ============================================================================================
+; M8 song save/load: flat work-RAM block <-> cart SRAM. Stride from the probe (odd-byte x2/linear x1).
+; The scattered song-level globals are staged into the head slot ($FF0000) on save, unpacked on load.
+; ============================================================================================
+GLOB_N     equ 10
+glob_tab:                                  ; song-level globals, in head-slot order ($FF0000+i)
+    dc.l    proj_tsp, proj_mode, proj_groove, g_lfo
+    dc.l    echo_mode, echo_tap1, echo_tap2, echo_rd1, echo_rd2, echo_ster
+save_magic: dc.b "GMDDJ", 1                ; 5-char magic + version 1
+def_title:  dc.b "SONG    "                ; 8-char default song name
+
+gather_globals:                            ; scattered globals -> head slot, then clear the reserved tail
+    movem.l d0/a0-a2, -(sp)
+    lea     glob_tab, a0
+    lea     SAVE_BASE, a1
+    moveq   #GLOB_N-1, d0
+.gg:
+    movea.l (a0)+, a2
+    move.b  (a2), (a1)+
+    dbra    d0, .gg
+    move.w  #(256-GLOB_N)-1, d0            ; clear $FF000A..$FF00FF so the globals block saves clean
+.ggz:
+    clr.b   (a1)+
+    dbra    d0, .ggz
+    movem.l (sp)+, d0/a0-a2
+    rts
+
+scatter_globals:                           ; head slot -> scattered globals
+    movem.l d0/a0-a2, -(sp)
+    lea     glob_tab, a0
+    lea     SAVE_BASE, a1
+    moveq   #GLOB_N-1, d0
+.sg:
+    movea.l (a0)+, a2
+    move.b  (a1)+, (a2)
+    dbra    d0, .sg
+    movem.l (sp)+, d0/a0-a2
+    rts
+
+; sram_setup: d0.b = 0-based slot -> a1 = SRAM physical base, d5.l = byte stride; maps SRAM.
+;   returns Z set (beq) when there is no SRAM -- caller must abort.
+sram_setup:
+    tst.b   sram_layout
+    beq.s   .ss_none
+    moveq   #0, d3                          ; shift: linear=0, odd-byte=1
+    cmpi.b  #1, sram_layout
+    bne.s   .ss_lin
+    moveq   #1, d3
+.ss_lin:
+    moveq   #1, d5
+    lsl.l   d3, d5                          ; byte stride = 1<<shift
+    moveq   #0, d1
+    move.b  d0, d1
+    mulu.w  #SAVE_SLOT, d1                  ; logical slot offset
+    lsl.l   d3, d1                          ; physical delta = logical << shift
+    lea     $00200001, a1
+    adda.l  d1, a1
+    move.b  #1, $A130F1                     ; map SRAM
+    moveq   #1, d0                          ; Z clear = OK
+    rts
+.ss_none:
+    moveq   #0, d0                          ; Z set = no SRAM
+    rts
+
+data_checksum:                             ; -> d2.w = 16-bit sum of the data block at SAVE_BASE
+    movem.l d1/d4/a0, -(sp)
+    lea     SAVE_BASE, a0
+    move.w  #SAVE_DATA-1, d1
+    moveq   #0, d2
+.dc:
+    moveq   #0, d4
+    move.b  (a0)+, d4
+    add.w   d4, d2
+    dbra    d1, .dc
+    movem.l (sp)+, d1/d4/a0
+    rts
+
+save_song:                                 ; save the work-RAM image to SRAM slot (proj_slot-1)
+    movem.l d0-d7/a0-a3, -(sp)
+    bsr     gather_globals
+    move.b  proj_slot, d0
+    subq.b  #1, d0
+    bsr     sram_setup                      ; a1 = phys base, d5 = stride
+    beq     .sv_done                        ; no SRAM
+    bsr     data_checksum                   ; d2 = checksum
+    lea     save_magic, a0                  ; header: magic+version (6 bytes)
+    moveq   #6-1, d1
+.sv_hm:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d1, .sv_hm
+    move.w  d2, d4                          ; checksum hi, lo
+    lsr.w   #8, d4
+    move.b  d4, (a1)
+    adda.l  d5, a1
+    move.b  d2, (a1)
+    adda.l  d5, a1
+    lea     song_title, a0                  ; title (8 bytes)
+    moveq   #8-1, d1
+.sv_ht:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d1, .sv_ht
+    lea     SAVE_BASE, a0                   ; data block (SAVE_DATA bytes)
+    move.w  #SAVE_DATA-1, d1
+.sv_db:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d1, .sv_db
+    move.b  #0, $A130F1                     ; unmap
+.sv_done:
+    movem.l (sp)+, d0-d7/a0-a3
+    rts
+
+load_song:                                 ; load SRAM slot (proj_slot-1) into the work-RAM image
+    movem.l d0-d7/a0-a3, -(sp)
+    move.b  proj_slot, d0
+    subq.b  #1, d0
+    bsr     sram_setup
+    beq     .ld_done                        ; no SRAM
+    lea     save_magic, a0                  ; verify magic "GMDDJ"
+    moveq   #5-1, d1
+.ld_vm:
+    move.b  (a1), d4
+    cmp.b   (a0)+, d4
+    bne     .ld_bad
+    adda.l  d5, a1
+    dbra    d1, .ld_vm
+    adda.l  d5, a1                          ; skip version
+    move.b  (a1), d6                        ; stored checksum (hi, lo)
+    adda.l  d5, a1
+    lsl.w   #8, d6
+    move.b  (a1), d4
+    adda.l  d5, a1
+    move.b  d4, d6
+    lea     song_title, a0                  ; title (8 bytes)
+    moveq   #8-1, d1
+.ld_ti:
+    move.b  (a1), (a0)+
+    adda.l  d5, a1
+    dbra    d1, .ld_ti
+    lea     SAVE_BASE, a0                   ; data block
+    move.w  #SAVE_DATA-1, d1
+.ld_db:
+    move.b  (a1), (a0)+
+    adda.l  d5, a1
+    dbra    d1, .ld_db
+    move.b  #0, $A130F1                     ; unmap
+    bsr     data_checksum                   ; verify checksum
+    cmp.w   d6, d2
+    bne.s   .ld_bad2
+    bsr     scatter_globals                 ; unpack the song globals
+    move.b  proj_groove, groove_sel         ; loaded default groove active
+    move.b  #1, g_lfo_dirty                 ; re-emit the global LFO on the next SCB push
+    move.b  #1, need_clear
+    bra.s   .ld_done
+.ld_bad:
+    move.b  #0, $A130F1                     ; unmap (magic/slot empty)
+.ld_bad2:
+.ld_done:
+    movem.l (sp)+, d0-d7/a0-a3
+    rts
+
 edit_echo:                                ; B+dpad on ECHO: adjust MODE/TAP/RD/STER (a1 d2 d3 d4 -> adj_field)
     move.b  cur_row, d0
     beq.s   .ee_mode
@@ -8742,7 +8917,11 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     beq.s   .pa_new
     cmpi.b  #4, d0
     beq.s   .pa_demo
-    rts                                     ; SAVE/LOAD stubbed until the save system (M8)
+    cmpi.b  #6, d0
+    beq.s   .pa_save
+    cmpi.b  #7, d0
+    beq.s   .pa_load
+    rts
 .pa_new:
     bsr     clear_song
     bra.s   .pa_done
@@ -8754,6 +8933,12 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     move.b  #0, cur_songrow
     move.b  #1, need_clear
     rts
+.pa_save:
+    bsr     save_song
+    rts
+.pa_load:
+    bsr     load_song
+    bra.s   .pa_done
 
 load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
     lea     phrases, a2
