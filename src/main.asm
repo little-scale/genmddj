@@ -583,8 +583,6 @@ Start:
     bsr     data_longsum
     move.l  d0, saved_sum
     clr.b   song_dirty
-    move.b  #1, proj_mode
-    move.b  #2, cur_screen
     move.b  #1, need_clear               ; draw header/name on first frame
 
     move.b  #1, in_splash
@@ -5192,9 +5190,15 @@ toggle_play:
     move.b  playing, d0                   ; (ym_setup clobbered d0)
     tst.b   d0
     beq.s   .tp
-    move.b  #0, play_mode                 ; Start = full song from the top
+    tst.b   proj_mode                     ; LIVE: Start launches the cursor row, not the full song
+    bne.s   .tp_live
+    move.b  #0, play_mode                 ; SONG: full song from the top
     move.b  #0, play_from
     bsr     engine_play_reset
+    bra.s   .tp
+.tp_live:
+    bsr     engine_play_reset             ; all-silent, then launch the cursor row
+    bsr     live_launch_row
 .tp:
     rts
 
@@ -5251,6 +5255,31 @@ live_launch_track:                        ; C+B in LIVE: launch the cursor's tra
     bsr     live_setup_chan
     lea     live_on, a0
     move.b  #1, (a0,d1.w)                  ; mark the track launched
+    rts
+
+live_launch_row:                          ; LIVE Start: launch every populated track on the cursor row
+    moveq   #0, d2                          ; songpos = song_page*16 + cur_row
+    move.b  song_page, d2
+    lsl.w   #4, d2
+    moveq   #0, d0
+    move.b  cur_row, d0
+    add.w   d0, d2
+    moveq   #0, d1                          ; track 0..NCH-1
+.llr:
+    lea     song, a2                        ; chain# at song[songpos][track]
+    move.w  d2, d0
+    mulu.w  #NCH, d0
+    add.w   d1, d0
+    move.b  (a2,d0.w), d0
+    cmpi.b  #$FF, d0                        ; empty cell -> don't launch this track
+    beq.s   .llr_next
+    bsr     live_setup_chan                 ; arm the track (d1 = track, d2 = songpos)
+    lea     live_on, a0
+    move.b  #1, (a0,d1.w)
+.llr_next:
+    addq.b  #1, d1
+    cmpi.b  #NCH, d1
+    blo.s   .llr
     rts
 
 live_setup_chan:                          ; d1 = track, d2 = songpos; arm that channel to play from there
