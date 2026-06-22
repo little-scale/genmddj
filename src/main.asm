@@ -135,6 +135,10 @@ clip_val   equ $00FFE431           ; clipboard field value (1x1); block payload 
 sel_active equ $00FFE432           ; 1 = block-select mode (A+B to enter; D-pad extends)
 sel_row0   equ $00FFE433           ; block-select anchor row (the box = anchor <-> cursor)
 sel_col0   equ $00FFE434           ; block-select anchor column
+clip_rows  equ $00FFE435           ; clipboard block height (1 for a single field)
+clip_cols  equ $00FFE436           ; clipboard block width
+clip_col0  equ $00FFE437           ; clipboard source start column (paste keeps columns -> type-safe)
+clip_buf   equ $00FFE438           ; clipboard cell payload (row-major); max NSONGROWS*NCH = 160 B
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -994,6 +998,8 @@ input_tick:
     beq.s   .ni
     btst    #4, d3                        ; A held + B tap -> enter block-select (anchor at cursor)
     beq.s   .nben
+    cmpi.b  #3, cur_screen               ; grid screens only: PHRASE/CHAIN/SONG (0-2)
+    bhs.s   .nben
     move.b  cur_row, sel_row0
     move.b  cur_col, sel_col0
     move.b  #1, sel_active
@@ -1600,15 +1606,142 @@ clip_save:
     cmpi.b  #SCR_TABLE, d0                  ; or TABLE
     bne.s   .cs_no
 .cs_yes:
-    move.b  (a1), clip_val
+    move.b  (a1), clip_buf                 ; a single field = a 1x1 block
     move.b  d0, clip_screen
-    move.b  cur_col, clip_col
+    move.b  cur_col, clip_col0
+    move.b  #1, clip_rows
+    move.b  #1, clip_cols
 .cs_no:
     rts
 
-block_copy:                               ; (phase 2) copy the selection box into the clipboard
+; copy the selection box (anchor <-> cursor) into the clipboard (row-major). a6 unused.
+block_copy:
+    movem.l d2-d7/a3, -(sp)
+    move.b  sel_row0, d2                  ; r0 = min(anchor,cursor) row, r1 = max -> d2,d3
+    move.b  cur_row, d3
+    cmp.b   d3, d2
+    bls.s   .bc_r
+    exg     d2, d3
+.bc_r:
+    move.b  sel_col0, d4                  ; c0 = min col, c1 = max -> d4,d5
+    move.b  cur_col, d5
+    cmp.b   d5, d4
+    bls.s   .bc_c
+    exg     d4, d5
+.bc_c:
+    move.b  cur_screen, clip_screen       ; metadata
+    move.b  d4, clip_col0
+    move.b  d3, d0
+    sub.b   d2, d0
+    addq.b  #1, d0
+    move.b  d0, clip_rows
+    move.b  d5, d0
+    sub.b   d4, d0
+    addq.b  #1, d0
+    move.b  d0, clip_cols
+    move.b  cur_row, d6                   ; save the cursor (the loop borrows cur_row/cur_col)
+    move.b  cur_col, d7
+    lea     clip_buf, a3
+    move.b  d2, cur_row
+.bc_rl:
+    move.b  d4, cur_col
+.bc_cl:
+    bsr     get_field_addr
+    move.b  (a1), (a3)+
+    move.b  cur_col, d0
+    addq.b  #1, d0
+    move.b  d0, cur_col
+    cmp.b   d5, d0
+    bls.s   .bc_cl
+    move.b  cur_row, d0
+    addq.b  #1, d0
+    move.b  d0, cur_row
+    cmp.b   d3, d0
+    bls.s   .bc_rl
+    move.b  d6, cur_row
+    move.b  d7, cur_col
+    movem.l (sp)+, d2-d7/a3
     rts
-block_clear:                              ; (phase 2) clear the selection box (for cut)
+
+; clear the selection box (cut = block_copy then block_clear). Per cell: SONG / col 0 -> $FF, else 0.
+block_clear:
+    movem.l d2-d7, -(sp)
+    move.b  sel_row0, d2
+    move.b  cur_row, d3
+    cmp.b   d3, d2
+    bls.s   .bk_r
+    exg     d2, d3
+.bk_r:
+    move.b  sel_col0, d4
+    move.b  cur_col, d5
+    cmp.b   d5, d4
+    bls.s   .bk_c
+    exg     d4, d5
+.bk_c:
+    move.b  cur_row, d6
+    move.b  cur_col, d7
+    move.b  d2, cur_row
+.bk_rl:
+    move.b  d4, cur_col
+.bk_cl:
+    bsr     get_field_addr
+    moveq   #0, d0
+    cmpi.b  #SCR_SONG, cur_screen
+    beq.s   .bk_ff
+    tst.b   cur_col
+    bne.s   .bk_wr
+.bk_ff:
+    moveq   #$FF, d0
+.bk_wr:
+    move.b  d0, (a1)
+    move.b  cur_col, d0
+    addq.b  #1, d0
+    move.b  d0, cur_col
+    cmp.b   d5, d0
+    bls.s   .bk_cl
+    move.b  cur_row, d0
+    addq.b  #1, d0
+    move.b  d0, cur_row
+    cmp.b   d3, d0
+    bls.s   .bk_rl
+    move.b  d6, cur_row
+    move.b  d7, cur_col
+    movem.l (sp)+, d2-d7
+    rts
+
+; paste the clipboard block: rows anchored at the cursor row, columns kept (clip_col0). Clamps at
+; the grid bottom (NSONGROWS) so it never writes out of bounds. Caller checked clip_screen==cur_screen.
+block_paste:
+    movem.l d2-d7/a3, -(sp)
+    move.b  cur_row, d6
+    move.b  cur_col, d7
+    move.b  clip_col0, d4
+    lea     clip_buf, a3
+    move.b  d6, d2                         ; dest row = cursor row
+    moveq   #0, d3
+    move.b  clip_rows, d3
+.bp_rl:
+    move.b  d2, cur_row
+    cmpi.b  #NSONGROWS, cur_row            ; past the grid bottom -> stop
+    bhs.s   .bp_done
+    move.b  d4, cur_col
+    moveq   #0, d5
+    move.b  clip_cols, d5
+.bp_cl:
+    bsr     get_field_addr
+    move.b  (a3)+, (a1)
+    move.b  cur_col, d0
+    addq.b  #1, d0
+    move.b  d0, cur_col
+    subq.b  #1, d5
+    bne.s   .bp_cl
+    addq.b  #1, d2
+    subq.b  #1, d3
+    bne.s   .bp_rl
+.bp_done:
+    move.b  d6, cur_row
+    move.b  d7, cur_col
+    movem.l (sp)+, d2-d7/a3
     rts
 
 do_cut:                                   ; clear field under cursor (cut = save it first)
@@ -2347,13 +2480,7 @@ do_insert:
     beq.s   .di_nopaste
     cmp.b   cur_screen, d0                   ; same screen as the copy/cut source?
     bne.s   .di_nopaste
-    cmpi.b  #SCR_SONG, cur_screen            ; SONG: any track column; else require the same column
-    beq.s   .di_paste
-    move.b  clip_col, d0
-    cmp.b   cur_col, d0
-    bne.s   .di_nopaste
-.di_paste:
-    move.b  clip_val, (a1)                   ; paste the clipboard field
+    bsr     block_paste                      ; paste the block: rows at cursor, columns kept
     rts
 .di_nopaste:
     cmpi.b  #SCR_SONG, cur_screen           ; SONG B-tap -> allocate a new (empty) chain
