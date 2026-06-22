@@ -155,6 +155,8 @@ proj_groove equ $00FFD423          ; song default groove (active at play-start; 
 sync_cnt   equ $00FFD424           ; SYNC OUT: 2-bit tick counter driven on port-2 TR+TH
 sync_last  equ $00FFD425           ; SYNC IN: counter value read last frame
 sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first external clock
+sram_layout equ $00FFD427          ; SRAM probe: 0 none, 1 odd-byte (8-bit), 2 linear
+sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64; 0 = none)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -346,7 +348,7 @@ GRID_TOP   equ 6
     dc.l $00FFFFFF
     dc.b "RA", $F8, $20             ; $1B0 SRAM present (odd bytes, $A130F1-gated; Q1 layout)
     dc.l $00200001                  ; $1B4 SRAM start (odd-byte addressing)
-    dc.l $0020FFFF                  ; $1B8 SRAM end (32 KB of odd bytes)
+    dc.l $0021FFFF                  ; $1B8 SRAM end (declare 64 KB of odd bytes; probe detects actual)
     dcb.b $1F0-*, ' '
     dc.b "JUE"
     dcb.b $200-*, ' '
@@ -504,6 +506,7 @@ Start:
     move.b  #0, opt_sync                  ;   sync OFF
     move.b  #0, opt_pal                   ;   UI palette 0
     bsr     load_config                   ; SRAM overrides the OPTIONS defaults if a config exists
+    bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout
     bsr     apply_palette                 ; reflect the (possibly restored) palette in CRAM
     move.b  #125, proj_tmpo               ; PROJECT defaults: 125 BPM
     move.b  #0, proj_tsp                  ;   no master transpose
@@ -8142,7 +8145,30 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     bne.s   .op
     moveq   #$60, d4
 .op:
-    bra     draw_hex1
+    bsr     draw_hex1
+    moveq   #9, d3                          ; --- SRAM probe readout (read-only) at row 9 ---
+    moveq   #1, d4
+    lea     str_o_sram, a1
+    bsr     print_at
+    tst.b   sram_layout
+    bne.s   .os_have
+    moveq   #9, d3                          ; no SRAM -> "NONE"
+    moveq   #8, d4
+    lea     str_sram_no, a1
+    bra     print_at
+.os_have:
+    move.l  #$44900003, (a0)               ; size (3 digits) at row 9, col 8
+    move.b  sram_size, d3
+    moveq   #0, d4
+    bsr     draw_dec3
+    lea     str_sram_od, a1                ; then "K ODD" / "K LIN"
+    cmpi.b  #2, sram_layout
+    bne.s   .os_lay
+    lea     str_sram_li, a1
+.os_lay:
+    moveq   #9, d3
+    moveq   #11, d4
+    bra     print_at
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     moveq   #5, d3                          ; MODE (cur_row 0)
@@ -8496,6 +8522,73 @@ load_config:
     move.b  #0, $A130F1
     rts
 
+; SRAM probe: detect layout (odd-byte 8-bit vs linear) + size (mirror walk). Saves/restores the
+; config bytes it clobbers. Result in sram_layout (0 none / 1 odd / 2 linear) + sram_size (KB).
+sram_probe:
+    movem.l d0-d7/a1, -(sp)
+    move.b  #1, $A130F1                   ; map SRAM
+    move.b  $00200001, d4                 ; stash the bytes we clobber (config lives here)
+    move.b  $00200002, d5
+    move.b  $00200003, d6
+    move.b  #$5A, $00200001              ; layout: distinct values into 2 odd + 1 even byte
+    move.b  #$3C, $00200002
+    move.b  #$A7, $00200003
+    moveq   #0, d0                          ; 0 = no SRAM
+    cmpi.b  #$5A, $00200001
+    bne     .sp_none
+    cmpi.b  #$A7, $00200003              ; both odd bytes held their distinct values?
+    bne     .sp_none
+    moveq   #1, d0                          ; -> odd-byte SRAM
+    cmpi.b  #$3C, $00200002              ; did the even byte stick too?
+    bne.s   .sp_lay
+    moveq   #2, d0                          ; -> linear SRAM
+.sp_lay:
+    move.b  d0, sram_layout
+    moveq   #1, d7                          ; address shift: odd-byte = *2, linear = *1
+    cmpi.b  #2, d0
+    bne.s   .sp_szw
+    moveq   #0, d7
+.sp_szw:
+    moveq   #64, d3                         ; default: the full declared range (no alias found)
+    move.l  #8192, d2
+    bsr.s   .sp_alias
+    beq.s   .sp_8
+    move.l  #16384, d2
+    bsr.s   .sp_alias
+    beq.s   .sp_16
+    move.l  #32768, d2
+    bsr.s   .sp_alias
+    bne.s   .sp_set
+    moveq   #32, d3
+    bra.s   .sp_set
+.sp_8:
+    moveq   #8, d3
+    bra.s   .sp_set
+.sp_16:
+    moveq   #16, d3
+.sp_set:
+    move.b  d3, sram_size
+    bra.s   .sp_restore
+.sp_none:
+    move.b  #0, sram_layout               ; no SRAM
+    move.b  #0, sram_size
+.sp_restore:
+    move.b  d4, $00200001                 ; restore the config bytes
+    move.b  d5, $00200002
+    move.b  d6, $00200003
+    move.b  #0, $A130F1                   ; unmap (protect)
+    movem.l (sp)+, d0-d7/a1
+    rts
+.sp_alias:                                ; d2 = logical offset, d7 = shift; Z set if it aliases logical 0
+    move.b  #$11, $00200001              ; A at logical 0
+    move.l  #$00200001, a1
+    move.l  d2, d0
+    lsl.l   d7, d0
+    adda.l  d0, a1
+    move.b  #$22, (a1)                     ; B at the boundary
+    cmpi.b  #$22, $00200001              ; logical 0 reads B -> the boundary aliases it
+    rts
+
 edit_echo:                                ; B+dpad on ECHO: adjust MODE/TAP/RD/STER (a1 d2 d3 d4 -> adj_field)
     move.b  cur_row, d0
     beq.s   .ee_mode
@@ -8782,6 +8875,10 @@ krn_4:      dc.b "4X ",0
 str_o_vid:  dc.b "VID",0
 str_o_sync: dc.b "SYNC",0
 str_o_pal:  dc.b "PAL",0
+str_o_sram: dc.b "SRAM",0
+str_sram_no: dc.b "NONE",0
+str_sram_od: dc.b "K ODD",0
+str_sram_li: dc.b "K LIN",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_demo: dc.b "DEMO",0
