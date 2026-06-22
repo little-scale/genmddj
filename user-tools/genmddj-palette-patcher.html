@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>genmddj palette tool</title>
+<title>genmddj palette patcher</title>
 <style>
   :root{ --pad:14px; }
   *{ box-sizing:border-box; }
@@ -67,13 +67,18 @@
   .rombar{ display:flex; gap:8px; margin:6px 0; flex-wrap:wrap; }
   .romstatus{ color:#9aa3b2; font-size:12px; margin:6px 0 4px; line-height:1.5; }
   button:disabled{ opacity:.4; cursor:not-allowed; }
+  #drop-ov{ position:fixed; inset:0; background:rgba(21,23,28,.88); border:4px dashed #3a6ea5;
+            display:none; align-items:center; justify-content:center; z-index:100; pointer-events:none;
+            font-size:22px; font-weight:700; color:#cfe2f5; }
+  #drop-ov.on{ display:flex; }
 </style>
 </head>
 <body>
 <header>
-  <h1>genmddj palette tool</h1>
-  <span class="sub">8 UI palettes &middot; c0 background &middot; c1 text/cursor-block &middot; c2 cursor-glyph &middot; MD&nbsp;$0BGR (3-bit/chan)</span>
+  <h1>genmddj palette patcher</h1>
+  <span class="sub">drop a ROM &middot; edit the 8 UI palettes (c0 bg / c1 text / c2 glyph, MD&nbsp;$0BGR) &middot; download the patched ROM</span>
 </header>
+<div id="drop-ov">Drop a genmddj ROM to patch</div>
 
 <div class="wrap">
   <!-- palette list -->
@@ -106,7 +111,7 @@
       <label class="btn">Load .bin&hellip;<input type="file" id="romfile" accept=".bin,.md,.gen" hidden></label>
       <button id="patch" disabled>Download patched ROM</button>
     </div>
-    <div class="romstatus" id="romstatus">No ROM loaded. Load a genmddj <code>.bin</code> to read its palettes, edit, and download a patched ROM (header checksum re-fixed).</div>
+    <div class="romstatus" id="romstatus"><b>Drop a genmddj <code>.bin</code> anywhere</b> (or Load&hellip;) to read its palettes; edit, then download a patched ROM (header checksum re-fixed).</div>
 
     <h2 style="margin-top:18px">Or export source &mdash; paste into <code>pal_table</code></h2>
     <textarea id="out" readonly></textarea>
@@ -227,8 +232,8 @@ function findMagic(u8){
   }
   return -1;
 }
-$("#romfile").onchange = e => {
-  const f=e.target.files[0]; if(!f) return;
+function loadRom(f){
+  if(!f) return;
   romName=f.name;
   const r=new FileReader();
   r.onload=()=>{
@@ -244,7 +249,14 @@ $("#romfile").onchange = e => {
     renderAll();
   };
   r.readAsArrayBuffer(f);
-};
+}
+$("#romfile").onchange = e => loadRom(e.target.files[0]);
+// drop a ROM anywhere on the page
+const _ov=$("#drop-ov"); let _dn=0;
+window.addEventListener('dragenter', e=>{ e.preventDefault(); _dn++; _ov.classList.add('on'); });
+window.addEventListener('dragover',  e=>{ e.preventDefault(); });
+window.addEventListener('dragleave', e=>{ if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
+window.addEventListener('drop', e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on'); loadRom(e.dataTransfer.files[0]); });
 $("#patch").onclick = () => {
   if(!rom) return;
   for(let p=0;p<8;p++) for(let c=0;c<3;c++){ const o=romBase+(p*3+c)*2, w=pals[p][c]; rom[o]=(w>>8)&0xFF; rom[o+1]=w&0xFF; }
