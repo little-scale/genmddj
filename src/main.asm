@@ -145,6 +145,8 @@ echo_tap2  equ $00FFE4DA           ; tap-2 delay
 echo_rd1   equ $00FFE4DB           ; tap-1 level reduction
 echo_rd2   equ $00FFE4DC           ; tap-2 level reduction
 echo_ster  equ $00FFE4DD           ; 0 off, 1 on (pan taps L/R; FM only)
+echo_head  equ $00FFE4DE           ; ECHO ring write head (0-63, wraps)
+echo_ring  equ $00FFE4E0           ; 64 entries x 4 bytes (note, keyon, trig, instr) = 256 B
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -467,6 +469,7 @@ Start:
     move.b  #4, echo_rd1
     move.b  #8, echo_rd2
     move.b  #0, echo_ster
+    move.b  #0, echo_head
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -5328,6 +5331,69 @@ fmlfo_ptab:
     dc.b i_op+3*10+9, $8C, 15, 4, i_op+3*10+8, 0    ; SL4
 FMLFO_NPARM equ 34
     even
+
+; ECHO: each engine tick (after the row advance, before compose), capture the input voice's
+; (note,keyon,trig,instr) into the ring and drive the target voice(s) from the delayed slots --
+; overriding their phrase, so the echo "owns" them. FM modes re-trigger via c_trig + compose_fm's
+; patch/key path. (Tick = frame for now; becomes the groove tick when grooves land.)
+echo_tick:
+    tst.b   echo_mode
+    beq.s   .et_ret
+    moveq   #0, d2                          ; input base track: F1 (0) for modes 1/2, T1 (6) for 3/4
+    move.b  echo_mode, d0
+    cmpi.b  #2, d0
+    bls.s   .et_inb
+    moveq   #6, d2
+.et_inb:
+    moveq   #0, d0                          ; a0 = ring[head]
+    move.b  echo_head, d0
+    andi.w  #$3F, d0
+    lsl.w   #2, d0
+    lea     echo_ring, a0
+    adda.w  d0, a0
+    move.w  d2, d1                          ; a1 = input channel state
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a1
+    adda.w  d1, a1
+    move.b  c_note(a1), (a0)               ; capture this tick's input state
+    move.b  c_keyon(a1), 1(a0)
+    move.b  c_trig(a1), 2(a0)
+    move.b  c_instr(a1), 3(a0)
+    addq.b  #1, d2                          ; target 1 = input+1, delay TAP1
+    move.b  echo_tap1, d0
+    bsr     echo_replay
+    move.b  echo_mode, d0                  ; target 2 (modes 2/4) = input+2, delay TAP2
+    cmpi.b  #2, d0
+    beq.s   .et_t2
+    cmpi.b  #4, d0
+    bne.s   .et_adv
+.et_t2:
+    addq.b  #1, d2
+    move.b  echo_tap2, d0
+    bsr     echo_replay
+.et_adv:
+    addq.b  #1, echo_head
+.et_ret:
+    rts
+
+echo_replay:                              ; d2 = target track, d0 = tap delay; drive it from ring[head-tap]
+    moveq   #0, d1
+    move.b  echo_head, d1
+    sub.b   d0, d1
+    andi.w  #$3F, d1
+    lsl.w   #2, d1
+    lea     echo_ring, a0
+    adda.w  d1, a0
+    move.w  d2, d1
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a1
+    adda.w  d1, a1
+    move.b  (a0), c_note(a1)
+    move.b  1(a0), c_keyon(a1)
+    move.b  2(a0), c_trig(a1)
+    move.b  3(a0), c_instr(a1)
+    rts
+
 engine_tick:
     move.b  #0, patch_done                ; FM operator-patch budget: one per tick
     tst.b   playing
@@ -5384,6 +5450,7 @@ engine_tick:
     lea     CHSIZE(a6), a6
     dbra    d7, .adv
 .noadv:
+    bsr     echo_tick                     ; capture input + drive echo targets (overrides their phrase)
     ; per-channel envelope + compose (PSG -> a3/d6, FM -> a5/d5)
     lea     scb_data, a3
     moveq   #0, d6
