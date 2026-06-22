@@ -201,6 +201,8 @@ proj_armed equ $00FFD3B9           ; PROJECT destructive-action confirm: armed c
 proj_arm_frame equ $00FFD3BA       ; g_ticks when armed (word); a 2nd tap within CONFIRM_FRAMES confirms
 saved_sum  equ $00FFD3BC           ; long checksum of the data block at the last save/load (unsaved test)
 song_dirty equ $00FFD3C0           ; 1 = data block differs from saved_sum (recomputed on PROJECT entry)
+live_on    equ $00FFD3C1           ; LIVE: per-track sounding flag (NCH bytes; 1 = launched/playing)
+live_bar   equ $00FFD3CB           ; LIVE: master 16-row bar counter (row-advances & 15) for quantize
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -5197,6 +5199,12 @@ toggle_play:
     rts
 
 play_context:                             ; C+B: toggle audition of the current context
+    cmpi.b  #SCR_SONG, cur_screen          ; LIVE on SONG: C+B launches the cursor's track (no toggle)
+    bne.s   .pc_normal
+    tst.b   proj_mode
+    beq.s   .pc_normal
+    bra     live_launch_track
+.pc_normal:
     tst.b   playing                        ; already playing -> stop
     beq.s   .pc_start
     move.b  #0, playing
@@ -5223,6 +5231,54 @@ play_context:                             ; C+B: toggle audition of the current 
     bsr     clear_live_patch              ; fresh A/V override state each audition
     bsr     engine_play_reset
 .pc_done:
+    rts
+
+live_launch_track:                        ; C+B in LIVE: launch the cursor's track from its song row
+    tst.b   playing                        ; transport stopped -> start it (all-silent) first
+    bne.s   .ll_running
+    move.b  #1, playing
+    bsr     clear_live_patch
+    bsr     engine_play_reset             ; LIVE reset: every track muted, live_on=0, bar=0
+.ll_running:
+    moveq   #0, d2                          ; songpos = song_page*16 + cur_row
+    move.b  song_page, d2
+    lsl.w   #4, d2
+    moveq   #0, d0
+    move.b  cur_row, d0
+    add.w   d0, d2
+    moveq   #0, d1                          ; track = cursor column
+    move.b  cur_col, d1
+    bsr     live_setup_chan
+    lea     live_on, a0
+    move.b  #1, (a0,d1.w)                  ; mark the track launched
+    rts
+
+live_setup_chan:                          ; d1 = track, d2 = songpos; arm that channel to play from there
+    moveq   #0, d0
+    move.b  d1, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
+    move.b  #$FF, c_note(a6)
+    move.b  #15, c_row(a6)
+    move.b  #$FF, c_cstep(a6)             ; first advance loads chain step 0
+    move.b  #0, c_transp(a6)
+    move.b  #0, c_estate(a6)
+    move.b  #0, c_vol(a6)
+    move.b  #0, c_trig(a6)
+    move.b  #0, c_keyon(a6)
+    move.b  #$FF, c_kshadow(a6)           ; force a key-off of any stale note
+    move.w  #$FFFF, c_shadowp(a6)
+    move.b  #$FF, c_shadowa(a6)
+    move.b  #$FF, c_tbl(a6)
+    move.b  #$FF, c_trow(a6)
+    move.l  #phrases, c_phrase(a6)
+    move.b  d2, c_songpos(a6)             ; load the launch row's chain
+    lea     song, a2
+    move.w  d2, d0
+    mulu.w  #NCH, d0
+    add.w   d1, d0
+    move.b  (a2,d0.w), c_chain(a6)
     rts
 
 ; reset every channel for playback per play_mode (kshadow=$FF forces a key-off,
@@ -5270,6 +5326,12 @@ engine_play_reset:
 .rlb:
     move.b  #0, (a0)+
     dbra    d0, .rlb
+    lea     live_on, a0                   ; LIVE: all tracks start silent (a launch wakes them)
+    moveq   #NCH-1, d0
+.rlive:
+    move.b  #0, (a0)+
+    dbra    d0, .rlive
+    move.b  #0, live_bar                  ; restart the master bar
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .r:
@@ -5287,6 +5349,8 @@ engine_play_reset:
     move.b  #$FF, c_tbl(a6)              ; no table until the first note
     move.b  #$FF, c_trow(a6)             ; per-note table starts at row 0
     move.l  #phrases, c_phrase(a6)
+    tst.b   proj_mode                     ; LIVE: every track starts muted; a launch wakes it
+    bne     .mute
     tst.b   play_mode
     bne.s   .solo
     move.b  play_from, c_songpos(a6)      ; full song: chain = song[play_from][track]
@@ -5816,10 +5880,15 @@ engine_tick:
     sub.b   d0, g_gctr                      ; lossless (a multi-clock frame carries the excess)
     move.b  #1, eng_adv
 .do_adv:
+    addq.b  #1, live_bar                  ; master 16-row bar counter (LIVE launch quantize)
+    andi.b  #15, live_bar
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .adv:
     bsr     is_echo_target                ; echo owns its targets -> don't run their phrase
+    tst.b   d0
+    bne.s   .adv_skip
+    bsr     is_live_silent                ; LIVE: an un-launched track doesn't advance
     tst.b   d0
     bne.s   .adv_skip
     bsr     advance_ch
@@ -6431,6 +6500,20 @@ load_step:                                ; a6 = channel; d1 = chain step
     lea     phrases, a1
     adda.w  d3, a1
     move.l  a1, c_phrase(a6)
+    rts
+
+is_live_silent:                           ; a6 = channel -> d0 = 1 if LIVE mode and this track is un-launched
+    tst.b   proj_mode
+    beq.s   .ils_no
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    lea     live_on, a0
+    tst.b   (a0,d0.w)
+    bne.s   .ils_no
+    moveq   #1, d0
+    rts
+.ils_no:
+    moveq   #0, d0
     rts
 
 ; ============================================================
