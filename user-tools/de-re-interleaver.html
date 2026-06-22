@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj &middot; de-re-interleaver</title>
+<style>
+  *{ box-sizing:border-box; }
+  body{ margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; background:#15171c;
+        color:#cfd6e0; display:flex; justify-content:center; }
+  .wrap{ width:680px; max-width:94vw; padding:24px; }
+  h1{ font-size:19px; margin:0 0 4px; }
+  .sub{ color:#7d8595; font-size:13px; margin-bottom:20px; }
+  .drop{ display:block; border:2px dashed #344; border-radius:12px; padding:34px; text-align:center;
+         cursor:pointer; background:#1a1d24; transition:.15s; }
+  .drop:hover,.drop.over{ border-color:#3a6ea5; background:#1e2330; }
+  .drop b{ color:#cfd6e0; } .drop span{ color:#7d8595; font-size:12px; }
+  .panel{ background:#1b1f27; border:1px solid #2a2e38; border-radius:10px; padding:16px; margin-top:18px; }
+  .row{ display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid #23272f; }
+  .row:last-child{ border:0; } .row .k{ color:#8a93a3; } .row .v{ font-family:ui-monospace,monospace; }
+  .ok{ color:#7adf9a; } .warn{ color:#ffcf6a; } .bad{ color:#ff8a8a; }
+  .btns{ display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
+  button{ flex:1; min-width:220px; background:#222838; color:#cfd6e0; border:1px solid #313a4d;
+          border-radius:9px; padding:13px; font-weight:600; cursor:pointer; font-size:14px; }
+  button:hover:not(:disabled){ background:#2a3346; }
+  button.rec{ background:#2b6cb0; border-color:#2b6cb0; color:#fff; }
+  button.rec:hover{ background:#3a7ec0; }
+  button:disabled{ opacity:.35; cursor:not-allowed; }
+  button .s{ display:block; font-weight:400; font-size:11px; color:#9fb0c8; margin-top:3px; }
+  button.rec .s{ color:#cfe2f5; }
+  .note{ color:#7d8595; font-size:12px; margin-top:18px; line-height:1.6; }
+  code{ background:#0e1014; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>de-re-interleaver <span style="color:#7d8595;font-weight:400;font-size:14px">&middot; EverDrive SRM &harr; logical</span></h1>
+  <div class="sub">genmddj cart SRAM is <b>odd-byte</b>: a 32&nbsp;KB save occupies a 64&nbsp;KB
+    <code>.srm</code> with every even byte&nbsp;<code>$00</code>. This strips/adds that interleave.</div>
+
+  <label class="drop" id="drop">
+    <b>Drop a file here</b> or click to browse<br>
+    <span>an EverDrive <code>.srm</code> (de-interleave) or a logical <code>.bin</code> (interleave)</span>
+    <input type="file" id="file" hidden>
+  </label>
+
+  <div class="panel" id="panel" style="display:none">
+    <div class="row"><span class="k">File</span><span class="v" id="r_name">&mdash;</span></div>
+    <div class="row"><span class="k">Size</span><span class="v" id="r_size">&mdash;</span></div>
+    <div class="row"><span class="k">Even bytes all $00</span><span class="v" id="r_odd">&mdash;</span></div>
+    <div class="row"><span class="k">Looks like</span><span class="v" id="r_kind">&mdash;</span></div>
+    <div class="row"><span class="k">genmddj config ($A5 @ logical 0)</span><span class="v" id="r_cfg">&mdash;</span></div>
+    <div class="row"><span class="k">Slot 0 magic (GMDDJ @ logical 256)</span><span class="v" id="r_slot">&mdash;</span></div>
+
+    <div class="btns">
+      <button id="deint" disabled>De-interleave &rarr; logical<span class="s">odd bytes only, halves the size</span></button>
+      <button id="int" disabled>Interleave &rarr; EverDrive .srm<span class="s">logical on odd bytes, doubles the size</span></button>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>De-interleave</b> a cart dump to inspect/edit the real 32&nbsp;KB save image; <b>interleave</b> a
+    logical image back to a flashable <code>.srm</code>. Round-trips exactly. The genmddj checks above are
+    just a sanity readout &mdash; the converter works on any odd-byte / logical pair.
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let u8 = null, name = '';
+
+function isLogicalGenmddj(log){            // log = Uint8Array logical image
+  const gm = [0x47,0x4D,0x44,0x4A,0x4A]; // (only first 4 distinct; check GMDDJ properly below)
+  const magic = [0x47,0x4D,0x44,0x44,0x4A];
+  let slot = log.length>=256+5;
+  if(slot) for(let j=0;j<5;j++) if(log[256+j]!==magic[j]){ slot=false; break; }
+  return { cfg: log.length>0 && log[0]===0xA5, slot };
+}
+function deinterleave(a){ const o=new Uint8Array(a.length>>1); for(let i=0;i<o.length;i++) o[i]=a[i*2+1]; return o; }
+function interleave(a){ const o=new Uint8Array(a.length<<1); for(let i=0;i<a.length;i++) o[i*2+1]=a[i]; return o; }
+
+function download(arr, fname){
+  const url = URL.createObjectURL(new Blob([arr],{type:'application/octet-stream'}));
+  const a = document.createElement('a'); a.href=url; a.download=fname;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+const stem = n => n.replace(/\.(srm|bin|sav)$/i,'');
+
+function load(file){
+  name = file.name;
+  const r = new FileReader();
+  r.onload = () => { u8 = new Uint8Array(r.result); analyze(); };
+  r.readAsArrayBuffer(file);
+}
+
+function analyze(){
+  $("#panel").style.display='block';
+  $("#r_name").textContent = name;
+  $("#r_size").textContent = `${u8.length} bytes (${(u8.length/1024).toFixed(u8.length%1024?1:0)} KB)`;
+  let evenZero = u8.length>0 && (u8.length%2===0);
+  if(evenZero) for(let i=0;i<u8.length;i+=2) if(u8[i]!==0){ evenZero=false; break; }
+  $("#r_odd").innerHTML = evenZero ? '<span class="ok">yes</span>' : '<span class="warn">no</span>';
+
+  const isOdd = evenZero;                 // treat all-even-zero as an odd-byte cart image
+  $("#r_kind").innerHTML = isOdd
+    ? 'EverDrive odd-byte image &rarr; <b>de-interleave</b>'
+    : 'logical image &rarr; <b>interleave</b>';
+
+  const log = isOdd ? deinterleave(u8) : u8;
+  const g = isLogicalGenmddj(log);
+  $("#r_cfg").innerHTML  = g.cfg  ? '<span class="ok">found</span>'  : '<span class="warn">not found</span>';
+  $("#r_slot").innerHTML = g.slot ? '<span class="ok">found</span>'  : '<span class="warn">none (empty slot)</span>';
+
+  $("#deint").disabled = false; $("#int").disabled = false;
+  $("#deint").classList.toggle('rec', isOdd);
+  $("#int").classList.toggle('rec', !isOdd);
+}
+
+$("#deint").onclick = () => { if(u8) download(deinterleave(u8), stem(name)+'.logical.bin'); };
+$("#int").onclick   = () => { if(u8) download(interleave(u8),   stem(name)+'.srm'); };
+
+const drop = $("#drop"), file = $("#file");
+drop.onclick = () => file.click();
+file.onchange = e => { if(e.target.files[0]) load(e.target.files[0]); };
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop', e=>{ if(e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>
