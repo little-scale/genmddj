@@ -5284,20 +5284,42 @@ live_cursor_pos:                          ; -> d1 = cursor track (col), d2 = son
     move.b  cur_col, d1
     rts
 
-live_queue_track:                         ; d1 = track, d2 = songpos; silent -> next bar, playing -> chain end
+live_queue_track:                         ; d1 = track, d2 = songpos; launch / relaunch / quantized stop
+    lea     song, a2                        ; cell = song[songpos][track]
+    move.w  d2, d0
+    mulu.w  #NCH, d0
+    add.w   d1, d0
+    move.b  (a2,d0.w), d3                  ; d3 = cell chain# ($FF = empty)
     lea     live_on, a0
     tst.b   (a0,d1.w)
-    bne.s   .lqt_ce
-    lea     live_q, a0
+    bne.s   .lqt_playing
+    cmpi.b  #$FF, d3                        ; silent track: empty cell -> nothing
+    beq.s   .lqt_ret
+    lea     live_q, a0                       ; ...populated cell -> launch on the next master bar
     move.b  d2, (a0,d1.w)
     lea     live_when, a0
-    move.b  #1, (a0,d1.w)                  ; silent track: launch on the next master bar
+    move.b  #1, (a0,d1.w)
+.lqt_ret:
     rts
-.lqt_ce:
-    lea     live_q, a0
+.lqt_playing:
+    cmpi.b  #$FF, d3                        ; playing track: empty cell -> quantized stop
+    beq.s   .lqt_stop
+    moveq   #0, d0                          ; a6 = this track's channel
+    move.b  d1, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
+    move.b  c_songpos(a6), d0
+    cmp.b   d2, d0
+    beq.s   .lqt_stop                      ; cell == the currently-playing row -> stop
+    lea     live_q, a0                       ; else: relaunch when the current chain ends
     move.b  d2, (a0,d1.w)
     lea     live_when, a0
-    move.b  #2, (a0,d1.w)                  ; playing track: swap when the current chain ends
+    move.b  #2, (a0,d1.w)
+    rts
+.lqt_stop:
+    lea     live_when, a0
+    move.b  #3, (a0,d1.w)                  ; stop at chain end
     rts
 
 live_resolve_bar:                         ; master-bar boundary: start every at-bar (live_when==1) queue
@@ -6005,10 +6027,19 @@ engine_tick:
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .ch:
+    bsr     is_live_silent                ; LIVE + un-launched/stopped track -> force-silence each tick
+    tst.b   d0
+    beq.s   .ch_play
+    move.b  #0, c_vol(a6)
+    move.b  #0, c_estate(a6)
+    move.b  #0, c_keyon(a6)               ; key-off any held FM note
+    bra.s   .ch_compose
+.ch_play:
     bsr     env_ch
     bsr     table_cmd                     ; run the active table row's CMD column once per row entry
     bsr     hold_tick
     bsr     echo_psg_rd                   ; PSG echo target: attenuate by RD (after the envelope set c_vol)
+.ch_compose:
     bsr     compose_ch
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
@@ -6563,10 +6594,23 @@ advance_song:                             ; a6 = channel
     addq.b  #1, d3
     moveq   #0, d0
     move.b  c_track(a6), d0
-    lea     live_when, a1                 ; LIVE chain-end queue for this track -> jump there now
-    cmpi.b  #2, (a1,d0.w)
-    bne.s   .as_noq
+    lea     live_when, a1                 ; LIVE chain-end queue for this track
     moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    cmpi.b  #3, d1                         ; 3 = STOP at chain end -> silence the track and return
+    bne.s   .as_nostop
+    move.b  #0, (a1,d0.w)
+    lea     live_on, a1
+    move.b  #0, (a1,d0.w)
+    move.b  #$FF, c_chain(a6)
+    move.b  #$FF, c_kshadow(a6)            ; force a key-off
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_estate(a6)               ; envelope off (else env_ch keeps it sounding)
+    move.b  #0, c_vol(a6)
+    rts
+.as_nostop:
+    cmpi.b  #2, d1                         ; 2 = relaunch at chain end -> jump to the queued songpos
+    bne.s   .as_noq
     move.b  d0, d1
     lea     live_q, a1
     move.b  (a1,d1.w), d3                 ; target row = the queued songpos (instead of the next)
