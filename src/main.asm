@@ -1063,7 +1063,12 @@ input_tick:
     and.b   d3, d4                       ; button edges
     btst    #7, d4                        ; Start -> toggle transport
     beq.s   .nstart
+    btst    #5, d3                        ; B held + Start -> SYNC IN: arm WAIT for the incoming clock
+    bne.s   .bstart
     bsr     toggle_play
+    bra.s   .nstart
+.bstart:
+    bsr     start_sync_wait
 .nstart:
     bsr     dpad_fire                     ; d5 = d-pad bits to act (once)
     move.b  d1, d5
@@ -5202,6 +5207,20 @@ toggle_play:
     bsr     engine_play_reset             ; all-silent, then launch the cursor row
     bsr     live_launch_row
 .tp:
+    rts
+
+start_sync_wait:                          ; B+Start: SYNC IN -> start the transport armed to wait for the clock
+    cmpi.b  #1, opt_sync
+    bne     toggle_play                    ; not SYNC IN -> behave as a plain Start
+    tst.b   playing
+    bne.s   .ssw_x                         ; already running -> leave it
+    move.b  #1, playing
+    bsr     clear_live_patch
+    bsr     engine_play_reset             ; opt_sync==1 arms the slave (sync_wait) -> waits for the clock
+    tst.b   proj_mode                     ; LIVE: arm the cursor row too (it waits for the clock)
+    beq.s   .ssw_x
+    bsr     live_launch_row
+.ssw_x:
     rts
 
 play_context:                             ; C+B: toggle audition of the current context
