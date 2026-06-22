@@ -2272,7 +2272,7 @@ do_insert:
     cmpi.b  #SCR_CHAIN, cur_screen           ; CHAIN B-tap -> allocate a new (empty) phrase
     beq.s   .chain_ins
     move.b  cur_col, d0
-    beq.s   .ins_note                      ; col 0 = NOT -> insert/audition note
+    beq     .ins_note                      ; col 0 = NOT -> insert/audition note
     cmpi.b  #2, d0                          ; col 2 = C (PHRASE command column)
     bne.s   .ret
     tst.b   cur_screen                      ; PHRASE only
@@ -2291,9 +2291,16 @@ do_insert:
     move.b  last_chain, (a1)
     rts
 .song_new:
+    move.b  (a1), d3                        ; source = the cell's chain ($FF = empty cell)
     bsr     find_free_chain
     cmpi.b  #NCHAINS, d0
-    bhs     .ret                            ; no free chain
+    bhs     .ret                            ; no free chain -> no-op
+    cmpi.b  #$FF, d3                         ; empty cell -> mint a blank chain
+    beq.s   .song_place
+    lea     chains, a0                       ; populated -> SLIM clone: copy the chain (phrases shared)
+    moveq   #CHAIN_SIZE, d1
+    bsr     clone_rec
+.song_place:
     move.b  d0, (a1)
     move.b  d0, last_chain
     rts
@@ -2309,11 +2316,20 @@ do_insert:
     move.b  #0, 1(a1)                        ; fresh chain step -> transpose 0 (not the $FF fill)
     rts
 .chain_new:
+    move.b  (a1), d3                        ; source = the cell's phrase ($FF = empty cell)
     bsr     find_free_phrase
     cmpi.b  #NPHRASES, d0
     bhs     .ret
+    cmpi.b  #$FF, d3                         ; empty cell -> mint a blank phrase, fresh transpose 0
+    bne.s   .chain_clone
+    move.b  #0, 1(a1)
+    bra.s   .chain_place
+.chain_clone:
+    lea     phrases, a0                      ; populated -> clone the phrase (independent copy);
+    moveq   #PHRASE_SIZE, d1                 ;   keep the chain step's existing transpose
+    bsr     clone_rec
+.chain_place:
     move.b  d0, (a1)
-    move.b  #0, 1(a1)                        ; fresh chain step -> transpose 0 (not the $FF fill)
     move.b  d0, last_phrase
     rts
 .ins_note:
@@ -2368,6 +2384,27 @@ find_free_phrase:                         ; d0.b = lowest EMPTY phrase (no notes
     addq.b  #1, d0
     cmpi.b  #NPHRASES, d0
     blo.s   .ffp_cand
+    rts
+
+; clone a pool record (SLIM byte-copy): a0 = pool base, d1 = record size, d3 = src index,
+; d0 = dst index. Copies record d3 -> record d0. Preserves d0/d3 and the caller's a1 (saves
+; d1-d2/a0-a1). For a chain this shares its phrases (SLIM); a phrase copy is self-contained.
+clone_rec:
+    movem.l d1-d2/a0-a1, -(sp)
+    move.l  a0, a1                          ; a1 = pool base (dst)
+    moveq   #0, d2
+    move.b  d3, d2
+    mulu.w  d1, d2
+    adda.w  d2, a0                          ; a0 = src record
+    moveq   #0, d2
+    move.b  d0, d2
+    mulu.w  d1, d2
+    adda.w  d2, a1                          ; a1 = dst record
+    subq.w  #1, d1
+.cr_loop:
+    move.b  (a0)+, (a1)+
+    dbra    d1, .cr_loop
+    movem.l (sp)+, d1-d2/a0-a1
     rts
 
 chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this is a 2nd B-tap on the
