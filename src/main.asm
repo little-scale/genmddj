@@ -8862,9 +8862,9 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     dc.b    "GMDJPAL0"              ; locator for the browser palette ROM-patcher (PALETTE.md §5)
 pal_table:                          ; SMSGGDJ's 8 schemes (SMS 2:2:2 -> MD: 1->$4 2->$A 3->$E)
     dc.w $0E40, $00EE, $0E40        ; 0 KIDD  yellow on sky blue (default; SMSGGDJ $34/$0F)
-    dc.w $0000, $0EEE, $0000        ; 1 WHT   white on black
-    dc.w $0040, $00EA, $0040        ; 2 GRN   green screen
-    dc.w $0000, $00AE, $0000        ; 3 AMBR  amber terminal
+    dc.w $0000, $0EEE, $0000        ; 1 BLK   white on black
+    dc.w $0EEE, $0000, $0EEE        ; 2 WHT   black on white
+    dc.w $0002, $00AE, $0002        ; 3 AMBR  amber terminal
     dc.w $0400, $0EE0, $0400        ; 4 CYAN  cyan on navy
     dc.w $0404, $0E0E, $0404        ; 5 PINK  magenta on purple
     dc.w $0EA4, $0A0E, $0EA4        ; 6 NEON  neon pink on light blue
