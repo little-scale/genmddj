@@ -157,6 +157,7 @@ sync_last  equ $00FFD425           ; SYNC IN: counter value read last frame
 sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first external clock
 sram_layout equ $00FFD427          ; SRAM probe: 0 none, 1 odd-byte (8-bit), 2 linear
 sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64; 0 = none)
+sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 for 8/16/32/64 KB)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -513,6 +514,17 @@ Start:
     move.b  #0, opt_pal                   ;   UI palette 0
     bsr     load_config                   ; SRAM overrides the OPTIONS defaults if a config exists
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout
+    moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
+    move.b  sram_size, d0
+    beq.s   .sl_none
+    mulu.w  #1024, d0                       ; KB -> bytes
+    subi.l  #256, d0                        ; minus the config region
+    divu.w  #SAVE_SLOT, d0                  ; quotient (low word) = slots that fit
+    move.b  d0, sram_slots
+    bra.s   .sl_ok
+.sl_none:
+    move.b  #0, sram_slots
+.sl_ok:
     bsr     apply_palette                 ; reflect the (possibly restored) palette in CRAM
     move.b  #125, proj_tmpo               ; PROJECT defaults: 125 BPM
     move.b  #0, proj_tsp                  ;   no master transpose
@@ -8655,6 +8667,7 @@ sram_setup:
     moveq   #0, d1
     move.b  d0, d1
     mulu.w  #SAVE_SLOT, d1                  ; logical slot offset
+    addi.l  #256, d1                        ; reserve logical 0-255 for the OPTIONS config block
     lsl.l   d3, d1                          ; physical delta = logical << shift
     lea     $00200001, a1
     adda.l  d1, a1
@@ -8680,6 +8693,9 @@ data_checksum:                             ; -> d2.w = 16-bit sum of the data bl
 
 save_song:                                 ; save the work-RAM image to SRAM slot (proj_slot-1)
     movem.l d0-d7/a0-a3, -(sp)
+    move.b  proj_slot, d0                   ; refuse a slot beyond this cart's capacity (sram_slots)
+    cmp.b   sram_slots, d0
+    bhi     .sv_done
     bsr     gather_globals
     move.b  proj_slot, d0
     subq.b  #1, d0
@@ -8717,7 +8733,9 @@ save_song:                                 ; save the work-RAM image to SRAM slo
 
 load_song:                                 ; load SRAM slot (proj_slot-1) into the work-RAM image
     movem.l d0-d7/a0-a3, -(sp)
-    move.b  proj_slot, d0
+    move.b  proj_slot, d0                   ; refuse a slot beyond this cart's capacity (sram_slots)
+    cmp.b   sram_slots, d0
+    bhi     .ld_done
     subq.b  #1, d0
     bsr     sram_setup
     beq     .ld_done                        ; no SRAM
@@ -8845,10 +8863,14 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     bra     adj_field
 .ep_slot:
     lea     proj_slot, a1
-    moveq   #8, d3
+    moveq   #0, d3
+    move.b  sram_slots, d3                  ; max slot = this cart's capacity
+    bne.s   .ep_smax
+    moveq   #1, d3                           ; no SRAM: still let the field show slot 1
+.ep_smax:
     moveq   #1, d4
     bsr     adj_field
-    tst.b   proj_slot                       ; clamp to [1,8]
+    tst.b   proj_slot                       ; clamp to [1,sram_slots]
     bne.s   .eps
     move.b  #1, proj_slot
 .eps:
