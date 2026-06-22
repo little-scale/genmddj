@@ -71,6 +71,6 @@ contiguous chain group — independently, with its own playhead (silent/un-launc
 
 ## Not yet wired (free for the taking)
 
-- **A-tap alone** — DESIGN reserves it for mute/solo (tap = mute, hold = solo); not yet implemented.
+- **A-tap alone** — intentionally unbound (A is a pure held-modifier). Mute/solo is set aside for now.
 - **C + Start** — DESIGN's "full song from any screen"; currently unbound.
 - **6-button X / Y / Z / Mode** — deferred (3-button is the baseline).
