@@ -182,6 +182,7 @@ function renderEditor(){
   fi.onchange=e=>{ importPatch(e.target.files[0]); fi.value=''; }; lb.appendChild(fi); head.appendChild(lb);
   const sg=document.createElement('button'); sg.className='key'; sg.textContent='save .gmi'; sg.title='save this patch (genmddj native, lossless)'; sg.onclick=exportInst; head.appendChild(sg);
   const st=document.createElement('button'); st.className='key'; st.textContent='.tfi'; st.title='export TFI for other YM2612 tools'; st.onclick=exportTfi; head.appendChild(st);
+  const sa=document.createElement('button'); sa.className='key'; sa.textContent='.adv'; sa.title='export an Ableton Operator preset'; sa.onclick=exportAdv; head.appendChild(sa);
   el.appendChild(head);
 
   // audition piano — click a key to play the (live-edited) patch at that pitch
@@ -422,6 +423,41 @@ function advToRecord(xml){
   }
   return rec;
 }
+
+// ---- YM2612 -> Ableton Operator (.adv) export -------------------------------
+// Templated from a real Operator preset: swap the 4 oscillators + algorithm and turn the
+// filter/LFO off, so the output is a valid Operator device. Reverse of the import mapping.
+const ADVTMPL="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";
+async function gzipStr(str){ const st=new Blob([str]).stream().pipeThrough(new CompressionStream('gzip')); return new Uint8Array(await new Response(st).arrayBuffer()); }
+function setM(el,tag,val){ const t=el&&el.getElementsByTagName(tag)[0]; if(t){ (t.getElementsByTagName('Manual')[0]||t).setAttribute('Value', String(val)); } }
+const REVALG={0:{op:0,perm:[3,2,1,0]}, 7:{op:10,perm:[0,1,2,3]}};
+async function recordToAdv(slot){
+  const doc=new DOMParser().parseFromString(await gunzip(Uint8Array.from(atob(ADVTMPL),c=>c.charCodeAt(0))),'text/xml');
+  const filt=doc.getElementsByTagName('Filter')[0]; if(filt) setM(filt,'OnOff','false');
+  const ra=REVALG[getB(slot,1)&7]||REVALG[0];
+  setM(doc.getElementsByTagName('Globals')[0],'Algorithm', ra.op);
+  const fbReg=getB(slot,2)&7;
+  for(let a=0;a<4;a++){ const o=doc.getElementsByTagName('Operator.'+a)[0]; if(!o) continue;
+    const ymOp=ra.perm[a], rb=8+SLOTOF[ymOp]*10;
+    const MUL=getB(slot,rb),TL=getB(slot,rb+2),AR=getB(slot,rb+4),D1=getB(slot,rb+6),RR=getB(slot,rb+8),SL=getB(slot,rb+9);
+    const on=TL<127, tune=o.getElementsByTagName('Tune')[0], env=o.getElementsByTagName('Envelope')[0], slatt=(SL>=15?1020:SL*32);
+    setM(o,'IsOn', on?'true':'false'); setM(o,'WaveForm',0); setM(o,'LfoOn','false');
+    setM(o,'Feedback', ymOp===0?Math.round(fbReg/7*100):0);
+    setM(tune,'Coarse', MUL||1); setM(tune,'Fine',0);
+    setM(o,'Volume', Math.max(0.0003162277571,Math.pow(10,-(TL*0.75)/20)).toPrecision(7));
+    setM(env,'AttackTime', Math.max(0.1,(ATKTAB[AR]||0)*1000).toPrecision(7));
+    setM(env,'AttackLevel','0.0003162277571');
+    setM(env,'DecayTime', Math.max(1,(DECTAB[D1]||0)*1000*slatt/(DECF*1020)).toPrecision(7));
+    setM(env,'DecayLevel','1');
+    setM(env,'SustainLevel', SL>=15?'0.0003162277571':Math.pow(10,-(SL*3)/20).toPrecision(7));
+    setM(env,'ReleaseTime', Math.max(0.1,(DECTAB[2*RR+1]||0)*1000/DECF).toPrecision(7));
+    setM(env,'ReleaseLevel','0.0003162277571');
+  }
+  let out=new XMLSerializer().serializeToString(doc);
+  if(!out.startsWith('<?xml')) out='<?xml version="1.0" encoding="UTF-8"?>\n'+out;
+  return await gzipStr(out);
+}
+function exportAdv(){ if(!bank)return; recordToAdv(sel).then(gz=>{ dl(gz,(readName(sel).toLowerCase().replace(/[^a-z0-9]/g,'')||('inst'+sel))+'.adv'); $("#romstatus").textContent='Exported '+readName(sel)+'.adv (Ableton Operator) \u2014 load it onto an Operator in Live.'; }); }
 
 $("#romfile").onchange=e=>loadRom(e.target.files[0]);
 $("#patch").onclick=()=>{
