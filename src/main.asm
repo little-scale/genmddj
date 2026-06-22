@@ -138,7 +138,7 @@ sel_col0   equ $00FFE434           ; block-select anchor column
 clip_rows  equ $00FFE435           ; clipboard block height (1 for a single field)
 clip_cols  equ $00FFE436           ; clipboard block width
 clip_col0  equ $00FFE437           ; clipboard source start column (paste keeps columns -> type-safe)
-clip_buf   equ $00FFE438           ; clipboard cell payload (row-major); max NSONGROWS*NCH = 160 B
+clip_buf   equ $00FFE438           ; clipboard cell payload (row-major); 160 B = 16 rows (SONG cursor cap) x NCH
 echo_mode  equ $00FFE4D8           ; ECHO: 0 off, 1 F2, 2 F2+F3, 3 T2, 4 T2+T3
 echo_tap1  equ $00FFE4D9           ; tap-1 delay (engine ticks; -> groove ticks when grooves land)
 echo_tap2  equ $00FFE4DA           ; tap-2 delay
@@ -227,7 +227,7 @@ chains     equ $00FF3260            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
 song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
-NSONGROWS  equ 16
+NSONGROWS  equ 240               ; full-song data depth; SONG cursor still capped at 15 until scroll lands
 instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
                                     ; ($FFC000) so a canvas overrun can't reach it, clear of the stack
 INSTR_SIZE equ 64                   ; type + algo/fb/pan + 4 ops x 10 + i_tbl/i_tbs + reserved
