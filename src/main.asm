@@ -129,6 +129,9 @@ k_set      equ $00FFE42B           ; K command: 1 if K set the gate this row (no
 c_set      equ $00FFE42C           ; C command: 1 if C set the chord this row (note-on keeps it, else clears)
 f_set      equ $00FFE42D           ; F command: 1 if F set the finetune this row (note-on keeps c_pfine)
 p_set      equ $00FFE42E           ; P command: 1 if P set the bend this row (note-on keeps c_bend)
+clip_screen equ $00FFE42F          ; copy/paste clipboard: source screen ($FF = empty)
+clip_col   equ $00FFE430           ; clipboard source column (type-safety on paste)
+clip_val   equ $00FFE431           ; clipboard field value
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -443,6 +446,7 @@ Start:
     move.b  #0, last_chain
     move.b  #0, last_phrase
     move.l  #0, btap_addr
+    move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
     move.b  #0, playing                  ; boot stopped
@@ -999,6 +1003,11 @@ input_tick:
     beq.s   .nbc
     bsr     do_cut
 .nbc:
+    btst    #4, d4                        ; B + A tap -> copy field to the clipboard
+    beq.s   .nba
+    bsr     get_field_addr
+    bsr     clip_save
+.nba:
     tst.b   d5                            ; B + d-pad -> edit value
     beq     .done
     move.b  d5, d2
@@ -1540,12 +1549,28 @@ cur_phrase_addr:
     adda.w  d0, a1
     rts
 
-do_cut:                                   ; clear field under cursor
+; clipboard save: a1 = field. On a grid screen (PHRASE/CHAIN/SONG/TABLE) save (a1) + screen + col
+; for paste; otherwise no-op. Used by cut (do_cut) and copy (B+A). Clobbers d0.
+clip_save:
+    move.b  cur_screen, d0
+    cmpi.b  #3, d0                          ; PHRASE/CHAIN/SONG = 0..2
+    blo.s   .cs_yes
+    cmpi.b  #SCR_TABLE, d0                  ; or TABLE
+    bne.s   .cs_no
+.cs_yes:
+    move.b  (a1), clip_val
+    move.b  d0, clip_screen
+    move.b  cur_col, clip_col
+.cs_no:
+    rts
+
+do_cut:                                   ; clear field under cursor (cut = save it first)
     cmpi.b  #SCR_ECHO, cur_screen          ; placeholder screens have no fields
     blo.s   .dc_go
     rts
 .dc_go:
     bsr     get_field_addr
+    bsr     clip_save                       ; cut -> save to the clipboard, then clear
     move.b  cur_screen, d0
     cmpi.b  #SCR_INSTR, d0                  ; INSTR field -> 0
     beq.s   .hex
@@ -2267,6 +2292,23 @@ do_insert:
     rts
 .di_go:
     bsr     get_field_addr
+    bsr     chk_dbltap                       ; d2 = double-tap (once; paste + clone/mint use it)
+    tst.b   d2                               ; double-tap on a matching cell -> paste
+    beq.s   .di_nopaste
+    move.b  clip_screen, d0
+    cmpi.b  #$FF, d0                         ; clipboard empty?
+    beq.s   .di_nopaste
+    cmp.b   cur_screen, d0                   ; same screen as the copy/cut source?
+    bne.s   .di_nopaste
+    cmpi.b  #SCR_SONG, cur_screen            ; SONG: any track column; else require the same column
+    beq.s   .di_paste
+    move.b  clip_col, d0
+    cmp.b   cur_col, d0
+    bne.s   .di_nopaste
+.di_paste:
+    move.b  clip_val, (a1)                   ; paste the clipboard field
+    rts
+.di_nopaste:
     cmpi.b  #SCR_SONG, cur_screen           ; SONG B-tap -> allocate a new (empty) chain
     beq.s   .song_ins
     cmpi.b  #SCR_CHAIN, cur_screen           ; CHAIN B-tap -> allocate a new (empty) phrase
@@ -2283,8 +2325,7 @@ do_insert:
 .ret:
     rts
 .song_ins:
-    bsr     chk_dbltap                       ; double B-tap -> allocate a new (unused) chain
-    tst.b   d2
+    tst.b   d2                               ; double B-tap (set in do_insert) -> new/clone chain
     bne.s   .song_new
     cmpi.b  #$FF, (a1)                      ; single B-tap -> repeat last_chain on an empty cell
     bne     .ret
@@ -2307,8 +2348,7 @@ do_insert:
 .chain_ins:
     tst.b   cur_col                          ; col 0 = phrase# (col 1 = transpose)
     bne     .ret
-    bsr     chk_dbltap                       ; double B-tap -> allocate a new (unused) phrase
-    tst.b   d2
+    tst.b   d2                               ; double B-tap (set in do_insert) -> new/clone phrase
     bne.s   .chain_new
     cmpi.b  #$FF, (a1)                      ; single B-tap -> repeat last_phrase on an empty cell
     bne     .ret
