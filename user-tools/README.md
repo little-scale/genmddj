@@ -24,23 +24,27 @@ The handoff is always a **documented format**, never a code dependency:
 | Tool | File | Kind | Edits |
 |---|---|---|---|
 | **palette patcher** | `genmddj-palette-patcher.html` | ROM-patcher | 8 UI palettes (`GMDJPAL0`); swatch pick snaps to the nearest Sega colour |
-| **instrument patcher** | `genmddj-instrument-patcher.html` | ROM-patcher | the 32 factory FM patches (`GMINSTR0`): name, algo/fb/pan, the 4 operators |
+| **instrument patcher** | `genmddj-instrument-patcher.html` | patcher + converter | 32 FM patches (name, algo/fb, 4 operators) with a piano **audition** (register-level OPN2 core); **standalone** (no ROM) or patches `GMINSTR0` in a `.bin`; imports/exports `.gmi` (native), `.tfi`/`.vgi`, and **Ableton Operator `.adv`** |
 | **kit/sample patcher** | `kit/kitpatch.html` | ROM-patcher | sample kits, per-pad fade/gain (`DESIGN.md` §10.3) |
 | **de-re-interleaver** | `de-re-interleaver.html` | `.srm` tool | EverDrive 64 KB odd-byte ⇄ 32 KB logical save |
 | **factory-bank author** | `../tools/gen_factory_bank.py` | baker (one-shot) | emits the inline `fm_factory` block — the canonical 32 patches |
 
-All three patchers share one shape: drop a `.bin`, locate data by an **embedded marker**, edit,
-**re-checksum** the MD header on export. That shared core (binary I/O, marker-find, checksum) is worth
-factoring out now that three of them exist.
+The palette + kit patchers (and the ROM side of the instrument patcher) share one shape: drop a `.bin`,
+locate data by an **embedded marker**, edit, **re-checksum** the MD header on export — a shared core
+(binary I/O, marker-find, checksum) worth factoring out. The **instrument patcher** has outgrown that
+mould: it also runs **standalone** (an in-memory bank seeded from the factory patches, so you can convert
+patches with no ROM in sight) and is a two-way **patch converter** — `.gmi` (native, lossless), `.tfi`/`.vgi`
+(other YM2612 tools), and **Ableton Operator `.adv`** (a 4-op FM synth → YM2612 via the algorithm map +
+envelope-time→chip-rate curve, and back out as a valid Operator preset).
 
 ## Planned
 
 | Dir | Tool | Emits | Spec |
 |---|---|---|---|
-| `instrument/` | browser FM editor (Web Audio + JS/WASM YM2612 — **audition** patches) | instrument CSV | `PRESETS.md` §4 |
+| `instrument/` | the **CSV** authoring path for the baker (the instrument patcher already audits + edits patches) | instrument CSV | `PRESETS.md` §4 |
 | `font/`     | UI font patcher — edit/import the 8×8 glyph tiles | patched `.bin` | `PALETTE.md` §7 |
 | `extract/`  | game-patch extractors — **SMPS**, **GEMS**, **VGM** (native re-packs) | instrument CSV | `PRESETS.md` §5 |
-| `ableton/`  | **`.adv`** (one Operator → instrument) + **`.als`** (song + FM adaptation) | instrument CSV / song | `ALS.md` |
+| `ableton/`  | **`.als`** (song + per-track FM adaptation) — the `.adv` Operator↔instrument converter now ships in the instrument patcher | song | `ALS.md` |
 | `savetool/` | list/export/import/build `.srm`/`.gmdj`; config read/write | `.gmdj` / `.srm` | `SAVEFORMAT.md` |
 
 ## Baker vs patcher — and why instruments have both
