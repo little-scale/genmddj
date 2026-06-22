@@ -150,6 +150,7 @@ echo_ring  equ $00FFE4E0           ; 64 entries x 4 bytes (note, keyon, trig, in
 grooves    equ $00FFD320           ; 16 grooves x 16 tick-counts (1 B each) = 256 B (..$D41F); free gap
 groove_sel equ $00FFD420           ; active groove (0-15)   ($E5E0 was inside the stack's range!)
 groove_pos equ $00FFD421           ; row position within the active groove (cycles)
+cur_groove equ $00FFD422           ; GROOVE screen: which groove is being viewed/edited (0-15)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -511,6 +512,7 @@ Start:
     dbra    d0, .gvinit
     move.b  #0, groove_sel                ; active groove 0
     move.b  #0, groove_pos
+    move.b  #0, cur_groove                ; GROOVE screen starts on groove 0
     move.b  #0, cur_wave                  ; WAVE screen: wave 0, step 0
     move.b  #0, cur_wstep
     lea     wave_ram, a2                  ; init waves: wave 0 = a sawtooth, 1-15 = flat centre
@@ -638,7 +640,9 @@ VBlankInt:
     beq     .glfo
     cmpi.b  #SCR_ECHO, d0                  ; ECHO: settings fields
     beq     .gecho
-    bhs     .gd                             ; other placeholder screens (GROOVE): header only
+    cmpi.b  #SCR_GROOVE, d0                ; GROOVE: selector + 16 tick values
+    beq     .ggroove
+    bhs     .gd                             ; other placeholder screens: header only
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
     moveq   #0, d0
     move.b  cur_instr, d0
@@ -664,6 +668,9 @@ VBlankInt:
     bra     .gd
 .gecho:
     bsr     render_echo
+    bra     .gd
+.ggroove:
+    bsr     render_groove
     bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
@@ -1486,6 +1493,8 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     beq.s   .rmlfo                           ; FM LFO bank: 6 rows
     cmpi.b  #SCR_ECHO, d0
     beq.s   .rmecho                          ; ECHO: 6 settings fields
+    cmpi.b  #SCR_GROOVE, d0
+    beq.s   .rmgroove                        ; GROOVE: selector + 16 tick rows
     bhs.s   .zero                            ; other placeholder screens: cursor locked at row 0
     cmpi.b  #SCR_FM, d0
     beq.s   .fm
@@ -1509,6 +1518,9 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
+    rts
+.rmgroove:
+    moveq   #16, d1                          ; GROOVE: row 0 = GRV selector, rows 1-16 = the 16 ticks
     rts
 .rmecho:
     moveq   #5, d1                          ; ECHO: MODE TAP1 TAP2 RD1 RD2 STER
@@ -2325,8 +2337,10 @@ edit_value:
     beq     edit_lfo
     cmpi.b  #SCR_ECHO, cur_screen          ; ECHO settings
     beq     edit_echo
+    cmpi.b  #SCR_GROOVE, cur_screen        ; GROOVE: selector + tick values
+    beq     edit_groove
     blo.s   .ev_go                          ; < ECHO -> grid screens
-    rts                                      ; > ECHO (GROOVE) -> no fields
+    rts                                      ; other placeholders -> no fields
 .ev_go:
     cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the cursor cell
     beq     edit_table
@@ -8043,6 +8057,61 @@ render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     bsr     print_hl
     rts
 
+render_groove:                            ; GRV selector (cur_row 0) + 16 tick values (cur_row 1-16)
+    moveq   #3, d3                          ; "GRV" + groove number at row 3
+    moveq   #1, d4
+    lea     str_grv, a1
+    bsr     print_at
+    move.l  #$418A0003, (a0)               ; groove # cell (row 3, col 5)
+    move.b  cur_groove, d3
+    moveq   #0, d4
+    tst.b   cur_row
+    bne.s   .ng_nsel
+    moveq   #$60, d4
+.ng_nsel:
+    bsr     draw_hex2
+    moveq   #0, d6                          ; tick index 0..15
+.gr:
+    moveq   #0, d0                          ; clear high word (VDP command needs a clean 2nd word)
+    move.w  d6, d0                          ; index label at (GRID_TOP+d6, col 1)
+    addi.w  #GRID_TOP, d0
+    lsl.w   #6, d0
+    addq.w  #1, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.b  d6, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+    moveq   #0, d0                          ; clear high word again before the value cell address
+    move.w  d6, d0                          ; tick value at (GRID_TOP+d6, col 5)
+    addi.w  #GRID_TOP, d0
+    lsl.w   #6, d0
+    addi.w  #5, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     grooves, a1                    ; a1 -> grooves[cur_groove*16 + d6]
+    moveq   #0, d0
+    move.b  cur_groove, d0
+    lsl.w   #4, d0
+    add.w   d6, d0
+    move.b  (a1,d0.w), d3
+    moveq   #0, d4                          ; highlight if cursor is on this tick (cur_row-1 == d6)
+    move.b  cur_row, d0
+    subq.b  #1, d0
+    cmp.b   d6, d0
+    bne.s   .gr_nh
+    moveq   #$60, d4
+.gr_nh:
+    bsr     draw_hex2
+    addq.w  #1, d6
+    cmpi.w  #16, d6
+    bne.s   .gr
+    rts
+
 render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SAVE LOAD
     moveq   #5, d3
     moveq   #1, d4
@@ -8276,6 +8345,27 @@ edit_echo:                                ; B+dpad on ECHO: adjust MODE/TAP/RD/S
 .ee_rd2:
     lea     echo_rd2, a1
     moveq   #15, d3
+    moveq   #4, d4
+    bra     adj_field
+
+edit_groove:                              ; B+dpad: GRV selector (row 0) or a tick value (rows 1-16)
+    tst.b   cur_row
+    bne.s   .eg_val
+    lea     cur_groove, a1                 ; row 0 = which groove to edit
+    moveq   #15, d3
+    moveq   #1, d4
+    bra     adj_field
+.eg_val:
+    lea     grooves, a1                    ; rows 1-16 = grooves[cur_groove*16 + (cur_row-1)]
+    moveq   #0, d0
+    move.b  cur_groove, d0
+    lsl.w   #4, d0
+    moveq   #0, d1
+    move.b  cur_row, d1
+    subq.w  #1, d1
+    add.w   d1, d0
+    adda.w  d0, a1
+    moveq   #63, d3                         ; tick count 0-63 (0 = end-of-groove marker)
     moveq   #4, d4
     bra     adj_field
 
@@ -8525,6 +8615,7 @@ str_swp:    dc.b "SWP",0
 str_vib:    dc.b "VIB",0
 str_trm:    dc.b "TRM",0
 str_tbl:    dc.b "TBL",0
+str_grv:    dc.b "GRV",0
 str_tbs:    dc.b "TBS",0
 str_none:   dc.b "--",0
 str_mode:   dc.b "MODE",0
