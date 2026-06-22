@@ -147,7 +147,7 @@ echo_rd2   equ $00FFE4DC           ; tap-2 level reduction
 echo_ster  equ $00FFE4DD           ; 0 off, 1 on (pan taps L/R; FM only)
 echo_head  equ $00FFE4DE           ; ECHO ring write head (0-63, wraps)
 echo_ring  equ $00FFE4E0           ; 64 entries x 4 bytes (note, keyon, trig, instr) = 256 B (..$E5DF)
-grooves    equ $00FFD320           ; 16 grooves x 16 tick-counts (1 B each) = 256 B (..$D41F); free gap
+grooves    equ $00FF4E60           ; 16 grooves x 16 tick-counts (1 B each) = 256 B (..$D41F); free gap
 groove_sel equ $00FFD420           ; active groove (0-15)   ($E5E0 was inside the stack's range!)
 groove_pos equ $00FFD421           ; row position within the active groove (cycles)
 cur_groove equ $00FFD422           ; GROOVE screen: which groove is being viewed/edited (0-15)
@@ -183,7 +183,7 @@ wave_pidx  equ $00FFE3EE           ; WAVE: B+C preset cycle index (0-7)
 wave_rng   equ $00FFE3F0           ; WAVE: random-preset xorshift state (4 bytes)
 wave_on    equ $00FFE3F4           ; engine: 1 = a wave note is sounding (per-frame re-bake)
 wave_ch    equ $00FFE3F6           ; engine: ch_state ptr of the sounding wave channel (long)
-wave_ram   equ $00FFD000           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
+wave_ram   equ $00FF4F60           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain output -> Z80)
 prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vol forced full)
@@ -220,19 +220,19 @@ scb_data   equ $00FFE221
 ym_count   equ $00FFE260           ; YM write count + buffer (triples)
 ym_data    equ $00FFE261
 
-phrases    equ $00FFF000            ; phrases pool (PHRASE_SIZE each)
+phrases    equ $00FF0A60            ; phrases pool (PHRASE_SIZE each)
 PHRASE_SIZE equ 64
 NPHRASES   equ 16                   ; ($FFF400 chains - $FFF000 phrases) / 64
-chains     equ $00FFF400            ; chains pool (CHAIN_SIZE each)
+chains     equ $00FF3260            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 NCHAINS    equ 16                   ; ($FFF600 song - $FFF400 chains) / 32
-song       equ $00FFF600            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
+song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
-instrum    equ $00FFB000            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
+instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
                                     ; ($FFC000) so a canvas overrun can't reach it, clear of the stack
 INSTR_SIZE equ 64                   ; type + algo/fb/pan + 4 ops x 10 + i_tbl/i_tbs + reserved
                                     ; (power of 2; 50-63 reserved headroom while the save format is soft)
-tbl_ram    equ $00FFE800            ; editable macro tables (boot-copied from psg_tables)
+tbl_ram    equ $00FF4660            ; editable macro tables (boot-copied from psg_tables)
 NTABLE     equ 32
 TBL_ROWS   equ 16
 TROW       equ 4                    ; bytes per table row
@@ -8791,7 +8791,7 @@ load_demo:                                ; phrases -> rests, then copy demo phr
 
 clear_song:                               ; blank project: phrases -> rests, chains + song empty ($FF)
     lea     phrases, a2
-    move.w  #16*16-1, d0
+    move.w  #NPHRASES*16-1, d0
 .cz_p:
     move.b  #$FF, (a2)+
     move.b  #0, (a2)+
@@ -8799,7 +8799,7 @@ clear_song:                               ; blank project: phrases -> rests, cha
     move.b  #0, (a2)+
     dbra    d0, .cz_p
     lea     chains, a2
-    move.w  #(song-chains)-1, d0
+    move.w  #(NCHAINS*CHAIN_SIZE)-1, d0
 .cz_c:
     move.b  #$FF, (a2)+
     dbra    d0, .cz_c
