@@ -58,8 +58,10 @@ for i,(name,algo,fb,pan,ams,fms,hld,vol,ops) in enumerate(patches):
         for j,(v,rng) in enumerate(zip(op,[(0,15),(0,7),(0,127),(0,3),(0,31),(0,1),(0,31),(0,31),(0,15),(0,15)])):
             chk(v,rng[0],rng[1],f"{name} slot{k} p{j}")
         out.append('    dc.b '+", ".join(str(x) for x in op)+f'  ; slot{k} {sl[k]}')
-    out.append('    dc.b $FF, 1                    ; i_tbl(none) i_tbs')
-    out.append('    dcb.b 14, 0                    ; reserved 50-63')
+    out.append('    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)')
+    nm=(name+" "*8)[:8]
+    out.append('    dc.b "'+nm+'"        ; i_name (54-61)')
+    out.append('    dc.b 0, 0                      ; reserved 62-63')
 out.append('    even')
 block="\n".join(out)+"\n"
 open("/tmp/fm_factory.inc","w").write(block)
