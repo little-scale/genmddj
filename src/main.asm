@@ -581,11 +581,13 @@ Start:
     bsr     data_longsum
     move.l  d0, saved_sum
     clr.b   song_dirty
+    move.b  #1, proj_mode
+    move.b  #2, cur_screen
     move.b  #1, need_clear               ; draw header/name on first frame
 
     move.b  #1, in_splash
     move.b  #0, splash_row
-    move.w  #150, splash_ctr
+    move.w  #3, splash_ctr
     move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
@@ -635,7 +637,7 @@ VBlankInt:
     moveq   #1, d7
 .nev:
     tst.b   need_clear
-    beq.s   .nc
+    beq     .nc
     bsr     clear_grid
     moveq   #3, d3                        ; header at row3 col1
     cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: header at row 5 (TBL selector row 3, blank row 4)
@@ -655,6 +657,12 @@ VBlankInt:
     moveq   #1, d4
     bsr     screen_ptr
     move.l  4(a1), a1
+    cmpi.b  #SCR_SONG, cur_screen          ; the SONG screen reads "LIVE" when proj_mode = LIVE
+    bne.s   .nm_show
+    tst.b   proj_mode
+    beq.s   .nm_show
+    lea     str_md_live, a1
+.nm_show:
     bsr     print_at
     cmpi.b  #SCR_PROJ, cur_screen          ; entering PROJECT (full redraw): recompute unsaved state
     bne.s   .nc_dc
