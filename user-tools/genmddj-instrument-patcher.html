@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj instrument patcher</title>
+<style>
+  *{ box-sizing:border-box; }
+  body{ margin:0; font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif; background:#15171c; color:#cfd6e0; }
+  header{ padding:12px 18px; border-bottom:1px solid #2a2e38; display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  header h1{ font-size:17px; margin:0; }
+  header .sub{ color:#7d8595; font-size:12px; }
+  .rombar{ display:flex; gap:8px; align-items:center; padding:10px 18px; border-bottom:1px solid #2a2e38; flex-wrap:wrap; }
+  .btn{ background:#2b6cb0; color:#fff; border-radius:7px; padding:8px 14px; font-weight:600; cursor:pointer; display:inline-block; border:0; }
+  .btn:hover{ background:#3a7ec0; } .btn:disabled{ opacity:.4; cursor:not-allowed; }
+  .romstatus{ color:#9aa3b2; font-size:12px; }
+  .wrap{ display:grid; grid-template-columns:210px 1fr; gap:0; height:calc(100vh - 102px); }
+  .col{ padding:12px; overflow:auto; } .col + .col{ border-left:1px solid #2a2e38; }
+  h2{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#7d8595; margin:0 0 10px; }
+  /* instrument list */
+  .ilist{ display:flex; flex-direction:column; gap:3px; }
+  .inst{ display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
+  .inst:hover{ background:#1d212a; } .inst.sel{ background:#222838; border-color:#3a6ea5; }
+  .inst .ix{ color:#7d8595; font-size:11px; width:18px; font-family:ui-monospace,monospace; }
+  .inst .nm{ font-weight:600; font-size:13px; }
+  .inst .ty{ margin-left:auto; font-size:10px; color:#8b93a3; background:#0e1014; padding:1px 5px; border-radius:4px; }
+  /* editor */
+  .ehead{ display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  .nameedit{ background:#1d212a; border:1px solid #2a2e38; color:#cfd6e0; border-radius:6px; padding:6px 9px; width:130px; font-weight:700; font-size:15px; }
+  .grid{ display:grid; gap:10px 14px; align-items:center; }
+  .hgrid{ grid-template-columns:repeat(auto-fill, minmax(96px,1fr)); margin-bottom:18px; }
+  .fld{ display:flex; flex-direction:column; gap:3px; }
+  .fld label{ font-size:11px; color:#7d8595; text-transform:uppercase; letter-spacing:.05em; }
+  input[type=number], select{ background:#1b1f27; border:1px solid #2a2e38; color:#cfd6e0; border-radius:6px; padding:5px 7px; font-family:ui-monospace,monospace; font-size:13px; width:100%; }
+  /* operator table */
+  table.ops{ border-collapse:collapse; width:100%; max-width:560px; }
+  table.ops th, table.ops td{ padding:4px 6px; text-align:center; }
+  table.ops thead th{ font-size:12px; color:#cfd6e0; border-bottom:1px solid #2a2e38; }
+  table.ops thead th .car{ display:block; font-size:9px; color:#7aff9a; font-weight:400; }
+  table.ops thead th .mod{ display:block; font-size:9px; color:#7d8595; font-weight:400; }
+  table.ops tbody th{ text-align:right; font-size:11px; color:#7d8595; font-weight:600; padding-right:10px; white-space:nowrap; }
+  table.ops td input{ width:54px; text-align:center; }
+  .pnote{ color:#7d8595; font-size:11px; margin:10px 0; max-width:560px; }
+  #drop-ov{ position:fixed; inset:0; background:rgba(21,23,28,.88); border:4px dashed #3a6ea5; display:none;
+            align-items:center; justify-content:center; z-index:100; pointer-events:none; font-size:22px; font-weight:700; color:#cfe2f5; }
+  #drop-ov.on{ display:flex; }
+  .empty{ color:#7d8595; padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>genmddj instrument patcher</h1>
+  <span class="sub">drop a ROM &middot; edit the 32 factory FM patches (name + algo/feedback + 4 operators) &middot; download the patched ROM</span>
+</header>
+<div class="rombar">
+  <label class="btn">Load .bin&hellip;<input type="file" id="romfile" accept=".bin,.md,.gen" hidden></label>
+  <button class="btn" id="patch" disabled>Download patched ROM</button>
+  <span class="romstatus" id="romstatus"><b>Drop a genmddj <code>.bin</code> anywhere</b> to read its instrument bank.</span>
+</div>
+<div id="drop-ov">Drop a genmddj ROM to patch</div>
+
+<div class="wrap">
+  <div class="col"><h2>Instruments</h2><div class="ilist" id="ilist"><div class="empty">no ROM</div></div></div>
+  <div class="col" id="editor"><div class="empty">Load a ROM to edit instruments.</div></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const MAGIC=[0x47,0x4D,0x49,0x4E,0x53,0x54,0x52,0x30];  // "GMINSTR0"
+const NINSTR=32, REC=64;
+const TYPES=["FM","KIT","WAVE","TONE","NOISE"];
+const PANS=["off","R","L","L+R"];
+const OPLBL=["OP1","OP3","OP2","OP4"];                  // record-slot order = chip S1,S3,S2,S4
+const CARRIER=[0x08,0x08,0x08,0x08,0x0C,0x0E,0x0E,0x0F];// bit s set => record slot s is a carrier
+// header fields: [label, offset, max]
+const HDR=[["ALGO",1,7],["FB",2,7],["AMS",4,3],["FMS",5,7],["HLD",6,15],["VOL",7,15]];
+// per-operator params in record order: [label, byte-in-op, max]
+const OPP=[["MUL",0,15],["DT",1,7],["TL",2,127],["RS",3,3],["AR",4,31],["AM",5,1],["D1",6,31],["D2",7,31],["RR",8,15],["SL",9,15]];
+const DEFNAMES=["GRANDPNO","E.PIANO","SYN.BASS","PICKBASS","BRASS","STRINGS","ORGAN","SQR.LEAD","SAWLEAD","BELL","MARIMBA","VIBES","SYN.PAD","CLAV","HARPSI","FLUTE","TRUMPET","SYNBRASS","FRETLESS","WOODBASS"];
+
+let rom=null, base=-1, romName='', sel=0;
+const off = (slot,o) => base + slot*REC + o;            // byte offset of field o in record `slot`
+const getB = (slot,o) => rom[off(slot,o)];
+const setB = (slot,o,v) => { rom[off(slot,o)] = v & 0xFF; };
+const opOff = (slot,op,p) => off(slot, 8 + op*10 + p);
+
+function readName(slot){
+  let s=''; for(let i=0;i<8;i++){ const c=rom[off(slot,54+i)]; s += c? String.fromCharCode(c):' '; }
+  s=s.replace(/\s+$/,''); return s || (DEFNAMES[slot]||('INST'+slot));
+}
+function writeName(slot,str){
+  str=(str.toUpperCase()+'        ').slice(0,8);
+  for(let i=0;i<8;i++) rom[off(slot,54+i)] = str.charCodeAt(i)&0x7F;
+}
+
+function findMagic(u8){ outer:for(let i=0;i+8<=u8.length;i++){ for(let j=0;j<8;j++) if(u8[i+j]!==MAGIC[j]) continue outer; return i+8; } return -1; }
+
+function loadRom(f){
+  if(!f) return; romName=f.name;
+  const r=new FileReader();
+  r.onload=()=>{
+    rom=new Uint8Array(r.result); base=findMagic(rom);
+    if(base<0){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${romName}: GMINSTR0 not found</b> — is this a genmddj ROM?`; $("#patch").disabled=true; rom=null; return; }
+    $("#romstatus").innerHTML=`Loaded <b>${romName}</b> (${rom.length>>10} KB) — bank at $${base.toString(16).toUpperCase()}. Edit, then download.`;
+    $("#patch").disabled=false; sel=0; renderList(); renderEditor();
+  };
+  r.readAsArrayBuffer(f);
+}
+
+function renderList(){
+  const el=$("#ilist"); el.innerHTML='';
+  for(let i=0;i<NINSTR;i++){
+    const d=document.createElement('div'); d.className='inst'+(i===sel?' sel':'');
+    d.innerHTML=`<span class="ix">${i.toString().padStart(2,'0')}</span><span class="nm">${readName(i)}</span><span class="ty">${TYPES[getB(i,0)]||'?'} A${getB(i,1)}</span>`;
+    d.onclick=()=>{ sel=i; renderList(); renderEditor(); };
+    el.appendChild(d);
+  }
+}
+
+function numField(label,val,max,oninput,min=0){
+  const f=document.createElement('div'); f.className='fld';
+  f.innerHTML=`<label>${label}</label><input type="number" min="${min}" max="${max}" value="${val}">`;
+  const inp=f.querySelector('input');
+  inp.oninput=()=>{ let v=Math.max(min,Math.min(max,parseInt(inp.value||0))); oninput(v); };
+  return f;
+}
+
+function renderEditor(){
+  const el=$("#editor"); el.innerHTML='';
+  // name + type + pan
+  const head=document.createElement('div'); head.className='ehead';
+  const nm=document.createElement('input'); nm.className='nameedit'; nm.maxLength=8; nm.value=readName(sel);
+  nm.oninput=()=>{ writeName(sel,nm.value); renderList(); };
+  head.appendChild(nm);
+  const mksel=(label,opts,val,cb)=>{ const f=document.createElement('div'); f.className='fld';
+    f.innerHTML=`<label>${label}</label>`; const s=document.createElement('select');
+    opts.forEach((o,i)=>{ const op=document.createElement('option'); op.value=i; op.textContent=o; if(i===val)op.selected=true; s.appendChild(op); });
+    s.onchange=()=>{ cb(+s.value); renderList(); }; f.appendChild(s); return f; };
+  head.appendChild(mksel('TYPE',TYPES,getB(sel,0),v=>setB(sel,0,v)));
+  head.appendChild(mksel('PAN',PANS,getB(sel,3),v=>setB(sel,3,v)));
+  el.appendChild(head);
+
+  // header numeric fields
+  const hg=document.createElement('div'); hg.className='grid hgrid';
+  HDR.forEach(([l,o,mx])=> hg.appendChild(numField(l,getB(sel,o),mx,v=>{ setB(sel,o,v); if(l==='ALGO'){ renderList(); renderEditor(); } })));
+  el.appendChild(hg);
+
+  // operator table (params x 4 ops), carrier badges from ALGO
+  const algo=getB(sel,1), cmask=CARRIER[algo]||0;
+  const tbl=document.createElement('table'); tbl.className='ops';
+  let thead='<thead><tr><th></th>'; for(let s=0;s<4;s++){ const car=(cmask>>s)&1; thead+=`<th>${OPLBL[s]}<span class="${car?'car':'mod'}">${car?'carrier':'mod'}</span></th>`; } thead+='</tr></thead>';
+  tbl.innerHTML=thead;
+  const tb=document.createElement('tbody');
+  OPP.forEach(([l,p,mx])=>{ const tr=document.createElement('tr'); const th=document.createElement('th'); th.textContent=l; tr.appendChild(th);
+    for(let s=0;s<4;s++){ const td=document.createElement('td'); const inp=document.createElement('input'); inp.type='number'; inp.min=0; inp.max=mx; inp.value=rom[opOff(sel,s,p)];
+      inp.oninput=()=>{ rom[opOff(sel,s,p)]=Math.max(0,Math.min(mx,parseInt(inp.value||0)))&0xFF; }; td.appendChild(inp); tr.appendChild(td); }
+    tb.appendChild(tr); });
+  tbl.appendChild(tb); el.appendChild(tbl);
+
+  el.insertAdjacentHTML('beforeend','<div class="pnote">TL 0 = loudest, 127 = silent. Carriers are audible; modulators set brightness. Operator columns are the chip slot order (OP1, OP3, OP2, OP4), matching the console FM screen. Non-FM types reuse these bytes differently.</div>');
+
+  // extras: macro table + transpose
+  const ex=document.createElement('div'); ex.className='grid hgrid';
+  ex.appendChild(numField('TABLE',getB(sel,48),255,v=>setB(sel,48,v)));
+  ex.appendChild(numField('TBL.SPD',getB(sel,49),15,v=>setB(sel,49,v),0));
+  const tsp=getB(sel,53); ex.appendChild(numField('TRANSPOSE',tsp>127?tsp-256:tsp,48,v=>setB(sel,53,v),-48));
+  el.appendChild(ex);
+}
+
+$("#romfile").onchange=e=>loadRom(e.target.files[0]);
+$("#patch").onclick=()=>{
+  if(!rom) return;
+  let sum=0; for(let i=0x200;i+1<rom.length;i+=2) sum=(sum+((rom[i]<<8)|rom[i+1]))%0x10000;  // MD checksum at $18E
+  rom[0x18E]=(sum>>8)&0xFF; rom[0x18F]=sum&0xFF;
+  const name=romName.replace(/\.(bin|md|gen)$/i,'')+'-inst.bin';
+  const url=URL.createObjectURL(new Blob([rom],{type:'application/octet-stream'}));
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  $("#romstatus").innerHTML=`Patched &amp; downloaded <b>${name}</b> (checksum $${sum.toString(16).toUpperCase().padStart(4,'0')}). Flash it.`;
+};
+// drop a ROM anywhere
+const _ov=$("#drop-ov"); let _dn=0;
+window.addEventListener('dragenter',e=>{ e.preventDefault(); _dn++; _ov.classList.add('on'); });
+window.addEventListener('dragover', e=>e.preventDefault());
+window.addEventListener('dragleave',e=>{ if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
+window.addEventListener('drop',e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on'); loadRom(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>
