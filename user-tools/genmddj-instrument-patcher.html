@@ -50,6 +50,22 @@
   .key{ background:#1b1f27; border:1px solid #2a2e38; color:#cfd6e0; border-radius:5px; padding:7px 9px; font-family:ui-monospace,monospace; font-size:12px; cursor:pointer; min-width:32px; }
   .key:hover{ background:#222838; } .key.on{ background:#2b6cb0; color:#fff; border-color:#3a7ec0; }
   .key.stop{ background:#3a2228; border-color:#5a2a32; }
+  /* piano keyboard */
+  .kbd{ position:relative; white-space:nowrap; font-size:0; height:84px; }
+  .wk{ display:inline-block; width:26px; height:84px; background:#dfe6ee; border:1px solid #11141a; border-top:none; border-radius:0 0 4px 4px; cursor:pointer; vertical-align:top; }
+  .wk:hover{ background:#eef3f8; } .wk.on{ background:#6fa8dc; }
+  .bk{ position:absolute; top:0; width:16px; height:52px; background:#15171c; border:1px solid #000; border-radius:0 0 3px 3px; cursor:pointer; z-index:2; }
+  .bk:hover{ background:#2a2e38; } .bk.on{ background:#2b6cb0; }
+  /* sliders */
+  .sl{ display:grid; grid-template-columns:38px 1fr 28px; align-items:center; gap:8px; margin:3px 0; }
+  .sl label{ color:#7d8595; font-size:11px; }
+  .sl input[type=range]{ width:100%; }
+  .sl .v{ font-family:ui-monospace,monospace; font-size:12px; text-align:right; color:#9aa3b2; }
+  .hdrsl{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:2px 22px; margin-bottom:16px; }
+  .opgrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(232px,1fr)); gap:12px; margin:6px 0 14px; }
+  .oppanel{ background:#1b1f27; border:1px solid #2a2e38; border-radius:8px; padding:8px 12px; }
+  .oppanel h3{ margin:0 0 6px; font-size:13px; display:flex; align-items:center; gap:8px; }
+  .oppanel h3 .car{ font-size:10px; color:#7aff9a; font-weight:400; } .oppanel h3 .mod{ font-size:10px; color:#7d8595; font-weight:400; }
 </style>
 </head>
 <body>
@@ -122,12 +138,25 @@ function renderList(){
   }
 }
 
-function numField(label,val,max,oninput,min=0){
-  const f=document.createElement('div'); f.className='fld';
-  f.innerHTML=`<label>${label}</label><input type="number" min="${min}" max="${max}" value="${val}">`;
-  const inp=f.querySelector('input');
-  inp.oninput=()=>{ let v=Math.max(min,Math.min(max,parseInt(inp.value||0))); oninput(v); };
-  return f;
+// a labelled slider; optional disp(v)->text and store(v)->byte for special fields
+function slider(label,val,min,max,oninput,disp,store){
+  disp=disp||(x=>x); store=store||(x=>x);
+  const row=document.createElement('div'); row.className='sl';
+  row.innerHTML=`<label>${label}</label><input type="range" min="${min}" max="${max}" value="${val}"><span class="v">${disp(val)}</span>`;
+  const inp=row.querySelector('input'), v=row.querySelector('.v');
+  inp.oninput=()=>{ const n=+inp.value; v.textContent=disp(n); oninput(store(n)); };
+  return row;
+}
+// 2-octave clickable piano (C3..C5); click a key to audition the current patch at that pitch
+function buildKeyboard(){
+  const wrap=document.createElement('div'); wrap.className='kbd';
+  const WW=26, BW=16, OCT=2, START=48, white=[0,2,4,5,7,9,11], blackAfter={0:1,1:3,3:6,4:8,5:10};
+  for(let o=0;o<OCT;o++) for(let k=0;k<7;k++){ const midi=START+o*12+white[k];
+    const w=document.createElement('div'); w.className='wk'; w.onclick=()=>play(sel,midi,w); wrap.appendChild(w); }
+  { const midi=START+OCT*12, w=document.createElement('div'); w.className='wk'; w.onclick=()=>play(sel,midi,w); wrap.appendChild(w); }
+  for(let o=0;o<OCT;o++) for(const k in blackAfter){ const gi=o*7+(+k), midi=START+o*12+blackAfter[k];
+    const b=document.createElement('div'); b.className='bk'; b.style.left=((gi+1)*WW-BW/2)+'px'; b.onclick=()=>play(sel,midi,b); wrap.appendChild(b); }
+  return wrap;
 }
 
 function renderEditor(){
@@ -152,38 +181,40 @@ function renderEditor(){
   const st=document.createElement('button'); st.className='key'; st.textContent='.tfi'; st.title='export TFI for other YM2612 tools'; st.onclick=exportTfi; head.appendChild(st);
   el.appendChild(head);
 
-  // audition keyboard — plays the (live-edited) patch through the FM model below
+  // audition piano — click a key to play the (live-edited) patch at that pitch
   const aud=document.createElement('div'); aud.className='aud';
-  aud.innerHTML='<span class="lbl">Audition</span>';
-  [["C3",48],["D3",50],["E3",52],["F3",53],["G3",55],["A3",57],["B3",59],["C4",60],["D4",62],["E4",64],["F4",65],["G4",67],["A4",69],["B4",71],["C5",72]]
-    .forEach(([nm,midi])=>{ const k=document.createElement('button'); k.className='key'; k.textContent=nm; k.onclick=()=>play(sel,midi,k); aud.appendChild(k); });
+  aud.appendChild(buildKeyboard());
   const sb=document.createElement('button'); sb.className='key stop'; sb.textContent='■'; sb.title='stop'; sb.onclick=()=>stopAudition(); aud.appendChild(sb);
   el.appendChild(aud);
 
-  // header numeric fields
-  const hg=document.createElement('div'); hg.className='grid hgrid';
-  HDR.forEach(([l,o,mx])=> hg.appendChild(numField(l,getB(sel,o),mx,v=>{ setB(sel,o,v); if(l==='ALGO'){ renderList(); renderEditor(); } })));
+  const badges=[];
+  function updateBadges(algo){ const cm=CARRIER[algo&7]||0; badges.forEach((bd,s)=>{ const c=(cm>>s)&1; bd.className=c?'car':'mod'; bd.textContent=c?'carrier':'mod'; }); }
+  // voice params as sliders: ALGO / FB / AMS / FMS / HLD / VOL
+  const hg=document.createElement('div'); hg.className='hdrsl';
+  hg.appendChild(slider('ALGO',getB(sel,1),0,7,v=>{ setB(sel,1,v); updateBadges(v); renderList(); }));
+  [['FB',2,7],['AMS',4,3],['FMS',5,7],['HLD',6,15],['VOL',7,15]].forEach(([l,o,mx])=> hg.appendChild(slider(l,getB(sel,o),0,mx,v=>setB(sel,o,v))));
   el.appendChild(hg);
 
-  // operator table (params x 4 ops), carrier badges from ALGO
-  const algo=getB(sel,1), cmask=CARRIER[algo]||0;
-  const tbl=document.createElement('table'); tbl.className='ops';
-  let thead='<thead><tr><th></th>'; for(let s=0;s<4;s++){ const car=(cmask>>s)&1; thead+=`<th>${OPLBL[s]}<span class="${car?'car':'mod'}">${car?'carrier':'mod'}</span></th>`; } thead+='</tr></thead>';
-  tbl.innerHTML=thead;
-  const tb=document.createElement('tbody');
-  OPP.forEach(([l,p,mx])=>{ const tr=document.createElement('tr'); const th=document.createElement('th'); th.textContent=l; tr.appendChild(th);
-    for(let s=0;s<4;s++){ const td=document.createElement('td'); const inp=document.createElement('input'); inp.type='number'; inp.min=0; inp.max=mx; inp.value=rom[opOff(sel,s,p)];
-      inp.oninput=()=>{ rom[opOff(sel,s,p)]=Math.max(0,Math.min(mx,parseInt(inp.value||0)))&0xFF; }; td.appendChild(inp); tr.appendChild(td); }
-    tb.appendChild(tr); });
-  tbl.appendChild(tb); el.appendChild(tbl);
+  // operator panels (sliders), carrier/mod badge per panel from ALGO
+  const og=document.createElement('div'); og.className='opgrid';
+  const cmask=CARRIER[getB(sel,1)&7]||0;
+  OPLBL.forEach((lbl,s)=>{ const b=8+s*10;
+    const p=document.createElement('div'); p.className='oppanel';
+    const h=document.createElement('h3'); h.innerHTML=`<span>${lbl}</span>`;
+    const car=(cmask>>s)&1, bd=document.createElement('span'); bd.className=car?'car':'mod'; bd.textContent=car?'carrier':'mod'; badges[s]=bd; h.appendChild(bd);
+    p.appendChild(h);
+    OPP.forEach(([l,po,mx])=> p.appendChild(slider(l,getB(sel,b+po),0,mx,v=>setB(sel,b+po,v))));
+    og.appendChild(p);
+  });
+  el.appendChild(og);
 
-  el.insertAdjacentHTML('beforeend','<div class="pnote">TL 0 = loudest, 127 = silent. Carriers are audible; modulators set brightness. Operator columns are the chip slot order (OP1, OP3, OP2, OP4), matching the console FM screen. Non-FM types reuse these bytes differently.</div>');
+  el.insertAdjacentHTML('beforeend','<div class="pnote">TL 0 = loudest, 127 = silent. Carriers are audible; modulators set brightness. Panels are in chip slot order (OP1, OP3, OP2, OP4), matching the console FM screen.</div>');
 
-  // extras: macro table + transpose
-  const ex=document.createElement('div'); ex.className='grid hgrid';
-  ex.appendChild(numField('TABLE',getB(sel,48),255,v=>setB(sel,48,v)));
-  ex.appendChild(numField('TBL.SPD',getB(sel,49),15,v=>setB(sel,49,v),0));
-  const tsp=getB(sel,53); ex.appendChild(numField('TRANSPOSE',tsp>127?tsp-256:tsp,48,v=>setB(sel,53,v),-48));
+  // extras: macro table / table speed / transpose
+  const ex=document.createElement('div'); ex.className='hdrsl';
+  const t=getB(sel,48); ex.appendChild(slider('TABLE',(t>31?32:t),0,32,v=>setB(sel,48,v),v=>v>31?'--':v,v=>v>31?255:v));
+  ex.appendChild(slider('TBL.SPD',getB(sel,49),0,15,v=>setB(sel,49,v)));
+  const tsp=getB(sel,53); ex.appendChild(slider('TRANSPOSE',tsp>127?tsp-256:tsp,-24,24,v=>setB(sel,53,v)));
   el.appendChild(ex);
 }
 
