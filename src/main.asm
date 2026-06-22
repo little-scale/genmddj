@@ -151,6 +151,7 @@ grooves    equ $00FFD320           ; 16 grooves x 16 tick-counts (1 B each) = 25
 groove_sel equ $00FFD420           ; active groove (0-15)   ($E5E0 was inside the stack's range!)
 groove_pos equ $00FFD421           ; row position within the active groove (cycles)
 cur_groove equ $00FFD422           ; GROOVE screen: which groove is being viewed/edited (0-15)
+proj_groove equ $00FFD423          ; song default groove (active at play-start; G switches it live)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -513,6 +514,7 @@ Start:
     move.b  #0, groove_sel                ; active groove 0
     move.b  #0, groove_pos
     move.b  #0, cur_groove                ; GROOVE screen starts on groove 0
+    move.b  #0, proj_groove               ; default groove 0
     move.b  #0, cur_wave                  ; WAVE screen: wave 0, step 0
     move.b  #0, cur_wstep
     lea     wave_ram, a2                  ; init waves: wave 0 = a sawtooth, 1-15 = flat centre
@@ -5097,6 +5099,7 @@ play_context:                             ; C+B: toggle audition of the current 
 engine_play_reset:
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
+    move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
     lea     phrase_plays, a0               ; reset I-command counts + AMP shadow at play-start
     moveq   #NPHRASES+NLFO-1, d0           ; phrase_plays (16) + lfo_amp (16) are contiguous
 .rpc:
@@ -5840,6 +5843,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_i
     cmpi.b  #10, d2                        ; J xy = repeat-gated transpose (sibling of I)
     beq     .cmd_j
+    cmpi.b  #7, d2                         ; G xx = select active groove (global)
+    beq     .cmd_g
     cmpi.b  #20, d2                        ; T xx = tempo (BPM, global)
     beq     .cmd_t
     cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (global)
@@ -5874,6 +5879,11 @@ advance_ch:                               ; a6 = channel
     bra     .cmddone
 .cmd_w:
     move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
+    bra     .cmddone
+.cmd_g:
+    move.b  (3,a1,d1.w), d2               ; G xx = switch the active groove (clamp 0-15)
+    andi.b  #$0F, d2
+    move.b  d2, groove_sel
     bra     .cmddone
 .cmd_j:                                    ; J xy: x = repeat mask (mod 4), y = signed transpose
     moveq   #0, d2
@@ -7884,6 +7894,64 @@ draw_dec3:                                ; d3=0..255, d4=char offset; (a0) addr
     move.w  d0, VDP_DATA
     rts
 
+draw_dec4:                                ; d3.w = 0..9999, d4 = char offset; (a0) addr preset
+    moveq   #0, d0
+    move.w  d3, d0
+    divu.w  #1000, d0
+    move.w  d0, d1
+    add.w   #'0', d1
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    clr.w   d0
+    swap    d0
+    divu.w  #100, d0
+    move.w  d0, d1
+    add.w   #'0', d1
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    clr.w   d0
+    swap    d0
+    divu.w  #10, d0
+    move.w  d0, d1
+    add.w   #'0', d1
+    add.w   d4, d1
+    move.w  d1, VDP_DATA
+    clr.w   d0
+    swap    d0
+    add.w   #'0', d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    rts
+
+groove_bpm:                               ; in d3.b = groove#; out d3.w = BPM (= 1250*len/sum). clobbers d0-d2/a0
+    moveq   #0, d0
+    move.b  d3, d0
+    lsl.w   #4, d0
+    lea     grooves, a0
+    adda.w  d0, a0                          ; a0 -> the groove
+    moveq   #0, d1                          ; length (ticks until a 0 / 16)
+    moveq   #0, d2                          ; sum of those ticks
+    moveq   #0, d3                          ; index (reuse d3 now the groove# is consumed)
+.gb:
+    moveq   #0, d0
+    move.b  (a0,d3.w), d0
+    beq.s   .gbd
+    add.w   d0, d2
+    addq.w  #1, d1
+    addq.w  #1, d3
+    cmpi.w  #16, d3
+    bne.s   .gb
+.gbd:
+    moveq   #0, d3
+    tst.w   d2
+    beq.s   .gbr                            ; empty groove -> BPM 0
+    move.l  #1250, d0
+    mulu.w  d1, d0                          ; 1250 * length
+    divu.w  d2, d0                          ; / sum
+    move.w  d0, d3
+.gbr:
+    rts
+
 draw_dec_s:                               ; d3=signed byte, d4=offset; addr preset -> sign + 2 digits
     move.b  d3, d0
     ext.w   d0
@@ -8070,6 +8138,16 @@ render_groove:                            ; GRV selector (cur_row 0) + 16 tick v
     moveq   #$60, d4
 .ng_nsel:
     bsr     draw_hex2
+    moveq   #3, d3                          ; BPM readout (derived from this groove) at row 3, col 10
+    moveq   #10, d4
+    lea     str_bpm, a1
+    bsr     print_at
+    move.b  cur_groove, d3
+    bsr     groove_bpm                     ; d3 = BPM (clobbers a0)
+    lea     VDP_CTRL, a0
+    move.l  #$419C0003, (a0)               ; (row 3, col 14)
+    moveq   #0, d4
+    bsr     draw_dec4
     moveq   #0, d6                          ; tick index 0..15
 .gr:
     moveq   #0, d0                          ; clear high word (VDP command needs a clean 2nd word)
@@ -8117,14 +8195,16 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     moveq   #1, d4
     lea     str_p_tmpo, a1
     bsr     print_at
+    move.b  groove_sel, d3                 ; TMPO now shows the active groove's BPM (grooves are the clock)
+    bsr     groove_bpm                     ; d3 = BPM (clobbers a0)
+    lea     VDP_CTRL, a0
     move.l  #$42900003, (a0)
-    move.b  proj_tmpo, d3
     moveq   #0, d4
     tst.b   cur_row
     bne.s   .pt
     moveq   #$60, d4
 .pt:
-    bsr     draw_dec3
+    bsr     draw_dec4
     moveq   #6, d3
     moveq   #1, d4
     lea     str_tsp, a1
@@ -8403,34 +8483,50 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     bsr     adj_field
     move.b  #1, g_lfo_dirty                   ; re-emit $22 on the next push -> new rate heard at once
     rts
-.ep_tmpo:                                 ; L/R +-1, U/D +-10, clamp [32,255]
-    moveq   #0, d0
-    move.b  proj_tmpo, d0
-    btst    #2, d2
+.ep_tmpo:                                 ; TMPO = scale the active groove (every tick +-1): faster/slower, swing kept
+    moveq   #0, d0                          ; d0 = delta added to every tick (+1 slower / -1 faster)
+    btst    #2, d2                          ; Left  -> slower
     beq.s   .et1
-    subq.w  #1, d0
+    addq.w  #1, d0
 .et1:
-    btst    #3, d2
+    btst    #1, d2                          ; Down  -> slower
     beq.s   .et2
     addq.w  #1, d0
 .et2:
-    btst    #0, d2
+    btst    #3, d2                          ; Right -> faster
     beq.s   .et3
-    addi.w  #10, d0
+    subq.w  #1, d0
 .et3:
-    btst    #1, d2
+    btst    #0, d2                          ; Up    -> faster
     beq.s   .et4
-    subi.w  #10, d0
+    subq.w  #1, d0
 .et4:
-    cmpi.w  #32, d0
-    bge.s   .et5
-    moveq   #32, d0
+    tst.w   d0
+    beq.s   .et6                            ; no net change
+    lea     grooves, a1                    ; a1 -> the active groove
+    moveq   #0, d1
+    move.b  groove_sel, d1
+    lsl.w   #4, d1
+    adda.w  d1, a1
+    moveq   #15, d1
 .et5:
-    cmpi.w  #255, d0
-    ble.s   .et6
-    move.w  #255, d0
+    moveq   #0, d3
+    move.b  (a1), d3
+    beq.s   .etn                            ; 0 = end marker, leave it
+    add.w   d0, d3
+    cmpi.w  #1, d3                          ; clamp each tick to [1, 63]
+    bge.s   .etc
+    moveq   #1, d3
+.etc:
+    cmpi.w  #63, d3
+    ble.s   .ets
+    moveq   #63, d3
+.ets:
+    move.b  d3, (a1)
+.etn:
+    addq.l  #1, a1
+    dbra    d1, .et5
 .et6:
-    move.b  d0, proj_tmpo
     rts
 .ep_tsp:                                  ; signed-byte transpose like every other TSP: L/R +-1,
     lea     proj_tsp, a1                    ;   U/D +-octave, wrap $00<->$FF (01+ up, FF- down)
@@ -8616,6 +8712,7 @@ str_vib:    dc.b "VIB",0
 str_trm:    dc.b "TRM",0
 str_tbl:    dc.b "TBL",0
 str_grv:    dc.b "GRV",0
+str_bpm:    dc.b "BPM",0
 str_tbs:    dc.b "TBS",0
 str_none:   dc.b "--",0
 str_mode:   dc.b "MODE",0
