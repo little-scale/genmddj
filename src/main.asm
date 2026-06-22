@@ -192,8 +192,8 @@ wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fo
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
-phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES bytes) for the I command
-lfo_amp    equ $00FFD310           ; NLFO current-amplitude bytes (0-7) for the live AMP bar
+phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES=160 bytes, ..$D39F) for the I command
+lfo_amp    equ $00FFD3A0           ; NLFO amp bytes (0-7); sits right after phrase_plays (engine_play_reset clears both)
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -222,10 +222,10 @@ ym_data    equ $00FFE261
 
 phrases    equ $00FF0A60            ; phrases pool (PHRASE_SIZE each)
 PHRASE_SIZE equ 64
-NPHRASES   equ 16                   ; ($FFF400 chains - $FFF000 phrases) / 64
+NPHRASES   equ 160                  ; ($FFF400 chains - $FFF000 phrases) / 64
 chains     equ $00FF3260            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
-NCHAINS    equ 16                   ; ($FFF600 song - $FFF400 chains) / 32
+NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
 song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 16
 instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
@@ -5136,7 +5136,7 @@ engine_play_reset:
     move.b  #0, $00A1000B                 ; OFF -> release the lines (inputs)
 .epr_syncd:
     lea     phrase_plays, a0               ; reset I-command counts + AMP shadow at play-start
-    moveq   #NPHRASES+NLFO-1, d0           ; phrase_plays (16) + lfo_amp (16) are contiguous
+    move.w  #NPHRASES+NLFO-1, d0           ; phrase_plays (160) + lfo_amp (16) contiguous (>127: not moveq)
 .rpc:
     clr.b   (a0)+
     dbra    d0, .rpc
@@ -8757,18 +8757,23 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
 
 load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
     lea     phrases, a2
-    move.w  #16*16-1, d0
+    move.w  #NPHRASES*16-1, d0
 .ld_clr:
     move.b  #$FF, (a2)+
     move.b  #0, (a2)+
     move.b  #0, (a2)+
     move.b  #0, (a2)+
     dbra    d0, .ld_clr
-    lea     chains, a2                     ; chains + song (contiguous) -> empty ($FF) so untouched
-    move.w  #(NCHAINS*CHAIN_SIZE)+(NSONGROWS*NCH)-1, d0   ; slots aren't read as phrase 00 / garbage
+    lea     chains, a2                     ; chains pool -> empty ($FF) so untouched slots aren't phrase 00
+    move.w  #(NCHAINS*CHAIN_SIZE)-1, d0
 .ld_ce:
     move.b  #$FF, (a2)+
     dbra    d0, .ld_ce
+    lea     song, a2                       ; song pool -> empty ($FF) (no longer adjacent to chains)
+    move.w  #(NSONGROWS*NCH)-1, d0
+.ld_se:
+    move.b  #$FF, (a2)+
+    dbra    d0, .ld_se
     lea     demo_phrases, a1
     lea     phrases, a2
     move.w  #(demo_end-demo_phrases)-1, d0
