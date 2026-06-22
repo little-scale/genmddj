@@ -5336,6 +5336,34 @@ FMLFO_NPARM equ 34
 ; (note,keyon,trig,instr) into the ring and drive the target voice(s) from the delayed slots --
 ; overriding their phrase, so the echo "owns" them. FM modes re-trigger via c_trig + compose_fm's
 ; patch/key path. (Tick = frame for now; becomes the groove tick when grooves land.)
+is_echo_target:                           ; a6 = channel -> d0 = 1 if it's an echo target for echo_mode
+    moveq   #0, d0
+    tst.b   echo_mode
+    beq.s   .iet_no
+    moveq   #0, d1
+    move.b  c_track(a6), d1
+    move.b  echo_mode, d2
+    moveq   #0, d3                          ; input base track: 0 (F-modes) or 6 (T-modes)
+    cmpi.b  #2, d2
+    bls.s   .iet_b
+    moveq   #6, d3
+.iet_b:
+    addq.b  #1, d3                          ; target 1 = input+1
+    cmp.b   d1, d3
+    beq.s   .iet_yes
+    cmpi.b  #2, d2                          ; target 2 = input+2, only in modes 2/4
+    beq.s   .iet_t2
+    cmpi.b  #4, d2
+    bne.s   .iet_no
+.iet_t2:
+    addq.b  #1, d3
+    cmp.b   d1, d3
+    bne.s   .iet_no
+.iet_yes:
+    moveq   #1, d0
+.iet_no:
+    rts
+
 echo_tick:
     tst.b   echo_mode
     beq     .et_ret
@@ -5355,15 +5383,39 @@ echo_tick:
     mulu.w  #CHSIZE, d1
     lea     ch_state, a1
     adda.w  d1, a1
-    move.b  c_note(a1), (a0)               ; capture this tick's input state
-    move.b  c_keyon(a1), 1(a0)
-    move.b  c_trig(a1), 2(a0)
+    move.b  c_note(a1), (a0)               ; capture note + instr always; hold + trig per voice type
     move.b  c_instr(a1), 3(a0)
-    addq.b  #1, d2                          ; target 1 = input+1, delay TAP1, reduction RD1
+    cmpi.b  #1, c_type(a1)
+    bne.s   .et_cpsg
+    move.b  c_keyon(a1), 1(a0)             ; FM input: hold = c_keyon, trig = c_trig
+    move.b  c_trig(a1), 2(a0)
+    bra.s   .et_cap
+.et_cpsg:
+    moveq   #0, d0                          ; PSG input: hold = (c_estate != 0)
+    tst.b   c_estate(a1)
+    beq.s   .et_ph
+    moveq   #1, d0
+.et_ph:
+    move.b  d0, 1(a0)
+    moveq   #0, d0                          ;            trig = attack just started (estate 1, ectr 0)
+    cmpi.b  #1, c_estate(a1)
+    bne.s   .et_pt
+    tst.b   c_ectr(a1)
+    bne.s   .et_pt
+    moveq   #1, d0
+.et_pt:
+    move.b  d0, 2(a0)
+.et_cap:
+    addq.b  #1, d2                          ; target 1 = input+1, delay TAP1, reduction RD1, pan L
     move.b  echo_tap1, d0
     move.b  echo_rd1, d3
+    move.b  #$C0, d5
+    tst.b   echo_ster
+    beq.s   .et_p1
+    move.b  #$80, d5                        ; STER: tap1 = left
+.et_p1:
     bsr     echo_replay
-    move.b  echo_mode, d0                  ; target 2 (modes 2/4) = input+2, delay TAP2, RD2
+    move.b  echo_mode, d0                  ; target 2 (modes 2/4) = input+2, delay TAP2, RD2, pan R
     cmpi.b  #2, d0
     beq.s   .et_t2
     cmpi.b  #4, d0
@@ -5372,6 +5424,11 @@ echo_tick:
     addq.b  #1, d2
     move.b  echo_tap2, d0
     move.b  echo_rd2, d3
+    move.b  #$C0, d5
+    tst.b   echo_ster
+    beq.s   .et_p2
+    move.b  #$40, d5                        ; STER: tap2 = right
+.et_p2:
     bsr     echo_replay
 .et_adv:
     addq.b  #1, echo_head
@@ -5391,9 +5448,11 @@ echo_replay:                              ; d2 = target track, d0 = tap delay, d
     lea     ch_state, a1
     adda.w  d1, a1
     move.b  (a0), c_note(a1)
-    move.b  1(a0), c_keyon(a1)
-    move.b  2(a0), c_trig(a1)
     move.b  3(a0), c_instr(a1)
+    cmpi.b  #1, c_type(a1)
+    bne.s   .er_psg
+    move.b  1(a0), c_keyon(a1)             ; FM target: re-key + patch via compose_fm's c_trig path
+    move.b  2(a0), c_trig(a1)
     moveq   #15, d4                          ; RD level drop: ride the X-command carrier-TL path
     sub.b   d3, d4                           ; lx_vol = 15 - RD (full..silent); atten = RD*8 below stored
     bpl.s   .er_v
@@ -5403,6 +5462,18 @@ echo_replay:                              ; d2 = target track, d0 = tap delay, d
     move.b  d4, (a0,d2.w)
     lea     lx_dirty, a0
     move.b  #1, (a0,d2.w)
+    lea     lo_b4, a0                        ; STER stereo: pan tap L/R ($C0 center = STER off; FM only)
+    move.b  d5, (a0,d2.w)
+    lea     lo_dirty, a0
+    move.b  #1, (a0,d2.w)
+    rts
+.er_psg:
+    tst.b   2(a0)                            ; PSG target: restart the AHD envelope on a note-on edge
+    beq.s   .er_pret                         ;   (PSG mono -> no stereo; RD not applied here yet)
+    move.b  #1, c_estate(a1)
+    move.b  #0, c_ectr(a1)
+    move.b  #0, c_vol(a1)
+.er_pret:
     rts
 
 engine_tick:
@@ -5457,7 +5528,11 @@ engine_tick:
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .adv:
+    bsr     is_echo_target                ; echo owns its targets -> don't run their phrase
+    tst.b   d0
+    bne.s   .adv_skip
     bsr     advance_ch
+.adv_skip:
     lea     CHSIZE(a6), a6
     dbra    d7, .adv
 .noadv:
