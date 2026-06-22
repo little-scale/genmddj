@@ -5338,7 +5338,7 @@ FMLFO_NPARM equ 34
 ; patch/key path. (Tick = frame for now; becomes the groove tick when grooves land.)
 echo_tick:
     tst.b   echo_mode
-    beq.s   .et_ret
+    beq     .et_ret
     moveq   #0, d2                          ; input base track: F1 (0) for modes 1/2, T1 (6) for 3/4
     move.b  echo_mode, d0
     cmpi.b  #2, d0
@@ -5359,10 +5359,11 @@ echo_tick:
     move.b  c_keyon(a1), 1(a0)
     move.b  c_trig(a1), 2(a0)
     move.b  c_instr(a1), 3(a0)
-    addq.b  #1, d2                          ; target 1 = input+1, delay TAP1
+    addq.b  #1, d2                          ; target 1 = input+1, delay TAP1, reduction RD1
     move.b  echo_tap1, d0
+    move.b  echo_rd1, d3
     bsr     echo_replay
-    move.b  echo_mode, d0                  ; target 2 (modes 2/4) = input+2, delay TAP2
+    move.b  echo_mode, d0                  ; target 2 (modes 2/4) = input+2, delay TAP2, RD2
     cmpi.b  #2, d0
     beq.s   .et_t2
     cmpi.b  #4, d0
@@ -5370,13 +5371,14 @@ echo_tick:
 .et_t2:
     addq.b  #1, d2
     move.b  echo_tap2, d0
+    move.b  echo_rd2, d3
     bsr     echo_replay
 .et_adv:
     addq.b  #1, echo_head
 .et_ret:
     rts
 
-echo_replay:                              ; d2 = target track, d0 = tap delay; drive it from ring[head-tap]
+echo_replay:                              ; d2 = target track, d0 = tap delay, d3 = RD; drive from ring[head-tap]
     moveq   #0, d1
     move.b  echo_head, d1
     sub.b   d0, d1
@@ -5392,6 +5394,15 @@ echo_replay:                              ; d2 = target track, d0 = tap delay; d
     move.b  1(a0), c_keyon(a1)
     move.b  2(a0), c_trig(a1)
     move.b  3(a0), c_instr(a1)
+    moveq   #15, d4                          ; RD level drop: ride the X-command carrier-TL path
+    sub.b   d3, d4                           ; lx_vol = 15 - RD (full..silent); atten = RD*8 below stored
+    bpl.s   .er_v
+    moveq   #0, d4
+.er_v:
+    lea     lx_vol, a0
+    move.b  d4, (a0,d2.w)
+    lea     lx_dirty, a0
+    move.b  #1, (a0,d2.w)
     rts
 
 engine_tick:
