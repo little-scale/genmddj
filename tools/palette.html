@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj palette tool</title>
+<style>
+  :root{ --pad:14px; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;
+        background:#15171c; color:#cfd6e0; }
+  header{ padding:12px 18px; border-bottom:1px solid #2a2e38; display:flex;
+          align-items:baseline; gap:14px; }
+  header h1{ font-size:17px; margin:0; }
+  header .sub{ color:#7d8595; font-size:12px; }
+  .wrap{ display:grid; grid-template-columns:230px 1fr 360px; gap:0; height:calc(100vh - 49px); }
+  .col{ padding:var(--pad); overflow:auto; }
+  .col + .col{ border-left:1px solid #2a2e38; }
+  h2{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#7d8595;
+      margin:0 0 10px; }
+  /* palette list */
+  .plist{ display:flex; flex-direction:column; gap:6px; }
+  .pal{ display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px;
+        cursor:pointer; border:1px solid transparent; }
+  .pal:hover{ background:#1d212a; }
+  .pal.sel{ background:#222838; border-color:#3a6ea5; }
+  .pal .sw{ display:flex; border-radius:4px; overflow:hidden; box-shadow:0 0 0 1px #0006; }
+  .pal .sw span{ width:16px; height:22px; display:block; }
+  .pal .nm{ font-weight:600; font-size:13px; }
+  .pal .idx{ color:#7d8595; font-size:11px; margin-left:auto; }
+  /* preview */
+  .screen{ background:#000; border:1px solid #2a2e38; border-radius:8px; padding:0;
+           font-family:ui-monospace,Menlo,monospace; font-size:15px; line-height:1.32;
+           letter-spacing:.5px; overflow:hidden; }
+  .screen .row{ padding:0 12px; white-space:pre; }
+  .screen .row:first-child{ padding-top:10px; }
+  .screen .row:last-child{ padding-bottom:10px; }
+  .cell.cur{ padding:0 1px; border-radius:2px; }
+  .nameedit{ background:#1d212a; border:1px solid #2a2e38; color:#cfd6e0; border-radius:6px;
+             padding:5px 8px; width:130px; font-weight:600; }
+  /* color editors */
+  .ce{ background:#1b1f27; border:1px solid #2a2e38; border-radius:8px; padding:10px 12px;
+       margin-bottom:12px; }
+  .ce .top{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .ce .chip{ width:34px; height:34px; border-radius:6px; box-shadow:0 0 0 1px #0008; }
+  .ce .lbl{ font-weight:600; }
+  .ce .role{ color:#7d8595; font-size:11px; }
+  .ce .hex{ margin-left:auto; font-family:ui-monospace,monospace; color:#9aa3b2; font-size:13px; }
+  .slider{ display:grid; grid-template-columns:18px 1fr 22px; align-items:center; gap:8px;
+           margin:3px 0; }
+  .slider b{ font-weight:700; }
+  .slider .r{ color:#ff7a7a; } .slider .g{ color:#7aff9a; } .slider .b{ color:#7ab8ff; }
+  input[type=range]{ width:100%; }
+  .val{ font-family:ui-monospace,monospace; text-align:right; color:#9aa3b2; }
+  textarea{ width:100%; height:230px; background:#0e1014; color:#b9e1c4; border:1px solid #2a2e38;
+            border-radius:8px; padding:10px; font-family:ui-monospace,monospace; font-size:12px;
+            resize:vertical; }
+  button{ background:#2b6cb0; color:#fff; border:0; border-radius:7px; padding:8px 14px;
+          font-weight:600; cursor:pointer; }
+  button:hover{ background:#3a7ec0; }
+  button.ghost{ background:#222838; }
+  .note{ color:#7d8595; font-size:11px; margin-top:8px; }
+  .bar{ display:flex; gap:8px; margin:8px 0; flex-wrap:wrap; }
+  .btn{ background:#2b6cb0; color:#fff; border-radius:7px; padding:8px 14px; font-weight:600;
+        cursor:pointer; display:inline-block; }
+  .btn:hover{ background:#3a7ec0; }
+  .rombar{ display:flex; gap:8px; margin:6px 0; flex-wrap:wrap; }
+  .romstatus{ color:#9aa3b2; font-size:12px; margin:6px 0 4px; line-height:1.5; }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+</style>
+</head>
+<body>
+<header>
+  <h1>genmddj palette tool</h1>
+  <span class="sub">8 UI palettes &middot; c0 background &middot; c1 text/cursor-block &middot; c2 cursor-glyph &middot; MD&nbsp;$0BGR (3-bit/chan)</span>
+</header>
+
+<div class="wrap">
+  <!-- palette list -->
+  <div class="col">
+    <h2>Palettes</h2>
+    <div class="plist" id="plist"></div>
+    <div class="bar" style="margin-top:14px">
+      <button class="ghost" id="reset">Reset all</button>
+    </div>
+    <div class="note">Click a palette to edit it. The OPTIONS &rarr; COLR field picks one 0&ndash;7 on the console.</div>
+  </div>
+
+  <!-- preview -->
+  <div class="col">
+    <h2>Preview &mdash; <span id="prevname"></span></h2>
+    <div class="screen" id="screen"></div>
+    <div class="bar" style="margin-top:14px">
+      <label>Name <input class="nameedit" id="nameedit" maxlength="6"></label>
+    </div>
+    <div class="note">Mock PHRASE screen: title bar, a few rows, one highlighted cursor cell.<br>
+      The highlight uses c1 as the block and c2 as the glyph (so a cursor cell reads as c2-on-c1).</div>
+  </div>
+
+  <!-- editor + export -->
+  <div class="col">
+    <h2>Colours</h2>
+    <div id="editors"></div>
+    <h2 style="margin-top:18px">Patch a ROM</h2>
+    <div class="rombar">
+      <label class="btn">Load .bin&hellip;<input type="file" id="romfile" accept=".bin,.md,.gen" hidden></label>
+      <button id="patch" disabled>Download patched ROM</button>
+    </div>
+    <div class="romstatus" id="romstatus">No ROM loaded. Load a genmddj <code>.bin</code> to read its palettes, edit, and download a patched ROM (header checksum re-fixed).</div>
+
+    <h2 style="margin-top:18px">Or export source &mdash; paste into <code>pal_table</code></h2>
+    <textarea id="out" readonly></textarea>
+    <div class="bar">
+      <button id="copy">Copy</button>
+      <button class="ghost" id="copyline">Copy this palette's row</button>
+    </div>
+    <div class="note">Patcher: the data follows the <code>"GMDJPAL0"</code> locator in the ROM &mdash; 8&times;3 words, big-endian.</div>
+  </div>
+</div>
+
+<script>
+// ---- MD colour helpers: a channel level is 0..7; stored nibble = level*2 (0,2,..,E). word = $0BGR
+const NAMES0 = ["KIDD","WHT","GRN","AMBR","CYAN","PINK","NEON","MINT"];
+// defaults from src/main.asm pal_table (each = [c0,c1,c2] words)
+const DEF = [
+  [0x0E40,0x00EE,0x0E40],[0x0000,0x0EEE,0x0000],[0x0040,0x00EA,0x0040],[0x0000,0x00AE,0x0000],
+  [0x0400,0x0EE0,0x0400],[0x0404,0x0E0E,0x0404],[0x0EA4,0x0A0E,0x0EA4],[0x0440,0x0AE4,0x0440]
+];
+// hardware-ish 3-bit -> 8-bit ramp
+const RAMP = [0,36,73,109,146,182,219,255];
+const lv  = n => (n>>1)&7;                 // nibble -> level 0..7
+const nib = l => (l&7)<<1;                 // level -> nibble
+const wordToLevels = w => [ (w)&0xF, (w>>4)&0xF, (w>>8)&0xF ].map(lv); // [R,G,B] levels
+const levelsToWord = ([r,g,b]) => (nib(b)<<8)|(nib(g)<<4)|nib(r);
+const css = ([r,g,b]) => `rgb(${RAMP[r]},${RAMP[g]},${RAMP[b]})`;
+const hex4 = w => "$"+w.toString(16).toUpperCase().padStart(4,"0");
+
+let pals = DEF.map(p=>p.slice());
+let names = NAMES0.slice();
+let sel = 0;
+const ROLE = ["background","text / cursor-block","cursor glyph"];
+
+const $ = s => document.querySelector(s);
+
+function buildList(){
+  const el = $("#plist"); el.innerHTML="";
+  pals.forEach((p,i)=>{
+    const d=document.createElement("div"); d.className="pal"+(i===sel?" sel":"");
+    d.innerHTML=`<div class="sw">${p.map(w=>`<span style="background:${css(wordToLevels(w))}"></span>`).join("")}</div>
+                 <span class="nm">${names[i]}</span><span class="idx">${i}</span>`;
+    d.onclick=()=>{ sel=i; renderAll(); };
+    el.appendChild(d);
+  });
+}
+
+function buildEditors(){
+  const el=$("#editors"); el.innerHTML="";
+  const p=pals[sel];
+  p.forEach((w,ci)=>{
+    const L=wordToLevels(w);
+    const ce=document.createElement("div"); ce.className="ce";
+    ce.innerHTML=`<div class="top">
+        <div class="chip" style="background:${css(L)}"></div>
+        <div><div class="lbl">c${ci}</div><div class="role">${ROLE[ci]}</div></div>
+        <div class="hex">${hex4(w)}</div></div>`;
+    [["r","R"],["g","G"],["b","B"]].forEach(([cl,lt],k)=>{
+      const row=document.createElement("div"); row.className="slider";
+      row.innerHTML=`<b class="${cl}">${lt}</b>
+        <input type="range" min="0" max="7" value="${L[k]}">
+        <span class="val">${L[k]}</span>`;
+      const range=row.querySelector("input");
+      range.oninput=()=>{ L[k]=+range.value; pals[sel][ci]=levelsToWord(L); renderAll(); };
+      ce.appendChild(row);
+    });
+    el.appendChild(ce);
+  });
+}
+
+function buildPreview(){
+  const p=pals[sel];
+  const bg=css(wordToLevels(p[0])), tx=css(wordToLevels(p[1])), cg=css(wordToLevels(p[2]));
+  $("#prevname").textContent=names[sel];
+  const rows = [
+    "PHRASE          00",
+    "",
+    "00 C-4 00 --- ",
+    "01 --- 00 K00 ",
+    "02 E-4 01 C37 ",
+    "03 --- -- --- ",
+    "04 G-4 00 P02 ",
+    "",
+  ];
+  // highlight: row 02, the note cell "E-4" -> block = c1(text), glyph = c2(cursor)
+  const sc=$("#screen"); sc.style.background=bg; sc.style.color=tx;
+  sc.innerHTML = rows.map((r,ri)=>{
+    if(ri===4){ // the E-4 row -> wrap the note in a cursor cell
+      const pre="02 ", cur="E-4", post=" 01 C37 ";
+      return `<div class="row">${pre}<span class="cell cur" style="background:${tx};color:${cg}">${cur}</span>${post}</div>`;
+    }
+    return `<div class="row">${r||" "}</div>`;
+  }).join("");
+}
+
+function buildExport(){
+  let s="pal_table:                          ; genmddj UI palettes (c0 bg, c1 text/cursor, c2 glyph)\n";
+  pals.forEach((p,i)=>{
+    const words=p.map(hex4).join(", ");
+    s+=`    dc.w ${words}        ; ${i} ${names[i]}\n`;
+  });
+  $("#out").value=s;
+}
+
+function renderAll(){ buildList(); buildEditors(); buildPreview(); buildExport(); $("#nameedit").value=names[sel]; }
+
+$("#nameedit").oninput=e=>{ names[sel]=e.target.value.toUpperCase().slice(0,6)||("P"+sel); buildList(); buildPreview(); buildExport(); };
+$("#reset").onclick=()=>{ if(confirm("Reset all palettes to defaults?")){ pals=DEF.map(p=>p.slice()); names=NAMES0.slice(); renderAll(); } };
+$("#copy").onclick=()=>{ navigator.clipboard.writeText($("#out").value); $("#copy").textContent="Copied!"; setTimeout(()=>$("#copy").textContent="Copy",900); };
+$("#copyline").onclick=()=>{ const p=pals[sel]; navigator.clipboard.writeText(`    dc.w ${p.map(hex4).join(", ")}        ; ${sel} ${names[sel]}`); };
+
+// ---- ROM patcher: find the "GMDJPAL0" locator, read/write the 8x3 words after it, re-fix the checksum
+let rom=null, romBase=-1, romName='';
+const MAGIC=[0x47,0x4D,0x44,0x4A,0x50,0x41,0x4C,0x30]; // "GMDJPAL0"
+function findMagic(u8){
+  outer: for(let i=0;i+8<=u8.length;i++){
+    for(let j=0;j<8;j++) if(u8[i+j]!==MAGIC[j]) continue outer;
+    return i+8;                               // base = first byte after the locator
+  }
+  return -1;
+}
+$("#romfile").onchange = e => {
+  const f=e.target.files[0]; if(!f) return;
+  romName=f.name;
+  const r=new FileReader();
+  r.onload=()=>{
+    rom=new Uint8Array(r.result);
+    romBase=findMagic(rom);
+    if(romBase<0){
+      $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${romName}: GMDJPAL0 locator not found</b> &mdash; is this a genmddj ROM?`;
+      $("#patch").disabled=true; rom=null; return;
+    }
+    for(let p=0;p<8;p++) for(let c=0;c<3;c++){ const o=romBase+(p*3+c)*2; pals[p][c]=(rom[o]<<8)|rom[o+1]; }
+    $("#romstatus").innerHTML=`Loaded <b>${romName}</b> (${rom.length>>10} KB) &mdash; palettes read from $${romBase.toString(16).toUpperCase()}. Edit them, then download.`;
+    $("#patch").disabled=false;
+    renderAll();
+  };
+  r.readAsArrayBuffer(f);
+};
+$("#patch").onclick = () => {
+  if(!rom) return;
+  for(let p=0;p<8;p++) for(let c=0;c<3;c++){ const o=romBase+(p*3+c)*2, w=pals[p][c]; rom[o]=(w>>8)&0xFF; rom[o+1]=w&0xFF; }
+  let sum=0;                                  // MD checksum: sum of >u16 words from $200, stored at $18E
+  for(let i=0x200;i+1<rom.length;i+=2) sum=(sum+((rom[i]<<8)|rom[i+1]))%0x10000;
+  rom[0x18E]=(sum>>8)&0xFF; rom[0x18F]=sum&0xFF;
+  const name=romName.replace(/\.(bin|md|gen)$/i,'')+'-pal.bin';
+  const url=URL.createObjectURL(new Blob([rom],{type:'application/octet-stream'}));
+  const aEl=document.createElement('a'); aEl.href=url; aEl.download=name;
+  document.body.appendChild(aEl); aEl.click(); aEl.remove(); URL.revokeObjectURL(url);
+  $("#romstatus").innerHTML=`Patched &amp; downloaded <b>${name}</b> (checksum $${sum.toString(16).toUpperCase().padStart(4,'0')}). Flash it.`;
+};
+
+renderAll();
+</script>
+</body>
+</html>
