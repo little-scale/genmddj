@@ -203,6 +203,8 @@ saved_sum  equ $00FFD3BC           ; long checksum of the data block at the last
 song_dirty equ $00FFD3C0           ; 1 = data block differs from saved_sum (recomputed on PROJECT entry)
 live_on    equ $00FFD3C1           ; LIVE: per-track sounding flag (NCH bytes; 1 = launched/playing)
 live_bar   equ $00FFD3CB           ; LIVE: master 16-row bar counter (row-advances & 15) for quantize
+live_q     equ $00FFD3CC           ; LIVE: per-track queued launch songpos (read only when live_when!=0)
+live_when  equ $00FFD3D6           ; LIVE: per-track queue (0 none, 1 at next master bar, 2 at chain end)
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -5237,24 +5239,68 @@ play_context:                             ; C+B: toggle audition of the current 
 .pc_done:
     rts
 
-live_launch_track:                        ; C+B in LIVE: launch the cursor's track from its song row
-    tst.b   playing                        ; transport stopped -> start it (all-silent) first
+live_launch_track:                        ; C+B in LIVE: launch (cold) or queue (running) the cursor's track
+    tst.b   playing
     bne.s   .ll_running
-    move.b  #1, playing
+    move.b  #1, playing                     ; transport stopped -> start it + launch immediately
     bsr     clear_live_patch
-    bsr     engine_play_reset             ; LIVE reset: every track muted, live_on=0, bar=0
+    bsr     engine_play_reset
+    bsr     live_cursor_pos               ; d1 = track, d2 = song row
+    bsr     live_setup_chan
+    lea     live_on, a0
+    move.b  #1, (a0,d1.w)
+    rts
 .ll_running:
-    moveq   #0, d2                          ; songpos = song_page*16 + cur_row
+    bsr     live_cursor_pos               ; running -> quantize the launch
+    bra     live_queue_track
+
+live_cursor_pos:                          ; -> d1 = cursor track (col), d2 = song row (page*16 + cur_row)
+    moveq   #0, d2
     move.b  song_page, d2
     lsl.w   #4, d2
     moveq   #0, d0
     move.b  cur_row, d0
     add.w   d0, d2
-    moveq   #0, d1                          ; track = cursor column
+    moveq   #0, d1
     move.b  cur_col, d1
-    bsr     live_setup_chan
+    rts
+
+live_queue_track:                         ; d1 = track, d2 = songpos; silent -> next bar, playing -> chain end
     lea     live_on, a0
-    move.b  #1, (a0,d1.w)                  ; mark the track launched
+    tst.b   (a0,d1.w)
+    bne.s   .lqt_ce
+    lea     live_q, a0
+    move.b  d2, (a0,d1.w)
+    lea     live_when, a0
+    move.b  #1, (a0,d1.w)                  ; silent track: launch on the next master bar
+    rts
+.lqt_ce:
+    lea     live_q, a0
+    move.b  d2, (a0,d1.w)
+    lea     live_when, a0
+    move.b  #2, (a0,d1.w)                  ; playing track: swap when the current chain ends
+    rts
+
+live_resolve_bar:                         ; master-bar boundary: start every at-bar (live_when==1) queue
+    movem.l d0-d2/a0/a2/a6, -(sp)
+    moveq   #0, d1
+.lrb:
+    lea     live_when, a0
+    cmpi.b  #1, (a0,d1.w)
+    bne.s   .lrb_next
+    lea     live_q, a0
+    moveq   #0, d2
+    move.b  (a0,d1.w), d2                  ; queued songpos
+    bsr     live_setup_chan               ; arm the track (d1 = track, d2 = songpos)
+    lea     live_on, a0
+    move.b  #1, (a0,d1.w)
+    lea     live_when, a0
+    move.b  #0, (a0,d1.w)                  ; consume the queue
+.lrb_next:
+    addq.b  #1, d1
+    cmpi.b  #NCH, d1
+    blo.s   .lrb
+    movem.l (sp)+, d0-d2/a0/a2/a6
     rts
 
 live_launch_row:                          ; LIVE Start: launch every populated track on the cursor row
@@ -5355,12 +5401,11 @@ engine_play_reset:
 .rlb:
     move.b  #0, (a0)+
     dbra    d0, .rlb
-    lea     live_on, a0                   ; LIVE: all tracks start silent (a launch wakes them)
-    moveq   #NCH-1, d0
+    lea     live_on, a0                   ; LIVE: clear all per-track launch state (on/bar/q/when)
+    move.w  #(live_when+NCH)-live_on-1, d0
 .rlive:
     move.b  #0, (a0)+
     dbra    d0, .rlive
-    move.b  #0, live_bar                  ; restart the master bar
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .r:
@@ -5911,6 +5956,9 @@ engine_tick:
 .do_adv:
     addq.b  #1, live_bar                  ; master 16-row bar counter (LIVE launch quantize)
     andi.b  #15, live_bar
+    bne.s   .no_barq                       ; new master bar -> resolve at-bar queued launches
+    bsr     live_resolve_bar
+.no_barq:
     moveq   #NCH-1, d7
     lea     ch_state, a6
 .adv:
@@ -6487,7 +6535,7 @@ advance_chain:                            ; a6 = channel
     moveq   #0, d1
 .step:
     move.b  d1, c_cstep(a6)
-    bra.s   load_step                     ; d1 = step
+    bra     load_step                     ; d1 = step
 
 ; advance the channel's song row; load its chain at step 0 (loop song on $FF)
 advance_song:                             ; a6 = channel
@@ -6496,6 +6544,16 @@ advance_song:                             ; a6 = channel
     addq.b  #1, d3
     moveq   #0, d0
     move.b  c_track(a6), d0
+    lea     live_when, a1                 ; LIVE chain-end queue for this track -> jump there now
+    cmpi.b  #2, (a1,d0.w)
+    bne.s   .as_noq
+    moveq   #0, d1
+    move.b  d0, d1
+    lea     live_q, a1
+    move.b  (a1,d1.w), d3                 ; target row = the queued songpos (instead of the next)
+    lea     live_when, a1
+    move.b  #0, (a1,d1.w)
+.as_noq:
     move.w  d3, d4                        ; song[d3][track] = d3*NCH + track
     mulu.w  #NCH, d4
     add.w   d0, d4
