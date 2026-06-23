@@ -243,6 +243,9 @@ SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 +
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
 SAVE_SLOT  equ SAVE_DATA+SAVE_HDR  ; $5170 per slot
+NUBANK     equ 32                  ; SRAM cross-song instrument bank: 32 slots (64 B each)
+SRAM_BANK  equ 256                 ; bank base (logical): just after the 256-B config block
+SRAM_SLOT0 equ SRAM_BANK+NUBANK*64 ; song slots start after config + bank (= logical 2304)
 song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 240               ; full-song data depth; SONG cursor still capped at 15 until scroll lands
 instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
@@ -520,7 +523,7 @@ Start:
     move.b  sram_size, d0
     beq.s   .sl_none
     mulu.w  #1024, d0                       ; KB -> bytes
-    subi.l  #256, d0                        ; minus the config region
+    subi.l  #SRAM_SLOT0, d0                 ; minus the config region + the instrument bank
     divu.w  #SAVE_SLOT, d0                  ; quotient (low word) = slots that fit
     move.b  d0, sram_slots
     bra.s   .sl_ok
@@ -9019,7 +9022,7 @@ sram_setup:
     moveq   #0, d1
     move.b  d0, d1
     mulu.w  #SAVE_SLOT, d1                  ; logical slot offset
-    addi.l  #256, d1                        ; reserve logical 0-255 for the OPTIONS config block
+    addi.l  #SRAM_SLOT0, d1                 ; song slots start after the config + instrument bank
     lsl.l   d3, d1                          ; physical delta = logical << shift
     lea     $00200001, a1
     adda.l  d1, a1
@@ -9072,6 +9075,93 @@ check_dirty:                               ; song_dirty = (data block != last sa
 .ckd:
     move.b  d1, song_dirty
     movem.l (sp)+, d0/d1
+    rts
+
+; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
+rom_load_instr:                            ; d0 = factory slot -> copy fm_factory[d0] into cur_instr (RAM->RAM)
+    movem.l d0-d2/a0-a1, -(sp)
+    andi.w  #$FF, d0
+    cmpi.w  #NINSTR, d0
+    bcc.s   .rli_done
+    mulu.w  #INSTR_SIZE, d0
+    lea     fm_factory, a0
+    adda.l  d0, a0
+    moveq   #0, d1
+    move.b  cur_instr, d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a1
+    adda.l  d1, a1
+    moveq   #INSTR_SIZE-1, d2
+.rli_c:
+    move.b  (a0)+, (a1)+
+    dbra    d2, .rli_c
+.rli_done:
+    movem.l (sp)+, d0-d2/a0-a1
+    rts
+
+sram_bank_setup:                           ; d0 = bank slot -> a1 = phys, d5 = stride; Z set = no SRAM
+    tst.b   sram_layout
+    beq.s   .sbs_none
+    moveq   #0, d3                          ; stride shift: odd-byte = 1, linear = 0
+    cmpi.b  #1, sram_layout
+    bne.s   .sbs_lin
+    moveq   #1, d3
+.sbs_lin:
+    moveq   #1, d5
+    lsl.l   d3, d5
+    moveq   #0, d1
+    move.b  d0, d1
+    mulu.w  #INSTR_SIZE, d1
+    addi.l  #SRAM_BANK, d1                  ; logical = bank base + slot*64
+    lsl.l   d3, d1
+    lea     $00200001, a1
+    adda.l  d1, a1
+    move.b  #1, $A130F1                     ; map SRAM
+    moveq   #1, d0                          ; Z clear = OK
+    rts
+.sbs_none:
+    moveq   #0, d0
+    rts
+
+bank_save_instr:                           ; d0 = bank slot -> store cur_instr into SRAM bank slot
+    movem.l d0-d5/a0-a1, -(sp)
+    bsr     sram_bank_setup
+    beq.s   .bsi_done
+    moveq   #0, d1
+    move.b  cur_instr, d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a0
+    adda.l  d1, a0
+    moveq   #INSTR_SIZE-1, d2
+.bsi_w:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d2, .bsi_w
+    move.b  #0, $A130F1                     ; unmap (protect)
+.bsi_done:
+    movem.l (sp)+, d0-d5/a0-a1
+    rts
+
+bank_load_instr:                           ; d0 = bank slot -> load SRAM bank slot into cur_instr ($FF type = empty, skip)
+    movem.l d0-d5/a0-a1, -(sp)
+    bsr     sram_bank_setup
+    beq.s   .bli_done
+    cmpi.b  #$FF, (a1)                       ; first byte = i_type; $FF = never-saved slot
+    beq.s   .bli_unmap
+    moveq   #0, d1
+    move.b  cur_instr, d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a0
+    adda.l  d1, a0
+    moveq   #INSTR_SIZE-1, d2
+.bli_r:
+    move.b  (a1), (a0)+
+    adda.l  d5, a1
+    dbra    d2, .bli_r
+.bli_unmap:
+    move.b  #0, $A130F1
+.bli_done:
+    movem.l (sp)+, d0-d5/a0-a1
     rts
 
 save_song:                                 ; save the work-RAM image to SRAM slot (proj_slot-1)
