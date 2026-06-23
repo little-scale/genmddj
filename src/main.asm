@@ -1382,7 +1382,13 @@ grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
     move.b  cur_row, d1
     lsl.w   #2, d1                          ; row * 4 (note,instr,cmd,prm)
     addq.w  #1, d1                          ; +1 = the instr byte
-    move.b  (a1,d1.w), cur_instr
+    move.b  (a1,d1.w), d1                  ; clamp a stale out-of-range instrument (>31) to a valid slot
+    andi.w  #$FF, d1
+    cmpi.b  #NINSTR, d1
+    blo.s   .gn_i1
+    moveq   #NINSTR-1, d1
+.gn_i1:
+    move.b  d1, cur_instr
     movem.l (sp)+, d0/d1
 .gn_set:
     move.b  d0, cur_screen
@@ -1486,7 +1492,13 @@ drill_down:                               ; set the next screen's target from th
     move.b  cur_row, d1
     lsl.w   #2, d1
     addq.w  #1, d1
-    move.b  (a1,d1.w), cur_instr
+    move.b  (a1,d1.w), d1                  ; clamp a stale out-of-range instrument (>31) to a valid slot
+    andi.w  #$FF, d1
+    cmpi.b  #NINSTR, d1
+    blo.s   .gn_i2
+    moveq   #NINSTR-1, d1
+.gn_i2:
+    move.b  d1, cur_instr
     rts
 .d3:
     cmpi.b  #SCR_INSTR, d0                 ; INSTR -> TABLE: cur_table = the instrument's TBL
@@ -2521,6 +2533,19 @@ edit_value:
     beq.s   .h4
     sub.b   d4, d0
 .h4:
+    tst.b   cur_screen                     ; PHRASE IN (instrument) column -> clamp 0..NINSTR-1
+    bne.s   .h4st
+    cmpi.b  #1, cur_col
+    bne.s   .h4st
+    ext.w   d0
+    bpl.s   .h4cl
+    moveq   #0, d0                          ; underflow -> 0
+    bra.s   .h4st
+.h4cl:
+    cmpi.w  #NINSTR, d0
+    blo.s   .h4st
+    moveq   #NINSTR-1, d0                   ; > 31 -> 31
+.h4st:
     move.b  d0, (a1)
     cmpi.b  #SCR_SONG, cur_screen           ; remember the last value placed (single B-tap repeats)
     beq.s   .h4_chain
@@ -9680,6 +9705,12 @@ copy_factory_bank:                        ; fm_factory (ROM) -> instrum (RAM): a
 .cfb:
     move.b  (a1)+, (a2)+
     dbra    d0, .cfb
+    lea     instrum+i_pan, a2             ; force every loaded instrument's pan to centre (L+R)
+    moveq   #NINSTR-1, d0
+.cfp:
+    move.b  #3, (a2)
+    lea     INSTR_SIZE(a2), a2
+    dbra    d0, .cfp
     rts
 
 clear_song:                               ; blank project: phrases -> rests, chains + song empty ($FF)
