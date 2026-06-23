@@ -19,6 +19,7 @@
   h2{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#7d8595; margin:0 0 10px; }
   /* instrument list */
   .ilist{ display:flex; flex-direction:column; gap:3px; }
+  .ilist.drag{ outline:2px dashed #3a6ea5; outline-offset:-2px; border-radius:6px; }
   .inst{ display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
   .inst:hover{ background:#1d212a; } .inst.sel{ background:#222838; border-color:#3a6ea5; }
   .inst .ix{ color:#7d8595; font-size:11px; width:18px; font-family:ui-monospace,monospace; }
@@ -52,9 +53,9 @@
   .key.stop{ background:#3a2228; border-color:#5a2a32; }
   /* piano keyboard */
   .kbd{ position:relative; white-space:nowrap; font-size:0; height:84px; }
-  .wk{ display:inline-block; width:26px; height:84px; background:#dfe6ee; border:1px solid #11141a; border-top:none; border-radius:0 0 4px 4px; cursor:pointer; vertical-align:top; }
+  .wk{ display:inline-block; width:20px; height:84px; background:#dfe6ee; border:1px solid #11141a; border-top:none; border-radius:0 0 4px 4px; cursor:pointer; vertical-align:top; }
   .wk:hover{ background:#eef3f8; } .wk.on{ background:#6fa8dc; }
-  .bk{ position:absolute; top:0; width:16px; height:52px; background:#15171c; border:1px solid #000; border-radius:0 0 3px 3px; cursor:pointer; z-index:2; }
+  .bk{ position:absolute; top:0; width:12px; height:52px; background:#15171c; border:1px solid #000; border-radius:0 0 3px 3px; cursor:pointer; z-index:2; }
   .bk:hover{ background:#2a2e38; } .bk.on{ background:#2b6cb0; }
   /* sliders */
   .sl{ display:grid; grid-template-columns:38px 1fr 28px; align-items:center; gap:8px; margin:3px 0; }
@@ -79,7 +80,7 @@
   <button class="btn" id="patch" disabled>Download patched ROM</button>
   <span class="romstatus" id="romstatus">Editing the factory bank &mdash; <b>load a patch</b> (.adv/.gmi/.tfi) into a slot, <b>Import VGM</b> to rip a game's instruments, or drop a genmddj <code>.bin</code> to patch a ROM.</span>
 </div>
-<div id="drop-ov">Drop a genmddj ROM to patch</div>
+<div id="drop-ov">Drop a ROM to patch &mdash; or .gmi / .tfi / .adv patches onto the instrument list</div>
 
 <div class="wrap">
   <div class="col"><h2>Instruments</h2><div class="ilist" id="ilist"><div class="empty">no ROM</div></div></div>
@@ -197,7 +198,7 @@ async function importVGM(f){
 function renderList(){
   const el=$("#ilist"); el.innerHTML='';
   for(let i=0;i<NINSTR;i++){
-    const d=document.createElement('div'); d.className='inst'+(i===sel?' sel':'');
+    const d=document.createElement('div'); d.className='inst'+(i===sel?' sel':''); d.dataset.slot=i;
     d.innerHTML=`<span class="ix">${i.toString().padStart(2,'0')}</span><span class="nm">${readName(i)}</span><span class="ty">${TYPES[getB(i,0)]||'?'} A${getB(i,1)}</span>`;
     d.onclick=()=>{ sel=i; renderList(); renderEditor(); };
     el.appendChild(d);
@@ -213,10 +214,10 @@ function slider(label,val,min,max,oninput,disp,store){
   inp.oninput=()=>{ const n=+inp.value; v.textContent=disp(n); oninput(store(n)); };
   return row;
 }
-// 2-octave clickable piano (C3..C5); click a key to audition the current patch at that pitch
+// 6-octave clickable piano (C1..C7); click a key to audition the current patch at that pitch
 function buildKeyboard(){
   const wrap=document.createElement('div'); wrap.className='kbd';
-  const WW=26, BW=16, OCT=2, START=48, white=[0,2,4,5,7,9,11], blackAfter={0:1,1:3,3:6,4:8,5:10};
+  const WW=20, BW=12, OCT=6, START=24, white=[0,2,4,5,7,9,11], blackAfter={0:1,1:3,3:6,4:8,5:10};
   for(let o=0;o<OCT;o++) for(let k=0;k<7;k++){ const midi=START+o*12+white[k];
     const w=document.createElement('div'); w.className='wk'; w.onclick=()=>play(sel,midi,w); wrap.appendChild(w); }
   { const midi=START+OCT*12, w=document.createElement('div'); w.className='wk'; w.onclick=()=>play(sel,midi,w); wrap.appendChild(w); }
@@ -399,36 +400,44 @@ function play(slot,midi,btn){
 // SSG-EG are dropped, the genmddj-only fields default).
 const NATMAGIC="GMDJINS1";
 function dl(d,name){ const u=URL.createObjectURL(new Blob([d],{type:'application/octet-stream'})); const a=document.createElement('a'); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u); }
-function importPatch(f){
+// parse one patch file's bytes into `slot`; returns true on success (no UI side effects)
+async function loadPatchInto(d, f, slot){
+  if((d[0]===0x1f&&d[1]===0x8b) || d[0]===0x3c){                  // gzip or '<' = Ableton Operator .adv (XML)
+    let rec; try{ const xml = d[0]===0x1f ? await gunzip(d) : new TextDecoder().decode(d); rec=advToRecord(xml); }
+    catch(e){ return false; }
+    for(let i=0;i<64;i++) bank[off(slot,i)]=rec[i];
+    writeName(slot, f.name.replace(/\.adv$/i,'')); return true;
+  }
+  const isNat = d.length===8+64 && NATMAGIC.split('').every((c,i)=>d[i]===c.charCodeAt(0));
+  if(isNat){ for(let i=0;i<64;i++) bank[off(slot,i)]=d[8+i]; return true; }   // .gmi: verbatim record (incl. name)
+  if(d.length===42 || d.length===43){                            // TFI (42) / VGI (43)
+    const opbase = d.length===43?3:2;                            // VGI byte 2 = pan/ams/fms (skipped)
+    setB(slot,0,0); setB(slot,1,d[0]&7); setB(slot,2,d[1]&7);     // FM type, algo, feedback
+    for(let i=0;i<4;i++){ const o=opbase+i*10, b=8+SLOTOF[i]*10;  // ops: MUL DT TL RS AR DR SR RR SL SSG
+      bank[off(slot,b)]=d[o]&15;   bank[off(slot,b+1)]=d[o+1]&7;  bank[off(slot,b+2)]=d[o+2]&127; bank[off(slot,b+3)]=d[o+3]&3;
+      bank[off(slot,b+4)]=d[o+4]&31; bank[off(slot,b+5)]=0;       bank[off(slot,b+6)]=d[o+5]&31;  bank[off(slot,b+7)]=d[o+6]&31;
+      bank[off(slot,b+8)]=d[o+7]&15; bank[off(slot,b+9)]=d[o+8]&15; }
+    writeName(slot, f.name.replace(/\.(tfi|vgi)$/i,'')); return true;
+  }
+  return false;
+}
+async function importPatch(f){                                   // single file -> the selected slot
   if(!f||!bank) return;
-  const r=new FileReader();
-  r.onload=async()=>{
-    const d=new Uint8Array(r.result);
-    if((d[0]===0x1f&&d[1]===0x8b) || d[0]===0x3c){                 // gzip or '<' = Ableton Operator .adv (XML)
-      let rec;
-      try{ const xml = d[0]===0x1f ? await gunzip(d) : new TextDecoder().decode(d); rec=advToRecord(xml); }
-      catch(e){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: not a readable Operator .adv</b> (${e.message})`; return; }
-      for(let i=0;i<64;i++) bank[off(sel,i)]=rec[i];
-      writeName(sel, f.name.replace(/\.adv$/i,''));
-      $("#romstatus").innerHTML=`Imported Operator patch <b>${f.name}</b> into slot ${sel} (${readName(sel)}). Audition, then export/patch.`;
-      renderList(); renderEditor(); return;
-    }
-    const isNat = d.length===8+64 && NATMAGIC.split('').every((c,i)=>d[i]===c.charCodeAt(0));
-    if(isNat){
-      for(let i=0;i<64;i++) bank[off(sel,i)]=d[8+i];                 // verbatim record (incl. name)
-    } else if(d.length===42 || d.length===43){
-      const opbase = d.length===43?3:2;                            // VGI byte 2 = pan/ams/fms (skipped)
-      setB(sel,0,0); setB(sel,1,d[0]&7); setB(sel,2,d[1]&7);        // FM type, algo, feedback
-      for(let i=0;i<4;i++){ const o=opbase+i*10, b=8+SLOTOF[i]*10;  // ops: MUL DT TL RS AR DR SR RR SL SSG
-        bank[off(sel,b)]=d[o]&15;   bank[off(sel,b+1)]=d[o+1]&7;  bank[off(sel,b+2)]=d[o+2]&127; bank[off(sel,b+3)]=d[o+3]&3;
-        bank[off(sel,b+4)]=d[o+4]&31; bank[off(sel,b+5)]=0;       bank[off(sel,b+6)]=d[o+5]&31;  bank[off(sel,b+7)]=d[o+6]&31;
-        bank[off(sel,b+8)]=d[o+7]&15; bank[off(sel,b+9)]=d[o+8]&15; }
-      writeName(sel, f.name.replace(/\.(tfi|vgi)$/i,''));
-    } else { $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: ${d.length} bytes</b> — expected .gmi (72), TFI (42) or VGI (43)`; return; }
-    $("#romstatus").innerHTML=`Imported <b>${f.name}</b> into slot ${sel} (${readName(sel)}). Audition, then download the ROM.`;
+  const d=new Uint8Array(await f.arrayBuffer());
+  if(await loadPatchInto(d,f,sel)){
+    $("#romstatus").innerHTML=`Imported <b>${f.name}</b> into slot ${sel} (${readName(sel)}). Audition, then export/patch.`;
     renderList(); renderEditor();
-  };
-  r.readAsArrayBuffer(f);
+  } else $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: not a recognised patch</b> — expected .gmi (72 B), .tfi (42), .vgi (43) or Operator .adv`;
+}
+async function dropPatches(files, start){                        // one or more files -> consecutive slots from `start`
+  if(!bank) return;
+  const list=[...files].filter(f=>/\.(gmi|tfi|vgi|adv)$/i.test(f.name)).sort((a,b)=>a.name.localeCompare(b.name));
+  if(!list.length){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">No .gmi/.tfi/.vgi/.adv files in that drop</b>`; return; }
+  let slot=Math.max(0,Math.min(start, NINSTR-1)), first=slot, done=0;
+  for(const f of list){ if(slot>=NINSTR) break; const d=new Uint8Array(await f.arrayBuffer()); if(await loadPatchInto(d,f,slot)){ slot++; done++; } }
+  sel=first;
+  $("#romstatus").innerHTML=`Loaded <b>${done}</b> patch${done===1?'':'es'} into slot${done===1?' '+first:'s '+first+'–'+(slot-1)}.`;
+  renderList(); renderEditor();
 }
 function exportInst(){                                              // native .gmi (lossless)
   if(!bank) return;
@@ -541,7 +550,27 @@ const _ov=$("#drop-ov"); let _dn=0;
 window.addEventListener('dragenter',e=>{ e.preventDefault(); _dn++; _ov.classList.add('on'); });
 window.addEventListener('dragover', e=>e.preventDefault());
 window.addEventListener('dragleave',e=>{ if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
-window.addEventListener('drop',e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on'); loadRom(e.dataTransfer.files[0]); });
+window.addEventListener('drop',e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on');
+  const fs=e.dataTransfer.files; if(!fs||!fs.length) return;
+  if(/\.(gmi|tfi|vgi|adv)$/i.test(fs[0].name)) dropPatches(fs, sel); else loadRom(fs[0]); });
+
+// drop one or more patch files onto the instrument list -> consecutive slots from the row under the cursor
+const _il=$("#ilist");
+_il.addEventListener('dragover', e=>{ e.preventDefault(); e.stopPropagation(); _il.classList.add('drag'); });
+_il.addEventListener('dragleave',e=>{ _il.classList.remove('drag'); });
+_il.addEventListener('drop',e=>{ e.preventDefault(); e.stopPropagation(); _il.classList.remove('drag');
+  const row=e.target.closest('.inst'); dropPatches(e.dataTransfer.files, row? +row.dataset.slot : sel); });
+
+// W / S or Up / Down = previous / next slot (skipped while typing in a field)
+window.addEventListener('keydown',e=>{
+  const t=document.activeElement; if(t && (t.tagName==='INPUT'||t.tagName==='SELECT'||t.tagName==='TEXTAREA')) return;
+  let dd=0;
+  if(e.key==='w'||e.key==='W'||e.key==='ArrowUp') dd=-1;
+  else if(e.key==='s'||e.key==='S'||e.key==='ArrowDown') dd=1; else return;
+  e.preventDefault();
+  const ns=Math.max(0,Math.min(NINSTR-1, sel+dd));
+  if(ns!==sel){ sel=ns; renderList(); renderEditor(); const r=$("#ilist").querySelector('.inst.sel'); if(r) r.scrollIntoView({block:'nearest'}); }
+});
 
 // start on the factory bank so all 32 slots are editable with no ROM
 bank=Uint8Array.from(atob(DEFAULT_BANK), c=>c.charCodeAt(0)); sel=0; renderList(); renderEditor();
