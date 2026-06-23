@@ -28,6 +28,7 @@ NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
 CHSIZE     equ 40                  ; even (keeps the long c_phrase word-aligned)
 ch_state   equ $00FFE000           ; NCH * CHSIZE = 400 bytes ($FFE000-$FFE190)
 c_note     equ 0
+c_psweep   equ 1                    ; FM pitch sweep: current downward offset in semitones (decays to 0)
 c_period   equ 2                    ; word
 c_vol      equ 4
 c_estate   equ 5
@@ -322,6 +323,7 @@ i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
 i_gain     equ 51                   ; reserved (real-time gain deferred; use kitpatch build-time gain)
 i_rate     equ 52                   ; KIT rate: 0=1x 1=2x 2=4x 3=0.5x (0 = default)
 i_tsp      equ 53                   ; FM per-instrument transpose, signed semitones (channel item)
+i_psweep   equ 62                   ; FM pitch sweep: hi nibble = depth (x4 semis, downward), lo nibble = rate/tick
 i_name     equ 54                   ; 8-char name (patcher metadata; engine ignores 54-63)
 NITYPE     equ 5
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
@@ -6199,7 +6201,42 @@ wave_silence:
     rts
 
 ; gate countdown: $FF = held; else decrement, and request key-off when it hits 0
+; ---- FM pitch sweep (per-instrument downward swoop -- the "FM kick" pitch envelope) ----
+init_psweep:                              ; a6 = channel; on a trigger, offset = depth (i_psweep hi nibble x4 semis)
+    movem.l d0/a0, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a0
+    move.b  (i_psweep,a0,d0.w), d0
+    beq.s   .ip_z
+    lsr.b   #4, d0                          ; depth (hi nibble) 0-15
+    lsl.b   #2, d0                          ; x4 -> 0..60 semitones
+.ip_z:
+    move.b  d0, c_psweep(a6)
+    movem.l (sp)+, d0/a0
+    rts
+decay_psweep:                             ; a6 = channel; each tick, decay toward 0 by the rate (lo nibble)
+    movem.l d0-d1/a0, -(sp)
+    move.b  c_psweep(a6), d0
+    beq.s   .dp_done                        ; 0 = inactive (also non-FM channels -- they never set it)
+    moveq   #0, d1
+    move.b  c_instr(a6), d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a0
+    move.b  (i_psweep,a0,d1.w), d1
+    andi.b  #$0F, d1                        ; rate (semitones/tick)
+    sub.b   d1, d0
+    bcc.s   .dp_s
+    moveq   #0, d0
+.dp_s:
+    move.b  d0, c_psweep(a6)
+.dp_done:
+    movem.l (sp)+, d0-d1/a0
+    rts
+
 hold_tick:                                ; a6 = channel
+    bsr     decay_psweep                   ; FM pitch sweep decays once per tick
     moveq   #0, d0                          ; C command: advance the chord arp phase (0->1->2->0)
     move.b  c_track(a6), d0
     lea     c_chord, a1
@@ -7515,6 +7552,7 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     bhi     .cf_defer
 .cf_emit:
     move.b  #0, c_trig(a6)
+    bsr     init_psweep                    ; (re)load this instrument's pitch-sweep offset on the trigger
     move.b  #0, (a5)+                       ; key-off: part0, $28, ymkey
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), (a5)+
@@ -7753,6 +7791,9 @@ fm_freq_send:
     moveq   #0, d0
     move.b  c_note(a6), d0                  ; effective note = c_note + table TSP + chord arp offset
     move.b  c_ttsp(a6), d3                  ; macro-table transpose (signed; 0 when no table)
+    ext.w   d3
+    add.w   d3, d0
+    move.b  c_psweep(a6), d3                ; per-instrument pitch sweep (downward, decays to 0)
     ext.w   d3
     add.w   d3, d0
     moveq   #0, d3
