@@ -35,6 +35,7 @@ $(Z80BIN): $(Z80SRC) | $(BUILD)
 SPLASH := $(BUILD)/splash.i
 GITVER := $(BUILD)/gitver.i
 ALGOS  := $(BUILD)/algos.i
+FACTORY := $(BUILD)/fm_factory.bin
 
 $(SPLASH): tools/makesplash.py art/genmddj.png | $(BUILD)
 	python3 tools/makesplash.py art/genmddj.png \
@@ -44,6 +45,11 @@ $(ALGOS): tools/makealgos.py | $(BUILD)
 	python3 tools/makealgos.py \
 	    $(BUILD)/algo_tiles.bin $(BUILD)/algo_maps.bin $(ALGOS)
 
+# FM factory bank: baked from instrument-patches/*.gmi (filename order; name from the filename).
+# FORCE (not a wildcard prereq) because the .gmi filenames contain spaces, which Make can't list.
+$(FACTORY): tools/makeinstruments.py FORCE | $(BUILD)
+	python3 tools/makeinstruments.py instrument-patches $(FACTORY)
+
 # build stamp: regenerated every build (FORCE) so hash/dirty flag stay current
 $(GITVER): FORCE | $(BUILD)
 	@hash=`git rev-parse --short=7 HEAD 2>/dev/null || echo 0000000`; \
@@ -51,7 +57,7 @@ $(GITVER): FORCE | $(BUILD)
 	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
 FORCE:
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) | $(BUILD)
+$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(FACTORY) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py

@@ -454,12 +454,7 @@ Start:
     bsr     z80_load
 
     bsr     load_demo                     ; phrases -> rests + copy demo phrases/chains/song
-    lea     fm_factory, a1                ; load the 32-patch factory instrument bank from ROM
-    lea     instrum, a2
-    move.w  #(NINSTR*INSTR_SIZE)-1, d0
-.cdf:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .cdf
+    bsr     copy_factory_bank             ; load the 32-patch factory instrument bank from ROM
     lea     instrum+INSTR_SIZE, a2        ; instrument 1 = a default TONE voice (demo PSG tracks)
     lea     default_tone, a1
     moveq   #INSTR_SIZE-1, d0
@@ -9678,6 +9673,15 @@ load_demo:                                ; phrases -> rests, then copy demo phr
     dbra    d0, .ld_cs
     rts
 
+copy_factory_bank:                        ; fm_factory (ROM) -> instrum (RAM): all NINSTR patches, 1:1
+    lea     fm_factory, a1
+    lea     instrum, a2
+    move.w  #(NINSTR*INSTR_SIZE)-1, d0
+.cfb:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .cfb
+    rts
+
 clear_song:                               ; blank project: phrases -> rests, chains + song empty ($FF)
     lea     phrases, a2
     move.w  #NPHRASES*16-1, d0
@@ -9697,6 +9701,7 @@ clear_song:                               ; blank project: phrases -> rests, cha
 .cz_s:
     move.b  #$FF, (a2)+
     dbra    d0, .cz_s
+    bsr     copy_factory_bank             ; NEW: dump the ROM factory library into instrument memory (1->1)
     rts
 
 Exception:
@@ -10004,264 +10009,8 @@ default_tone:                      ; a basic TONE (PSG square) instrument
 
 fm_marker:  dc.b "GMINSTR0"        ; factory FM bank locator for the browser patcher
             even
-fm_factory:                       ; 32 x INSTR_SIZE (64) factory instrument patches
-    dc.b 0, 2, 6, 3, 0, 0, 15, 15   ;  0 GRANDPNO
-    dc.b 1, 7, 35, 1, 31, 0, 5, 2, 1, 1  ; slot0 S1
-    dc.b 13, 0, 45, 2, 25, 0, 5, 2, 1, 1  ; slot1 S3
-    dc.b 3, 3, 38, 1, 31, 0, 5, 2, 1, 1  ; slot2 S2
-    dc.b 1, 0, 0, 2, 20, 0, 7, 2, 6, 10  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "GRANDPNO"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 5, 4, 3, 0, 0, 15, 15   ;  1 E.PIANO
-    dc.b 14, 0, 40, 1, 31, 0, 10, 4, 4, 2  ; slot0 S1
-    dc.b 1, 0, 8, 1, 31, 0, 8, 4, 5, 2  ; slot1 S3
-    dc.b 1, 0, 32, 1, 31, 0, 6, 3, 4, 3  ; slot2 S2
-    dc.b 1, 0, 0, 1, 28, 0, 9, 4, 6, 4  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "E.PIANO "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 0, 5, 3, 0, 0, 15, 15   ;  2 SYN.BASS
-    dc.b 1, 0, 30, 1, 31, 0, 12, 0, 8, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 2, 1, 31, 0, 10, 4, 9, 2  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "SYN.BASS"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 4, 3, 0, 0, 15, 15   ;  3 PICKBASS
-    dc.b 2, 0, 28, 1, 31, 0, 14, 5, 8, 3  ; slot0 S1
-    dc.b 3, 0, 40, 1, 31, 0, 12, 5, 8, 3  ; slot1 S3
-    dc.b 1, 3, 34, 1, 31, 0, 12, 5, 8, 3  ; slot2 S2
-    dc.b 1, 0, 4, 1, 31, 0, 12, 6, 9, 2  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "PICKBASS"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 5, 3, 0, 0, 15, 15   ;  4 BRASS
-    dc.b 1, 0, 30, 1, 18, 0, 8, 0, 6, 0  ; slot0 S1
-    dc.b 1, 1, 33, 1, 18, 0, 8, 0, 6, 0  ; slot1 S3
-    dc.b 1, 0, 36, 1, 18, 0, 8, 0, 6, 0  ; slot2 S2
-    dc.b 1, 0, 6, 1, 16, 0, 6, 0, 7, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "BRASS   "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 4, 3, 3, 0, 0, 15, 15   ;  5 STRINGS
-    dc.b 2, 1, 42, 0, 12, 0, 6, 0, 8, 0  ; slot0 S1
-    dc.b 2, 2, 44, 0, 12, 0, 6, 0, 8, 0  ; slot1 S3
-    dc.b 1, 0, 10, 0, 12, 0, 6, 0, 8, 0  ; slot2 S2
-    dc.b 1, 0, 8, 0, 11, 0, 6, 0, 9, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "STRINGS "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ;  6 ORGAN
-    dc.b 1, 0, 8, 0, 31, 0, 0, 0, 8, 0  ; slot0 S1
-    dc.b 4, 0, 18, 0, 31, 0, 0, 0, 8, 0  ; slot1 S3
-    dc.b 2, 0, 14, 0, 31, 0, 0, 0, 8, 0  ; slot2 S2
-    dc.b 1, 0, 4, 0, 31, 0, 0, 0, 8, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "ORGAN   "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 7, 3, 0, 0, 15, 15   ;  7 SQR.LEAD
-    dc.b 1, 0, 28, 1, 31, 0, 6, 0, 7, 0  ; slot0 S1
-    dc.b 2, 0, 30, 1, 31, 0, 6, 0, 7, 0  ; slot1 S3
-    dc.b 1, 0, 30, 1, 31, 0, 6, 0, 7, 0  ; slot2 S2
-    dc.b 1, 0, 4, 1, 31, 0, 5, 0, 7, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "SQR.LEAD"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 0, 4, 3, 0, 0, 15, 15   ;  8 SAWLEAD
-    dc.b 1, 0, 26, 1, 31, 0, 5, 0, 7, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 1, 0, 2, 1, 31, 0, 4, 0, 7, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "SAWLEAD "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 4, 2, 3, 0, 0, 15, 15   ;  9 BELL
-    dc.b 7, 1, 38, 0, 31, 0, 14, 4, 5, 1  ; slot0 S1
-    dc.b 14, 3, 40, 0, 31, 0, 14, 4, 5, 1  ; slot1 S3
-    dc.b 1, 0, 12, 0, 31, 0, 16, 5, 5, 2  ; slot2 S2
-    dc.b 1, 0, 10, 0, 31, 0, 16, 6, 5, 3  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "BELL    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 5, 3, 3, 0, 0, 15, 15   ; 10 MARIMBA
-    dc.b 1, 0, 34, 0, 31, 0, 18, 0, 8, 0  ; slot0 S1
-    dc.b 1, 0, 16, 0, 31, 0, 18, 0, 8, 0  ; slot1 S3
-    dc.b 7, 0, 16, 0, 31, 0, 18, 0, 8, 0  ; slot2 S2
-    dc.b 14, 0, 14, 0, 31, 0, 18, 0, 8, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "MARIMBA "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 5, 1, 3, 0, 0, 15, 15   ; 11 VIBES
-    dc.b 7, 1, 30, 0, 31, 0, 12, 3, 6, 2  ; slot0 S1
-    dc.b 1, 0, 18, 0, 31, 0, 12, 3, 6, 2  ; slot1 S3
-    dc.b 14, 2, 18, 0, 31, 0, 12, 3, 6, 2  ; slot2 S2
-    dc.b 1, 0, 12, 0, 31, 0, 12, 3, 7, 2  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "VIBES   "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 4, 2, 3, 0, 0, 15, 15   ; 12 SYN.PAD
-    dc.b 2, 1, 40, 0, 8, 0, 5, 0, 9, 0  ; slot0 S1
-    dc.b 3, 2, 42, 0, 8, 0, 5, 0, 9, 0  ; slot1 S3
-    dc.b 1, 3, 16, 0, 8, 0, 5, 0, 9, 0  ; slot2 S2
-    dc.b 1, 0, 12, 0, 7, 0, 5, 0, 10, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "SYN.PAD "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 6, 3, 0, 0, 15, 15   ; 13 CLAV
-    dc.b 2, 0, 30, 2, 31, 0, 16, 6, 8, 4  ; slot0 S1
-    dc.b 6, 0, 38, 2, 31, 0, 16, 6, 8, 4  ; slot1 S3
-    dc.b 1, 3, 32, 2, 31, 0, 16, 6, 8, 4  ; slot2 S2
-    dc.b 1, 0, 6, 2, 31, 0, 18, 7, 9, 3  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "CLAV    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 5, 4, 3, 0, 0, 15, 15   ; 14 HARPSI
-    dc.b 4, 0, 32, 1, 31, 0, 16, 4, 7, 2  ; slot0 S1
-    dc.b 8, 0, 34, 1, 31, 0, 16, 4, 7, 2  ; slot1 S3
-    dc.b 1, 0, 18, 1, 31, 0, 16, 4, 7, 2  ; slot2 S2
-    dc.b 1, 0, 12, 1, 31, 0, 18, 5, 8, 2  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "HARPSI  "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 0, 0, 3, 0, 0, 15, 15   ; 15 FLUTE
-    dc.b 1, 0, 40, 0, 20, 0, 6, 0, 7, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 1, 0, 8, 0, 18, 0, 5, 0, 8, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "FLUTE   "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 5, 3, 0, 0, 15, 15   ; 16 TRUMPET
-    dc.b 1, 0, 28, 1, 16, 0, 8, 0, 6, 0  ; slot0 S1
-    dc.b 2, 0, 32, 1, 16, 0, 8, 0, 6, 0  ; slot1 S3
-    dc.b 1, 1, 34, 1, 16, 0, 8, 0, 6, 0  ; slot2 S2
-    dc.b 1, 0, 6, 1, 14, 0, 6, 0, 7, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "TRUMPET "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 4, 4, 3, 0, 0, 15, 15   ; 17 SYNBRASS
-    dc.b 1, 0, 32, 0, 16, 0, 8, 0, 7, 0  ; slot0 S1
-    dc.b 1, 1, 34, 0, 16, 0, 8, 0, 7, 0  ; slot1 S3
-    dc.b 1, 0, 10, 0, 16, 0, 8, 0, 7, 0  ; slot2 S2
-    dc.b 1, 0, 8, 0, 15, 0, 7, 0, 8, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "SYNBRASS"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 3, 3, 0, 0, 15, 15   ; 18 FRETLESS
-    dc.b 1, 0, 30, 1, 31, 0, 12, 4, 8, 3  ; slot0 S1
-    dc.b 3, 0, 40, 1, 31, 0, 12, 4, 8, 3  ; slot1 S3
-    dc.b 2, 3, 36, 1, 31, 0, 12, 4, 8, 3  ; slot2 S2
-    dc.b 1, 0, 4, 1, 31, 0, 11, 5, 9, 2  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "FRETLESS"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 2, 2, 3, 0, 0, 15, 15   ; 19 WOODBASS
-    dc.b 1, 0, 32, 1, 31, 0, 16, 6, 9, 5  ; slot0 S1
-    dc.b 2, 0, 42, 1, 31, 0, 16, 6, 9, 5  ; slot1 S3
-    dc.b 1, 0, 38, 1, 31, 0, 16, 6, 9, 5  ; slot2 S2
-    dc.b 1, 0, 6, 1, 31, 0, 18, 7, 10, 4  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "WOODBASS"        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 20 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 21 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 22 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 23 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 24 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 25 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 26 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 27 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 28 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 29 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 30 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    dc.b 0, 7, 0, 3, 0, 0, 15, 15   ; 31 INIT
-    dc.b 1, 0, 0, 0, 31, 0, 0, 0, 5, 0  ; slot0 S1
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot1 S3
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot2 S2
-    dc.b 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; slot3 S4
-    dc.b $FF, 1, 0, 0, 0, 0        ; i_tbl i_tbs kit gain rate tsp (48-53)
-    dc.b "INIT    "        ; i_name (54-61)
-    dc.b 0, 0                      ; reserved 62-63
-    even
+fm_factory:  incbin "build/fm_factory.bin"   ; 32 x 64 factory patches, baked from instrument-patches/ (makeinstruments.py)
+            even
 
 ; carrier slots per algorithm (bit d6 set = record slot d6 is a carrier, in S1,S3,S2,S4
 ; register order). VOL attenuates only carriers so it scales output without retiming/timbre.
