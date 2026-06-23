@@ -399,7 +399,7 @@ const dbSL=db=>db<=-90?15:Math.max(0,Math.min(15,Math.round(-db/3)));
 // Operator algorithm -> { ym: YM2612 algo, perm:[opForA,opForB,opForC,opForD] as YM2612 op 0..3 }.
 // VERIFIED: algo 0 (series D->C->B->A, A carrier). Others best-effort until validated per patch.
 const OPALG={0:{ym:0,perm:[3,2,1,0]}, 1:{ym:1,perm:[3,2,1,0]}, 2:{ym:2,perm:[3,2,1,0]}, 3:{ym:3,perm:[3,1,0,2]},
-              7:{ym:4,perm:[1,0,3,2]}, 8:{ym:5,perm:[1,2,3,0]}, 9:{ym:6,perm:[1,0,2,3]}, 10:{ym:7,perm:[0,1,2,3]}};
+              7:{ym:4,perm:[1,0,3,2]}, 8:{ym:5,perm:[1,2,3,0]}, 9:{ym:6,perm:[2,3,1,0]}, 10:{ym:7,perm:[0,1,2,3]}};
 async function gunzip(d){ const s=new Blob([d]).stream().pipeThrough(new DecompressionStream('gzip')); return new TextDecoder().decode(await new Response(s).arrayBuffer()); }
 function mval(el,tag){ if(!el)return null; const t=el.getElementsByTagName(tag)[0]; if(!t)return null; const m=t.getElementsByTagName('Manual')[0]; return (m||t).getAttribute('Value'); }
 function advToRecord(xml){
@@ -432,7 +432,7 @@ const ADVTMPL="H4sIAGLBOWoC/+2dW1PjOBbHn3s+BcV7J74nrlLPFA3DNjXchjD045ZwBHjbsbO+0
 async function gzipStr(str){ const st=new Blob([str]).stream().pipeThrough(new CompressionStream('gzip')); return new Uint8Array(await new Response(st).arrayBuffer()); }
 function setM(el,tag,val){ const t=el&&el.getElementsByTagName(tag)[0]; if(t){ (t.getElementsByTagName('Manual')[0]||t).setAttribute('Value', String(val)); } }
 const REVALG={0:{op:0,perm:[3,2,1,0]}, 1:{op:1,perm:[3,2,1,0]}, 2:{op:2,perm:[3,2,1,0]}, 3:{op:3,perm:[3,1,0,2]},
-               4:{op:7,perm:[1,0,3,2]}, 5:{op:8,perm:[1,2,3,0]}, 6:{op:9,perm:[1,0,2,3]}, 7:{op:10,perm:[0,1,2,3]}};
+               4:{op:7,perm:[1,0,3,2]}, 5:{op:8,perm:[1,2,3,0]}, 6:{op:9,perm:[2,3,1,0]}, 7:{op:10,perm:[0,1,2,3]}};
 async function recordToAdv(slot){
   const doc=new DOMParser().parseFromString(await gunzip(Uint8Array.from(atob(ADVTMPL),c=>c.charCodeAt(0))),'text/xml');
   const filt=doc.getElementsByTagName('Filter')[0]; if(filt) setM(filt,'OnOff','false');
