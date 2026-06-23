@@ -263,7 +263,7 @@ t_tsp      equ 1                    ; transposition, signed semitones
 t_cmd      equ 2                    ; command
 t_prm      equ 3                    ; command parameter
 NINSTR     equ 32
-i_type     equ 0                    ; instrument type: 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE
+i_type     equ 0                    ; instrument type: 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE, 5 PERC
 i_algo     equ 1                    ; FM algorithm 0-7
 i_fb       equ 2                    ; FM feedback 0-7
 i_pan      equ 3                    ; FM stereo pan: 0 off, 1 R, 2 L, 3 L+R
@@ -273,6 +273,11 @@ i_hld      equ 6                    ; gate time: note-off after HLD*2 ticks; $F 
 i_vol      equ 7                    ; instrument volume 0-15 (attenuates carriers); $F = full
 i_op       equ 8                    ; 4 ops x 10: MUL DT TL RS AR AM D1 D2 RR SL
 FM_NPARM   equ 10
+; --- PERC type (CH3 special mode): reuses the record -- base instr ref + per-op freq/mul/dt ---
+i_pbase    equ 1                    ; PERC: base instrument # (borrows algo/fb/TL/envelopes; reuses i_algo)
+p_fnum     equ 0                    ; PERC op: F-number word (block<<11 | 11-bit F-number)
+p_mul      equ 2                    ; PERC op: frequency multiplier 0-15
+p_dt       equ 3                    ; PERC op: detune 0-7
 ; PSG (TONE/NOISE) fields overlay the FM-op bytes (an instrument is FM or PSG, never both)
 ip_vol     equ 8                    ; PSG peak/hold volume 0-F
 ip_atk     equ 9                    ; attack: ticks per volume step up (0 = instant)
@@ -325,7 +330,7 @@ i_rate     equ 52                   ; KIT rate: 0=1x 1=2x 2=4x 3=0.5x (0 = defau
 i_tsp      equ 53                   ; FM per-instrument transpose, signed semitones (channel item)
 i_psweep   equ 62                   ; FM pitch sweep: hi nibble = depth (x4 semis, downward), lo nibble = rate/tick
 i_name     equ 54                   ; 8-char name (patcher metadata; engine ignores 54-63)
-NITYPE     equ 5
+NITYPE     equ 6
 NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
 NCHAIN_ED  equ 7                    ; highest editable chain
 NINSTR_ED  equ 31                   ; highest editable instrument
@@ -701,10 +706,10 @@ VBlankInt:
     tst.b   (i_type,a1,d0.w)
     bne.s   .gpsg
     bsr     render_fm                     ; FM = the FM editor
-    bra.s   .gd
+    bra     .gd
 .gtbl:
     bsr     render_table
-    bra.s   .gd
+    bra     .gd
 .gopts:
     bsr     render_opts
     bra     .gd
@@ -725,6 +730,8 @@ VBlankInt:
     bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
+    cmpi.b  #5, d1
+    beq     .gperc
     cmpi.b  #3, d1
     beq.s   .gtone
     cmpi.b  #4, d1
@@ -732,24 +739,27 @@ VBlankInt:
     cmpi.b  #1, d1
     bne.s   .gwave
     bsr     render_kit                    ; KIT
-    bra.s   .gd
+    bra     .gd
 .gwave:
     bsr     render_wave_inst              ; WAVE instrument page
-    bra.s   .gd
+    bra     .gd
 .gtone:
     bsr     render_tone
-    bra.s   .gd
+    bra     .gd
 .gnoise:
     bsr     render_noise
-    bra.s   .gd
+    bra     .gd
+.gperc:
+    bsr     render_perc
+    bra     .gd
 .gch:
     bsr     render_chain
     bsr     render_track_playing
-    bra.s   .gd
+    bra     .gd
 .gsg:
     bsr     render_song
     bsr     render_song_playing
-    bra.s   .gd
+    bra     .gd
 .gph:
     bsr     render_phrase
     bsr     render_track_playing
@@ -2265,7 +2275,7 @@ edit_psg:
 .ep_tw:
     move.b  d0, (i_type,a3)
     cmpi.b  #2, d0                          ; switched to WAVE -> install clean defaults so the
-    bne.s   .ep_twd                          ; old type's bytes don't read as random LFO/detune
+    bne.s   .ep_nwav                         ; old type's bytes don't read as random LFO/detune
     lea     8(a3), a1                        ; clear the WAVE field block (offsets 8..30)
     moveq   #23-1, d1
 .ep_twc:
@@ -2275,6 +2285,10 @@ edit_psg:
     move.b  #15, (ip_hld,a3)               ; ENV: infinite hold (sustain)
     move.b  #3, (ip_dcy,a3)                ; ENV: gentle release
     move.b  #8, (iw_pitch,a3)              ; PITCH centred (in tune)
+.ep_nwav:
+    cmpi.b  #5, d0                          ; switched to PERC -> seed cowbell-style frequencies
+    bne.s   .ep_twd
+    bsr     init_perc_defaults
 .ep_twd:
     move.b  #1, need_clear
     rts
@@ -3691,6 +3705,124 @@ str_rom:   dc.b "ROM",0
 str_sram:  dc.b "SRAM",0
 str_load:  dc.b "LOAD",0
 str_save:  dc.b "SAVE",0
+    even
+
+render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): base instr + 4 op frequencies
+    bsr     render_inst_hdr               ; INST (row 3) + TYPE (row 4); a3 = instrum[cur_instr]
+    moveq   #5, d3                          ; BASE label (row 5, col 1)
+    moveq   #1, d4
+    lea     str_base, a1
+    bsr     print_at
+    moveq   #5, d0                          ; BASE value (row 5, col 6), hl if cursor row 2
+    moveq   #6, d1
+    bsr     bvpos
+    moveq   #2, d0
+    moveq   #0, d1
+    bsr     selhl
+    move.b  (i_pbase,a3), d3
+    move.b  d2, d4
+    bsr     draw_hex2
+    moveq   #6, d3                          ; column header (row 6, col 5)
+    moveq   #5, d4
+    lea     str_perc_hdr, a1
+    bsr     print_at
+    moveq   #0, d6                          ; op index 0-3
+.rp_op:
+    moveq   #0, d5                          ; screen row = 7 + op
+    move.b  d6, d5
+    addq.w  #7, d5
+    moveq   #0, d7                          ; cursor row = 3 + op
+    move.b  d6, d7
+    addq.w  #3, d7
+    move.l  d5, d0                          ; op label (3 chars) at (row, col 1)
+    moveq   #1, d1
+    bsr     bvpos
+    lea     op_names, a1
+    move.w  d6, d0
+    mulu.w  #3, d0
+    adda.w  d0, a1
+    moveq   #3-1, d0
+.rp_lbl:
+    moveq   #0, d3
+    move.b  (a1)+, d3
+    move.w  d3, VDP_DATA
+    dbra    d0, .rp_lbl
+    move.w  d6, d0                          ; a2 = this op's params
+    mulu.w  #FM_NPARM, d0
+    lea     (i_op,a3), a2
+    adda.w  d0, a2
+    move.l  d5, d0                          ; BLK (fnum>>11) at (row, col 6), hl col 0
+    moveq   #6, d1
+    bsr     bvpos
+    move.w  d7, d0
+    moveq   #0, d1
+    bsr     selhl
+    move.w  (p_fnum,a2), d3
+    lsr.w   #8, d3
+    lsr.w   #3, d3
+    andi.w  #7, d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    move.l  d5, d0                          ; FNUM (3 hex) at (row, col 9), hl col 1
+    moveq   #9, d1
+    bsr     bvpos
+    move.w  d7, d0
+    moveq   #1, d1
+    bsr     selhl
+    move.w  (p_fnum,a2), d3
+    andi.w  #$700, d3
+    lsr.w   #8, d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    move.w  (p_fnum,a2), d3
+    andi.w  #$FF, d3
+    move.b  d2, d4
+    bsr     draw_hex2
+    move.l  d5, d0                          ; MUL at (row, col 15), hl col 2
+    moveq   #15, d1
+    bsr     bvpos
+    move.w  d7, d0
+    moveq   #2, d1
+    bsr     selhl
+    move.b  (p_mul,a2), d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    move.l  d5, d0                          ; DT at (row, col 18), hl col 3
+    moveq   #18, d1
+    bsr     bvpos
+    move.w  d7, d0
+    moveq   #3, d1
+    bsr     selhl
+    move.b  (p_dt,a2), d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    addq.w  #1, d6
+    cmpi.w  #4, d6
+    bne     .rp_op
+    rts
+init_perc_defaults:                       ; a3 = PERC record -> cowbell-style frequencies (~540/800/1080/1600 Hz)
+    move.b  #0, (i_pbase,a3)               ; base instrument 0
+    lea     perc_default, a0
+    lea     (i_op,a3), a1
+    moveq   #4-1, d0
+.ipd:
+    move.w  (a0)+, (a1)                    ; p_fnum (offset 0)
+    move.b  (a0)+, (p_mul,a1)
+    move.b  (a0)+, (p_dt,a1)
+    lea     FM_NPARM(a1), a1
+    dbra    d0, .ipd
+    rts
+perc_default:                             ; per op: fnum.w (block<<11|F), mul.b, dt.b
+    dc.w    $2298
+    dc.b    1, 0
+    dc.w    $23D8
+    dc.b    1, 0
+    dc.w    $2A98
+    dc.b    1, 0
+    dc.w    $2BD8
+    dc.b    1, 0
+str_base:      dc.b "BASE",0
+str_perc_hdr:  dc.b "BLK FNUM MUL DT",0
     even
 
 ; placeholder for KIT until its editor lands
@@ -9906,6 +10038,7 @@ str_t_kit:  dc.b "KIT",0
 str_t_wav:  dc.b "WAVE",0
 str_t_ton:  dc.b "TONE",0
 str_t_noi:  dc.b "NOISE",0
+str_t_perc: dc.b "PERC",0
 str_random: dc.b "RANDOM  ",0               ; padded so a shorter value overwrites cleanly
 str_period: dc.b "PERIODIC",0
 str_r512:   dc.b "512     ",0
@@ -9913,7 +10046,7 @@ str_r1k:    dc.b "1K      ",0
 str_r2k:    dc.b "2K      ",0
 str_pitch:  dc.b "PITCHED ",0
     even
-type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi
+type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi, str_t_perc
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
 voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_tbl, str_tbs, str_algo, str_fb, str_ams, str_fms, str_psw  ; 11
