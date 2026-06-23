@@ -1767,10 +1767,10 @@ col_max:                                  ; -> d1 = highest column index for cur
 .izero:
     moveq   #0, d1
     rts
-.pcol:                                    ; PERC: rows 0-2 single col; op rows 3-6 = 4 cols
+.pcol:                                    ; PERC: rows 0-2 single col; op rows 3-6 = FREQ/MUL/DT
     cmpi.b  #3, cur_row
     blo.s   .izero
-    moveq   #3, d1
+    moveq   #2, d1
     rts
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
@@ -3724,6 +3724,22 @@ str_load:  dc.b "LOAD",0
 str_save:  dc.b "SAVE",0
     even
 
+perc_hz:                                  ; d0 = fnum word (block<<11|F) -> d3 = Hz (clamped 9999). clobbers d0-d2
+    move.w  d0, d1
+    andi.w  #$7FF, d1                       ; F-number
+    mulu.w  #53267, d1                      ; F * (NTSC clock / 144) -> 32-bit
+    lsr.w   #8, d0
+    lsr.w   #3, d0
+    andi.w  #7, d0                          ; block 0-7
+    moveq   #20, d2
+    sub.w   d0, d2                          ; shift = 20 - block
+    lsr.l   d2, d1                          ; Hz = (F*53267) >> (20-block)
+    cmpi.l  #9999, d1
+    bls.s   .phz_ok
+    move.l  #9999, d1
+.phz_ok:
+    move.w  d1, d3
+    rts
 render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): base instr + 4 op frequencies
     bsr     render_inst_hdr               ; INST (row 3) + TYPE (row 4); a3 = instrum[cur_instr]
     moveq   #5, d3                          ; BASE label (row 5, col 1)
@@ -3768,47 +3784,32 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     mulu.w  #FM_NPARM, d0
     lea     (i_op,a3), a2
     adda.w  d0, a2
-    move.l  d5, d0                          ; BLK (fnum>>11) at (row, col 6), hl col 0
+    move.l  d5, d0                          ; FREQ (Hz) at (row, col 6), hl col 0
     moveq   #6, d1
     bsr     bvpos
     move.w  d7, d0
     moveq   #0, d1
     bsr     selhl
-    move.w  (p_fnum,a2), d3
-    lsr.w   #8, d3
-    lsr.w   #3, d3
-    andi.w  #7, d3
+    move.w  (p_fnum,a2), d0
+    move.l  d2, -(sp)
+    bsr     perc_hz                         ; d3 = Hz
+    move.l  (sp)+, d2
     move.b  d2, d4
-    bsr     draw_hex1
-    move.l  d5, d0                          ; FNUM (3 hex) at (row, col 9), hl col 1
-    moveq   #9, d1
+    bsr     draw_dec4
+    move.l  d5, d0                          ; MUL at (row, col 13), hl col 1
+    moveq   #13, d1
     bsr     bvpos
     move.w  d7, d0
     moveq   #1, d1
     bsr     selhl
-    move.w  (p_fnum,a2), d3
-    andi.w  #$700, d3
-    lsr.w   #8, d3
-    move.b  d2, d4
-    bsr     draw_hex1
-    move.w  (p_fnum,a2), d3
-    andi.w  #$FF, d3
-    move.b  d2, d4
-    bsr     draw_hex2
-    move.l  d5, d0                          ; MUL at (row, col 15), hl col 2
-    moveq   #15, d1
-    bsr     bvpos
-    move.w  d7, d0
-    moveq   #2, d1
-    bsr     selhl
     move.b  (p_mul,a2), d3
     move.b  d2, d4
     bsr     draw_hex1
-    move.l  d5, d0                          ; DT at (row, col 18), hl col 3
-    moveq   #18, d1
+    move.l  d5, d0                          ; DT at (row, col 16), hl col 2
+    moveq   #16, d1
     bsr     bvpos
     move.w  d7, d0
-    moveq   #3, d1
+    moveq   #2, d1
     bsr     selhl
     move.b  (p_dt,a2), d3
     move.b  d2, d4
@@ -3839,7 +3840,7 @@ perc_default:                             ; per op: fnum.w (block<<11|F), mul.b,
     dc.w    $2BD8
     dc.b    1, 0
 str_base:      dc.b "BASE",0
-str_perc_hdr:  dc.b "BLK FNUM MUL DT",0
+str_perc_hdr:  dc.b "FREQ   MUL DT",0
     even
 edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows 3-6 = ops; d2 = dpad
     cmpi.b  #2, cur_row
@@ -3856,12 +3857,10 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     lea     (i_op,a3), a2
     adda.w  d0, a2                          ; a2 = this op's params
     tst.b   cur_col
-    beq.s   .epf_blk                        ; col 0 = BLK
+    beq.s   .epf_freq                       ; col 0 = FREQ (Hz)
     cmpi.b  #1, cur_col
-    beq.s   .epf_fnum                       ; col 1 = FNUM
-    cmpi.b  #2, cur_col
-    bne.s   .epf_dt                         ; col 3 = DT
-    lea     (p_mul,a2), a1                 ; col 2 = MUL 0-15
+    bne.s   .epf_dt                         ; col 2 = DT
+    lea     (p_mul,a2), a1                 ; col 1 = MUL 0-15
     moveq   #15, d3
     moveq   #1, d4
     jmp     adj_field
@@ -3870,65 +3869,56 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     moveq   #7, d3
     moveq   #1, d4
     jmp     adj_field
-.epf_blk:                                  ; block = bits 11-13 of the fnum word, +-1
+.epf_freq:                                 ; FREQ: adjust the F-number, block auto-carries (L/R +-1, U/D +-16)
     move.w  (a2), d0
     move.w  d0, d1
-    andi.w  #$7FF, d1                       ; keep the F-number part
+    andi.w  #$7FF, d1                       ; d1 = F-number
     lsr.w   #8, d0
     lsr.w   #3, d0
-    andi.w  #7, d0                          ; block 0-7
-    btst    #0, d2                          ; Up -> +1
-    bne.s   .epb_inc
+    andi.w  #7, d0                          ; d0 = block
+    btst    #0, d2                          ; Up -> +16
+    beq.s   .epq_nu
+    addi.w  #16, d1
+.epq_nu:
+    btst    #1, d2                          ; Down -> -16
+    beq.s   .epq_nd
+    subi.w  #16, d1
+.epq_nd:
     btst    #3, d2                          ; Right -> +1
-    bne.s   .epb_inc
-    btst    #1, d2                          ; Down -> -1
-    bne.s   .epb_dec
+    beq.s   .epq_nr
+    addq.w  #1, d1
+.epq_nr:
     btst    #2, d2                          ; Left -> -1
-    bne.s   .epb_dec
-    rts
-.epb_inc:
+    beq.s   .epq_nl
+    subq.w  #1, d1
+.epq_nl:
+    tst.w   d1                              ; underflow (block 0 only) -> clamp 0
+    bpl.s   .epq_cu
+    moveq   #0, d1
+    bra.s   .epq_w
+.epq_cu:
+    cmpi.w  #2047, d1                       ; over the top -> block up, halve F (same pitch)
+    bls.s   .epq_cd
     cmpi.w  #7, d0
-    bhs.s   .epb_w
+    bhs.s   .epq_max
+    lsr.w   #1, d1
     addq.w  #1, d0
-    bra.s   .epb_w
-.epb_dec:
+    bra.s   .epq_cu
+.epq_max:
+    move.w  #2047, d1
+    bra.s   .epq_w
+.epq_cd:
+    cmpi.w  #1024, d1                       ; below the half point -> block down, double F (keep precision)
+    bhs.s   .epq_w
     tst.w   d0
-    beq.s   .epb_w
+    beq.s   .epq_w
+    lsl.w   #1, d1
     subq.w  #1, d0
-.epb_w:
+    bra.s   .epq_cd
+.epq_w:
     lsl.w   #8, d0
     lsl.w   #3, d0                          ; block << 11
-    or.w    d1, d0
-    move.w  d0, (a2)
-    rts
-.epf_fnum:                                 ; F-number = bits 0-10 (0..2047); L/R +-1, U/D +-16
-    move.w  (a2), d0
-    move.w  d0, d1
-    andi.w  #$F800, d1                       ; keep the block bits
-    andi.w  #$7FF, d0                         ; F-number part
-    btst    #0, d2                          ; Up -> +16
-    beq.s   .epn_nu
-    addi.w  #16, d0
-.epn_nu:
-    btst    #1, d2                          ; Down -> -16
-    beq.s   .epn_nd
-    subi.w  #16, d0
-.epn_nd:
-    btst    #3, d2                          ; Right -> +1
-    beq.s   .epn_nr
-    addq.w  #1, d0
-.epn_nr:
-    btst    #2, d2                          ; Left -> -1
-    beq.s   .epn_nl
-    subq.w  #1, d0
-.epn_nl:
-    bpl.s   .epn_hi
-    moveq   #0, d0                           ; underflow -> 0
-.epn_hi:
-    cmpi.w  #$7FF, d0
-    bls.s   .epn_w
-    move.w  #$7FF, d0                         ; clamp 2047
-.epn_w:
+    andi.w  #$7FF, d1
     or.w    d1, d0
     move.w  d0, (a2)
     rts
