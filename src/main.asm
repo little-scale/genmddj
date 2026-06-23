@@ -2533,18 +2533,34 @@ edit_value:
     beq.s   .h4
     sub.b   d4, d0
 .h4:
-    tst.b   cur_screen                     ; PHRASE IN (instrument) column -> clamp 0..NINSTR-1
-    bne.s   .h4st
+    moveq   #0, d3                          ; d3 = clamp ceiling for reference columns (0 = no clamp)
+    tst.b   cur_screen                     ; PHRASE col 1 = instrument -> 0..NINSTR-1
+    bne.s   .h4_nph
     cmpi.b  #1, cur_col
     bne.s   .h4st
+    move.w  #NINSTR, d3
+    bra.s   .h4cl
+.h4_nph:
+    cmpi.b  #SCR_CHAIN, cur_screen          ; CHAIN col 0 = phrase# -> 0..NPHRASES-1
+    bne.s   .h4_nch
+    tst.b   cur_col
+    bne.s   .h4st
+    move.w  #NPHRASES, d3
+    bra.s   .h4cl
+.h4_nch:
+    cmpi.b  #SCR_SONG, cur_screen           ; SONG cell = chain# -> 0..NCHAINS-1
+    bne.s   .h4st
+    move.w  #NCHAINS, d3
+.h4cl:
     ext.w   d0
-    bpl.s   .h4cl
+    bpl.s   .h4chi
     moveq   #0, d0                          ; underflow -> 0
     bra.s   .h4st
-.h4cl:
-    cmpi.w  #NINSTR, d0
+.h4chi:
+    cmp.w   d3, d0
     blo.s   .h4st
-    moveq   #NINSTR-1, d0                   ; > 31 -> 31
+    move.w  d3, d0
+    subq.w  #1, d0                          ; over the ceiling -> ceiling-1
 .h4st:
     move.b  d0, (a1)
     cmpi.b  #SCR_SONG, cur_screen           ; remember the last value placed (single B-tap repeats)
@@ -7583,7 +7599,9 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .nochg:
     tst.b   c_keyon(a6)                     ; per-tick FM-freq re-send: only while the note is on
     beq.s   .nofreqres
-    moveq   #0, d0                          ; ...and only if a pitch-mod (chord or bend) is active
+    tst.b   c_psweep(a6)                    ; ...pitch sweep active -> re-send (it decays the pitch each tick)
+    bne.s   .dofreqres
+    moveq   #0, d0                          ; ...or a pitch-mod (chord or bend) is active
     move.b  c_track(a6), d0
     lea     c_chord, a4
     tst.b   (a4,d0.w)
@@ -7616,6 +7634,10 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 ; advancing the triple count d5. Channel-aware: emits to c_ympart / (reg + c_ymchreg), reads c_instr.
 emit_ch_patch:                              ; d1 = instrument # to patch from (caller passes c_instr)
     movem.l d1-d4/d6/a3-a4, -(sp)
+    cmpi.b  #NINSTR, d1                      ; clamp a stale out-of-range instrument to a valid slot
+    blo.s   .ecp_ok
+    moveq   #NINSTR-1, d1
+.ecp_ok:
     moveq   #0, d0
     move.b  d1, d0
     mulu.w  #INSTR_SIZE, d0
