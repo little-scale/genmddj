@@ -583,7 +583,7 @@ Start:
 
     move.b  #1, in_splash
     move.b  #0, splash_row
-    move.w  #3, splash_ctr
+    move.w  #150, splash_ctr
     move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
@@ -1542,6 +1542,27 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     beq.s   .mc_ndis
     clr.b   proj_armed
 .mc_ndis:
+    cmpi.b  #SCR_INSTR, cur_screen          ; library panel: ROM LOAD (row1 col3) sits below SRAM LOAD;
+    bne.s   .mc_move                         ; let Up/Down hop between them instead of jumping to the voice grid
+    cmpi.b  #1, cur_row
+    bne.s   .mc_move
+    move.b  cur_col, d0
+    btst    #1, d2                          ; Down on SRAM LOAD/SAVE (col 1/2) -> ROM LOAD (col 3)
+    beq.s   .mc_pu
+    cmpi.b  #1, d0
+    blo.s   .mc_move
+    cmpi.b  #3, d0
+    bhs.s   .mc_move
+    move.b  #3, cur_col
+    rts
+.mc_pu:
+    btst    #0, d2                          ; Up on ROM LOAD (col 3) -> SRAM LOAD (col 1)
+    beq.s   .mc_move
+    cmpi.b  #3, d0
+    bne.s   .mc_move
+    move.b  #1, cur_col
+    rts
+.mc_move:
     bsr     row_max                       ; d1 = highest row for this screen/type
     btst    #0, d2                         ; Up
     beq.s   .nu
@@ -3624,18 +3645,18 @@ render_bank:
     moveq   #14, d4
     lea     str_sram, a1
     bsr     print_at
-    moveq   #1, d0                          ; SRAM LOAD at (4, col 19), hl if (row 1, col 1)
+    moveq   #1, d0                          ; SRAM LOAD at (4, col 22 = under the slot), hl if (row 1, col 1)
     moveq   #1, d1
     bsr     selhl
     moveq   #4, d3
-    moveq   #19, d4
+    moveq   #22, d4
     lea     str_load, a1
     bsr     print_hl
-    moveq   #1, d0                          ; SRAM SAVE at (4, col 24), hl if (row 1, col 2)
+    moveq   #1, d0                          ; SRAM SAVE at (4, col 27), hl if (row 1, col 2)
     moveq   #2, d1
     bsr     selhl
     moveq   #4, d3
-    moveq   #24, d4
+    moveq   #27, d4
     lea     str_save, a1
     bsr     print_hl
     ; ---- ROM LOAD (screen row 5) ; cursor row 1 col 3 (under SRAM LOAD) ----
@@ -3643,11 +3664,11 @@ render_bank:
     moveq   #14, d4
     lea     str_rom, a1
     bsr     print_at
-    moveq   #1, d0                          ; ROM LOAD at (5, col 19), hl if (row 1, col 3)
+    moveq   #1, d0                          ; ROM LOAD at (5, col 22 = under SRAM LOAD), hl if (row 1, col 3)
     moveq   #3, d1
     bsr     selhl
     moveq   #5, d3
-    moveq   #19, d4
+    moveq   #22, d4
     lea     str_load, a1
     bsr     print_hl
     rts
