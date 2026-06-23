@@ -6428,6 +6428,10 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
+    moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
+    move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
+    lea     c_rtper, a2
+    clr.b   (a2,d2.w)
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row (phrase-structural, stays here)
     beq     .cmd_hop
