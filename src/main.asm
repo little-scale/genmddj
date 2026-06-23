@@ -1334,13 +1334,10 @@ grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
     move.b  (a1,d0.w), d4                  ; current hcol (0-4)
     moveq   #6, d7                         ; step bound (safety)
 .gn_step:
-    add.w   d1, d3                         ; step vrow, wrap [0,2]
-    bge.s   .gn_v1
-    moveq   #2, d3
-.gn_v1:
+    add.w   d1, d3                         ; step vrow -- NO vertical wrap (WAVE top and LFO bottom must not meet)
+    bmi     .gn_ret
     cmpi.w  #2, d3
-    ble.s   .gn_v2
-    moveq   #0, d3
+    bgt     .gn_ret
 .gn_v2:
     add.w   d2, d4                         ; step hcol, wrap [0,4]
     bge.s   .gn_h1
@@ -3714,7 +3711,9 @@ render_lfo:                                ; a0 = VDP_CTRL
     bsr     print_at
     moveq   #0, d6                          ; LFO row r = 0..5
 .lfr:
-    move.w  d6, d5                          ; screen row = 6 + r
+    move.w  d6, d5                          ; screen row = 6 + r + r/4 (a blank row every 4 LFOs)
+    lsr.w   #2, d5
+    add.w   d6, d5
     addi.w  #6, d5
     moveq   #0, d3                          ; row label: the LFO number (r+1) at col 1
     move.w  d5, d3
@@ -3867,8 +3866,10 @@ amp_refresh:
     lea     lfo_amp, a3
     moveq   #0, d6
 .arl:
-    moveq   #0, d0                           ; VRAM addr at (row 6+i, col 30)
+    moveq   #0, d0                           ; VRAM addr at (row 6 + i + i/4, col 30) -- matches the blank-every-4 spacing
     move.w  d6, d0
+    lsr.w   #2, d0
+    add.w   d6, d0
     addi.w  #6, d0
     lsl.w   #6, d0
     addi.w  #30, d0
