@@ -3587,17 +3587,17 @@ render_inst_hdr:
 ; ROM/SRAM tier-transfer cells, right of the voice params (a0 = VDP_CTRL, preserved).
 ; cells: cur_row 2 (ROM load), 3 (SRAM save), 4 (SRAM load), all at cur_col 1.
 render_bank:
-    moveq   #3, d3                          ; "LIBRARY" header on the INST row (screen row 3, col 18)
-    moveq   #18, d4
+    moveq   #3, d3                          ; "LIBRARY" header on the INST row (screen row 3, col 14)
+    moveq   #14, d4
     lea     str_lib, a1
     bsr     print_at
     ; ---- ROM row (screen row 4): ROM <slot> LOAD ; cursor row 0 cols 1(slot)/2(LOAD) ----
     moveq   #4, d3
-    moveq   #18, d4
+    moveq   #14, d4
     lea     str_rom, a1
     bsr     print_at
-    moveq   #4, d0                          ; ROM slot value at (4, col 23)
-    moveq   #23, d1
+    moveq   #4, d0                          ; ROM slot value at (4, col 19)
+    moveq   #19, d1
     bsr     bvpos
     move.b  rom_slot, d3
     moveq   #0, d0                          ; highlight if cursor on (row 0, col 1)
@@ -3609,16 +3609,16 @@ render_bank:
     moveq   #2, d1
     bsr     selhl
     moveq   #4, d3
-    moveq   #26, d4
+    moveq   #22, d4
     lea     str_load, a1
     bsr     print_hl
     ; ---- SRAM row (screen row 5): SRAM <slot> SAVE LOAD ; cursor row 1 cols 1(slot)/2(SAVE)/3(LOAD) ----
     moveq   #5, d3
-    moveq   #18, d4
+    moveq   #14, d4
     lea     str_sram, a1
     bsr     print_at
-    moveq   #5, d0                          ; SRAM slot value at (5, col 23)
-    moveq   #23, d1
+    moveq   #5, d0                          ; SRAM slot value at (5, col 19)
+    moveq   #19, d1
     bsr     bvpos
     move.b  bank_slot, d3
     moveq   #1, d0
@@ -3630,14 +3630,14 @@ render_bank:
     moveq   #2, d1
     bsr     selhl
     moveq   #5, d3
-    moveq   #26, d4
+    moveq   #22, d4
     lea     str_save, a1
     bsr     print_hl
     moveq   #1, d0                          ; LOAD button at (5, col 31), hl if (row 1, col 3)
     moveq   #3, d1
     bsr     selhl
     moveq   #5, d3
-    moveq   #31, d4
+    moveq   #27, d4
     lea     str_load, a1
     bsr     print_hl
     rts
