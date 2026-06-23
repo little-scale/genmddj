@@ -240,10 +240,11 @@ function renderEditor(){
     s.onchange=()=>{ cb(+s.value); renderList(); }; f.appendChild(s); return f; };
   head.appendChild(mksel('TYPE',TYPES,getB(sel,0),v=>setB(sel,0,v)));
   head.appendChild(mksel('PAN',PANS,getB(sel,3),v=>setB(sel,3,v)));
-  // load / save a single patch (.gmi native, lossless; also imports .tfi/.vgi)
-  const lb=document.createElement('label'); lb.className='key'; lb.style.cursor='pointer'; lb.textContent='load patch / .adv';
-  const fi=document.createElement('input'); fi.type='file'; fi.accept='.gmi,.tfi,.vgi,.adv'; fi.hidden=true;
-  fi.onchange=e=>{ importPatch(e.target.files[0]); fi.value=''; }; lb.appendChild(fi); head.appendChild(lb);
+  // load one or more patches (.gmi native, lossless; also imports .tfi/.vgi/.adv). Multi-select -> consecutive slots.
+  const lb=document.createElement('label'); lb.className='key'; lb.style.cursor='pointer'; lb.textContent='load patches…';
+  lb.title='load one or more .gmi/.tfi/.vgi/.adv into this slot and the ones after';
+  const fi=document.createElement('input'); fi.type='file'; fi.accept='.gmi,.tfi,.vgi,.adv'; fi.multiple=true; fi.hidden=true;
+  fi.onchange=e=>{ const f=e.target.files; if(f.length===1) importPatch(f[0]); else dropPatches(f, sel); fi.value=''; }; lb.appendChild(fi); head.appendChild(lb);
   const sg=document.createElement('button'); sg.className='key'; sg.textContent='save .gmi'; sg.title='save this patch (genmddj native, lossless)'; sg.onclick=exportInst; head.appendChild(sg);
   const st=document.createElement('button'); st.className='key'; st.textContent='.tfi'; st.title='export TFI for other YM2612 tools'; st.onclick=exportTfi; head.appendChild(st);
   const sa=document.createElement('button'); sa.className='key'; sa.textContent='.adv'; sa.title='export an Ableton Operator preset'; sa.onclick=exportAdv; head.appendChild(sa);
@@ -545,21 +546,20 @@ $("#patch").onclick=()=>{
   const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   $("#romstatus").innerHTML=`Patched &amp; downloaded <b>${name}</b> (checksum $${sum.toString(16).toUpperCase().padStart(4,'0')}). Flash it.`;
 };
-// drop a ROM anywhere
+// drag-drop: a ROM, or one+ patch files (.gmi/.tfi/.vgi/.adv) anywhere. ONE document-level handler so it
+// works regardless of the drag overlay; patch drops land on the row under the cursor, else the selected slot.
 const _ov=$("#drop-ov"); let _dn=0;
-window.addEventListener('dragenter',e=>{ e.preventDefault(); _dn++; _ov.classList.add('on'); });
-window.addEventListener('dragover', e=>e.preventDefault());
-window.addEventListener('dragleave',e=>{ if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
-window.addEventListener('drop',e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on');
-  const fs=e.dataTransfer.files; if(!fs||!fs.length) return;
-  if(/\.(gmi|tfi|vgi|adv)$/i.test(fs[0].name)) dropPatches(fs, sel); else loadRom(fs[0]); });
-
-// drop one or more patch files onto the instrument list -> consecutive slots from the row under the cursor
-const _il=$("#ilist");
-_il.addEventListener('dragover', e=>{ e.preventDefault(); e.stopPropagation(); _il.classList.add('drag'); });
-_il.addEventListener('dragleave',e=>{ _il.classList.remove('drag'); });
-_il.addEventListener('drop',e=>{ e.preventDefault(); e.stopPropagation(); _il.classList.remove('drag');
-  const row=e.target.closest('.inst'); dropPatches(e.dataTransfer.files, row? +row.dataset.slot : sel); });
+document.addEventListener('dragenter',e=>{ e.preventDefault(); _dn++; _ov.classList.add('on'); });
+document.addEventListener('dragover', e=>{ e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='copy'; });
+document.addEventListener('dragleave',e=>{ if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
+document.addEventListener('drop',e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on');
+  const fs=e.dataTransfer&&e.dataTransfer.files;
+  if(!fs||!fs.length){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">Drop delivered no files</b> — some browsers block file drops on a local page. Use <b>load patches…</b> (it multi-selects) instead.`; return; }
+  if(/\.(gmi|tfi|vgi|adv)$/i.test(fs[0].name)){
+    const row=e.target&&e.target.closest&&e.target.closest('.inst');
+    dropPatches(fs, row? +row.dataset.slot : sel);
+  } else loadRom(fs[0]);
+});
 
 // W / S or Up / Down = previous / next slot (skipped while typing in a field)
 window.addEventListener('keydown',e=>{
