@@ -66,6 +66,7 @@ BANKS 1
 .DEFINE WV_LAST   $1FF3     ; last wave trigger processed
 .DEFINE WV_OFF    $1FF4     ; 68k bumps this to stop the wave (park DAC, leave wave mode)
 .DEFINE WV_OLAST  $1FF5     ; last wave-off processed
+.DEFINE CH3_SPC   $1FF6     ; PERC: 1 = CH3 special mode (68k sets; Z80 ORs bit6 into $27)
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -87,6 +88,7 @@ start:
     ld   (WV_PHASE+1), a
     ld   (WV_OFF), a
     ld   (WV_OLAST), a
+    ld   (CH3_SPC), a           ; CH3 special mode off at boot
     ld   b, a                   ; b = last SCB seq processed
     ld   d, a                   ; d = last dac trigger
 
@@ -148,6 +150,11 @@ mn_dac:
     ld   a, $27                 ; reset Timer A flag (keep it loaded + enabled)
     ld   (YM_A0), a
     ld   a, $15
+    ld   hl, CH3_SPC            ; PERC CH3 special mode -> keep $27 bit6 set across the timer write
+    bit  0, (hl)
+    jr   z, ta_nospc
+    or   $40
+ta_nospc:
     ld   (YM_D0), a
     ld   a, (D_PLAY)
     or   a

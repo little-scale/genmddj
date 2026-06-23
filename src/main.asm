@@ -93,6 +93,7 @@ splash_row equ $00FFE21C           ; splash incremental-draw progress (0..SPLASH
 g_lfo      equ $00FFE21D           ; global FM LFO: 0 = off, 1-8 = on at rate 0-7
 env_dirty  equ $00FFE21E           ; 1 = envelope needs rasterising (UI changed)
 env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progress
+ch3_spc    equ $00FFDFFE           ; PERC: 1 = CH3 special mode (F3) -> pushed to Z80 $1FF6
 last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entered (B-tap repeats it)
 scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
@@ -488,6 +489,7 @@ Start:
     move.l  #0, btap_addr
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
+    move.b  #0, ch3_spc                   ; PERC CH3 special mode off at boot
     move.b  #0, echo_mode                 ; ECHO off; sensible tap/reduction defaults
     move.b  #2, echo_tap1
     move.b  #4, echo_tap2
@@ -7849,7 +7851,7 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), (a5)+
     addq.w  #1, d5
-    bsr     fm_freq_send                   ; effective note (+ chord arp + fine) -> emit $A4/$A0
+    bsr     ch_freq_send                   ; effective note (+ chord arp + fine) -> emit $A4/$A0
     move.b  #0, (a5)+                       ; key-on: part0, $28, $F0|ymkey
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), d3
@@ -7876,7 +7878,7 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .dofreqres:
     cmpi.w  #YM_CAP, d5                      ; SCB headroom -> drop this tick's re-send if full
     bhi.s   .nofreqres
-    bsr     fm_freq_send
+    bsr     ch_freq_send
 .nofreqres:
     move.b  c_keyon(a6), d0               ; key state changed (e.g. stop -> off)?
     cmp.b   c_kshadow(a6), d0
@@ -7902,6 +7904,18 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
     blo.s   .ecp_ok
     moveq   #NINSTR-1, d1
 .ecp_ok:
+    moveq   #0, d0                          ; PERC instrument -> take the patch from its base instead
+    move.b  d1, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a3
+    cmpi.b  #5, (i_type,a3,d0.w)
+    bne.s   .ecp_np
+    move.b  (i_pbase,a3,d0.w), d1
+    andi.w  #$FF, d1
+    cmpi.b  #NINSTR, d1
+    blo.s   .ecp_np
+    moveq   #NINSTR-1, d1
+.ecp_np:
     moveq   #0, d0
     move.b  d1, d0
     mulu.w  #INSTR_SIZE, d0
@@ -8083,6 +8097,64 @@ emit_u_tl:
     movem.l (sp)+, d1-d4/d6/a3-a4
     rts
 
+; dispatch: F3 running a PERC instrument -> CH3 special-mode 4-frequency emit; everything else -> fm_freq_send.
+ch_freq_send:
+    cmpi.b  #2, c_track(a6)               ; F3 = track 2?
+    bne     fm_freq_send
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    cmpi.b  #5, (i_type,a4,d0.w)         ; PERC on F3?
+    bne.s   .cfs_norm
+    st      ch3_spc                        ; CH3 special mode on
+    bra     perc_freq_send
+.cfs_norm:
+    clr.b   ch3_spc                        ; F3 not PERC -> special mode off
+    bra     fm_freq_send
+; emit the 4 CH3-special operator frequencies + per-op MUL/DT. a6=ch (PERC), a5/d5=SCB.
+perc_freq_send:
+    movem.l d0-d3/a2/a4, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a2
+    adda.w  d0, a2
+    lea     (i_op,a2), a2                  ; a2 = op 0 params
+    lea     perc_freg, a4                  ; per op: DT/MUL reg, freq-hi reg, freq-lo reg
+    moveq   #4-1, d3
+.pfs_op:
+    move.b  #0, (a5)+                       ; MUL/DT override: $3x = DT<<4 | MUL
+    move.b  (a4)+, (a5)+
+    moveq   #0, d0
+    move.b  (p_dt,a2), d0
+    lsl.b   #4, d0
+    or.b    (p_mul,a2), d0
+    move.b  d0, (a5)+
+    addq.w  #1, d5
+    move.w  (a2), d1                        ; fnum word = block<<11 | F-number
+    move.b  #0, (a5)+                       ; freq HIGH: block<<3 | F[10:8]
+    move.b  (a4)+, (a5)+
+    move.w  d1, d2
+    lsr.w   #8, d2
+    andi.w  #$3F, d2
+    move.b  d2, (a5)+
+    addq.w  #1, d5
+    move.b  #0, (a5)+                       ; freq LOW: F[7:0]
+    move.b  (a4)+, (a5)+
+    move.b  d1, (a5)+
+    addq.w  #1, d5
+    lea     FM_NPARM(a2), a2
+    dbra    d3, .pfs_op
+    movem.l (sp)+, d0-d3/a2/a4
+    rts
+perc_freg:                                ; per record op (S1,S3,S2,S4): {DT/MUL reg, freq-hi, freq-lo}
+    dc.b $32, $AD, $A9                     ; op0 S1  -- VERIFY operator<->register mapping on hardware
+    dc.b $36, $AE, $AA                     ; op1 S3
+    dc.b $3A, $AC, $A8                     ; op2 S2
+    dc.b $3E, $A6, $A2                     ; op3 S4
+    even
+
 ; emit the FM channel's frequency ($A4/$A0) from c_note + chord arp offset + c_pfine fine.
 ; a6=ch, a5/d5=SCB. Clobbers d0-d4/a4 (compose-context scratch). Used at trigger + per-tick re-send.
 fm_freq_send:
@@ -8185,6 +8257,7 @@ push_scb:
 .w:
     btst    #0, Z80_BUSREQ
     bne.s   .w
+    move.b  ch3_spc, Z80_RAM+$1FF6       ; PERC: CH3 special-mode flag -> Z80
     move.b  scb_count, d0                ; --- PSG section ---
     move.b  d0, Z80_RAM+$1F01
     beq.s   .nopsg
