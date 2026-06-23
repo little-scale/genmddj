@@ -94,6 +94,11 @@ g_lfo      equ $00FFE21D           ; global FM LFO: 0 = off, 1-8 = on at rate 0-
 env_dirty  equ $00FFE21E           ; 1 = envelope needs rasterising (UI changed)
 env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progress
 ch3_spc    equ $00FFDFFE           ; PERC: 1 = CH3 special mode (F3) -> pushed to Z80 $1FF6
+perc_live  equ $00FFDFE0           ; PERC: 4 live operator F-number words (phrase-driven)
+perc_keys  equ $00FFDFE8           ; PERC: current key mask (bits 0-3 = the 4 operator rows)
+perc_mask  equ $00FFDFE9           ; PERC: C-selected operator mask this row
+perc_cset  equ $00FFDFEA           ; PERC: 1 if C set the operator mask this row
+perc_ld    equ $00FFDFEB           ; PERC: instrument # loaded into perc_live ($FF = none)
 last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entered (B-tap repeats it)
 scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
@@ -490,6 +495,7 @@ Start:
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
     move.b  #0, ch3_spc                   ; PERC CH3 special mode off at boot
+    move.b  #$FF, perc_ld                 ; PERC: no live cluster loaded yet
     move.b  #0, echo_mode                 ; ECHO off; sensible tap/reduction defaults
     move.b  #2, echo_tap1
     move.b  #4, echo_tap2
@@ -3790,7 +3796,17 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.w  d7, d0
     moveq   #0, d1
     bsr     selhl
-    move.w  (p_fnum,a2), d0
+    move.w  (p_fnum,a2), d0                 ; live (perc_live) while this instrument is playing on F3, else stored
+    tst.b   playing
+    beq.s   .rp_stf
+    move.b  cur_instr, d3
+    cmp.b   perc_ld, d3
+    bne.s   .rp_stf
+    move.w  d6, d3
+    add.w   d3, d3
+    lea     perc_live, a1
+    move.w  (a1,d3.w), d0
+.rp_stf:
     move.l  d2, -(sp)
     bsr     perc_hz                         ; d3 = Hz
     move.l  (sp)+, d2
@@ -6658,6 +6674,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
+    move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
     moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
     move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
     lea     c_rtper, a2
@@ -6810,6 +6827,7 @@ advance_ch:                               ; a6 = channel
     movem.l (sp)+, d0/a0
     bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
+    bsr     perc_note_route                ; F3 PERC: note -> the C-masked operators' live frequency
     lea     instrum, a4                    ; (re)start the macro table -- FM/TONE/NOISE, not KIT/WAVE
     moveq   #0, d3
     move.b  c_instr(a6), d3
@@ -7238,6 +7256,20 @@ exec_cmd:
     move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_c:
+    cmpi.b  #2, c_track(a6)               ; F3 + PERC -> C is a per-operator mask, not a chord
+    bne.s   .cc_chord
+    moveq   #0, d3
+    move.b  c_instr(a6), d3
+    mulu.w  #INSTR_SIZE, d3
+    lea     instrum, a4
+    cmpi.b  #5, (i_type,a4,d3.w)
+    bne.s   .cc_chord
+    move.b  (3,a1,d1.w), d2               ; low nibble = the 4 operator rows
+    andi.b  #$0F, d2
+    move.b  d2, perc_mask
+    move.b  #1, perc_cset
+    bra     .cmddone
+.cc_chord:
     move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
     move.b  (3,a1,d1.w), d2               ; C xy = chord offsets (x<<4)|y semitones; 0 = off
     moveq   #0, d3
@@ -7842,10 +7874,18 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  c_ymkey(a6), (a5)+
     addq.w  #1, d5
     bsr     ch_freq_send                   ; effective note (+ chord arp + fine) -> emit $A4/$A0
-    move.b  #0, (a5)+                       ; key-on: part0, $28, $F0|ymkey
+    move.b  #0, (a5)+                       ; key-on: part0, $28
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), d3
+    tst.b   ch3_spc                        ; PERC: key only the current operator set
+    beq.s   .cf_konall
+    move.b  perc_keys, d4
+    lsl.b   #4, d4
+    or.b    d4, d3
+    bra.s   .cf_konw
+.cf_konall:
     ori.b   #$F0, d3
+.cf_konw:
     move.b  d3, (a5)+
     addq.w  #1, d5
     move.b  #1, c_kshadow(a6)
@@ -8102,9 +8142,62 @@ ch_freq_send:
 .cfs_norm:
     clr.b   ch3_spc                        ; F3 not PERC -> special mode off
     bra     fm_freq_send
+; F3 PERC note routing: a6=ch, d2=note(0-95). Loads perc_live from the instrument on a new patch, then
+; (with C this row) writes the note's F-number into the C-masked operators; without C keys all four.
+perc_note_route:
+    cmpi.b  #2, c_track(a6)
+    bne     .pnr_ret
+    movem.l d0-d4/a0-a2, -(sp)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a0
+    adda.w  d0, a0
+    cmpi.b  #5, (i_type,a0)
+    bne.s   .pnr_pop
+    move.b  c_instr(a6), d0                ; new patch -> (re)load the stored cluster into perc_live
+    cmp.b   perc_ld, d0
+    beq.s   .pnr_loaded
+    move.b  d0, perc_ld
+    clr.b   perc_keys
+    lea     (i_op,a0), a1
+    lea     perc_live, a2
+    move.w  (a1), (a2)+
+    move.w  (FM_NPARM,a1), (a2)+
+    move.w  (2*FM_NPARM,a1), (a2)+
+    move.w  (3*FM_NPARM,a1), (a2)+
+.pnr_loaded:
+    tst.b   perc_cset                      ; no C this row -> key all four at their current frequencies
+    bne.s   .pnr_cset
+    move.b  #$0F, perc_keys
+    bra.s   .pnr_pop
+.pnr_cset:
+    move.w  d2, d0                          ; note -> F-number word = (d1<<8)|d2
+    bsr     fm_freq
+    move.w  d1, d3
+    lsl.w   #8, d3
+    or.w    d2, d3
+    move.b  perc_mask, d0
+    or.b    d0, perc_keys                  ; accumulate the keyed operators
+    lea     perc_live, a2
+    moveq   #0, d4
+.pnr_op:
+    btst    d4, d0
+    beq.s   .pnr_nop
+    move.w  d3, (a2)                         ; perc_live[op] = the note
+.pnr_nop:
+    addq.l  #2, a2
+    addq.w  #1, d4
+    cmpi.w  #4, d4
+    bne.s   .pnr_op
+.pnr_pop:
+    movem.l (sp)+, d0-d4/a0-a2
+.pnr_ret:
+    rts
+
 ; emit the 4 CH3-special operator frequencies + per-op MUL/DT. a6=ch (PERC), a5/d5=SCB.
 perc_freq_send:
-    movem.l d0-d3/a2/a4, -(sp)
+    movem.l d0-d3/a2-a4, -(sp)
     moveq   #0, d0
     move.b  c_instr(a6), d0
     mulu.w  #INSTR_SIZE, d0
@@ -8112,6 +8205,7 @@ perc_freq_send:
     adda.w  d0, a2
     lea     (i_op,a2), a2                  ; a2 = op 0 params
     lea     perc_freg, a4                  ; per op: DT/MUL reg, freq-hi reg, freq-lo reg
+    lea     perc_live, a3                  ; live (phrase-driven) operator frequencies
     moveq   #4-1, d3
 .pfs_op:
     move.b  #0, (a5)+                       ; MUL/DT override: $3x = DT<<4 | MUL
@@ -8122,7 +8216,7 @@ perc_freq_send:
     or.b    (p_mul,a2), d0
     move.b  d0, (a5)+
     addq.w  #1, d5
-    move.w  (a2), d1                        ; fnum word = block<<11 | F-number
+    move.w  (a3), d1                        ; fnum word from perc_live (phrase-driven)
     move.b  #0, (a5)+                       ; freq HIGH: block<<3 | F[10:8]
     move.b  (a4)+, (a5)+
     move.w  d1, d2
@@ -8135,8 +8229,9 @@ perc_freq_send:
     move.b  d1, (a5)+
     addq.w  #1, d5
     lea     FM_NPARM(a2), a2
+    addq.l  #2, a3
     dbra    d3, .pfs_op
-    movem.l (sp)+, d0-d3/a2/a4
+    movem.l (sp)+, d0-d3/a2-a4
     rts
 perc_freg:                                ; per record op (S1,S3,S2,S4): {DT/MUL reg, freq-hi, freq-lo}
     dc.b $32, $AD, $A9                     ; op0 S1  -- VERIFY operator<->register mapping on hardware
