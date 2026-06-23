@@ -262,6 +262,9 @@ function renderEditor(){
   const hg=document.createElement('div'); hg.className='hdrsl';
   hg.appendChild(slider('ALGO',getB(sel,1),0,7,v=>{ setB(sel,1,v); updateBadges(v); renderList(); }));
   [['FB',2,7],['AMS',4,3],['FMS',5,7],['HLD',6,15],['VOL',7,15]].forEach(([l,o,mx])=> hg.appendChild(slider(l,getB(sel,o),0,mx,v=>setB(sel,o,v))));
+  // pitch sweep (the FM-kick swoop): byte 62 = hi nibble depth (x4 semis, downward) | lo nibble rate
+  hg.appendChild(slider('P.SWEEP', getB(sel,62)>>4, 0,15, v=>setB(sel,62,(v<<4)|(getB(sel,62)&15)), v=>(v*4)+'st'));
+  hg.appendChild(slider('P.RATE',  getB(sel,62)&15, 0,15, v=>setB(sel,62,(getB(sel,62)&0xF0)|v)));
   el.appendChild(hg);
 
   // operator panels (sliders), carrier/mod badge per panel from ALGO
