@@ -1695,8 +1695,12 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #11, d1                         ; TONE: 1 + 10 fields
 .crk1:
     cmpi.b  #4, d0
-    bne.s   .crd
+    bne.s   .crp
     moveq   #13, d1                         ; NOISE: 1 + 12 fields
+.crp:
+    cmpi.b  #5, d0                          ; type 5 = PERC: INST, TYPE, BASE, OP1-4 (rows 0-6)
+    bne.s   .crd
+    moveq   #6, d1
 .crd:
     rts
 .crfm:
@@ -1745,6 +1749,8 @@ col_max:                                  ; -> d1 = highest column index for cur
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     move.b  (i_type,a1,d0.w), d0
+    cmpi.b  #5, d0                        ; PERC: rows 0-2 single col; op rows 3-6 = BLK/FNUM/MUL/DT
+    beq.s   .pcol
     cmpi.b  #2, d0                        ; WAVE?
     bne.s   .fm                            ; else PSG/KIT/TONE/NOISE = single column
     moveq   #0, d0
@@ -1758,6 +1764,11 @@ col_max:                                  ; -> d1 = highest column index for cur
     rts
 .izero:
     moveq   #0, d1
+    rts
+.pcol:                                    ; PERC: rows 0-2 single col; op rows 3-6 = 4 cols
+    cmpi.b  #3, cur_row
+    blo.s   .izero
+    moveq   #3, d1
     rts
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
@@ -2298,6 +2309,10 @@ edit_psg:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
+    cmpi.b  #5, (i_type,a3)                ; PERC -> base + op-frequency edit
+    bne.s   .ep_nperc
+    jmp     edit_perc_field
+.ep_nperc:
     cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = kit, row 3 = rate, row 4 = TSP
     bne.s   .ep_nkit
     cmpi.b  #4, cur_row
@@ -3824,6 +3839,97 @@ perc_default:                             ; per op: fnum.w (block<<11|F), mul.b,
 str_base:      dc.b "BASE",0
 str_perc_hdr:  dc.b "BLK FNUM MUL DT",0
     even
+edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows 3-6 = ops; d2 = dpad
+    cmpi.b  #2, cur_row
+    bne.s   .epf_op
+    lea     (i_pbase,a3), a1               ; BASE = base instrument 0..NINSTR_ED
+    moveq   #NINSTR_ED, d3
+    moveq   #1, d4
+    jmp     adj_field
+.epf_op:
+    moveq   #0, d0                          ; op index = cur_row - 3
+    move.b  cur_row, d0
+    subq.b  #3, d0
+    mulu.w  #FM_NPARM, d0
+    lea     (i_op,a3), a2
+    adda.w  d0, a2                          ; a2 = this op's params
+    tst.b   cur_col
+    beq.s   .epf_blk                        ; col 0 = BLK
+    cmpi.b  #1, cur_col
+    beq.s   .epf_fnum                       ; col 1 = FNUM
+    cmpi.b  #2, cur_col
+    bne.s   .epf_dt                         ; col 3 = DT
+    lea     (p_mul,a2), a1                 ; col 2 = MUL 0-15
+    moveq   #15, d3
+    moveq   #1, d4
+    jmp     adj_field
+.epf_dt:
+    lea     (p_dt,a2), a1                  ; DT 0-7
+    moveq   #7, d3
+    moveq   #1, d4
+    jmp     adj_field
+.epf_blk:                                  ; block = bits 11-13 of the fnum word, +-1
+    move.w  (a2), d0
+    move.w  d0, d1
+    andi.w  #$7FF, d1                       ; keep the F-number part
+    lsr.w   #8, d0
+    lsr.w   #3, d0
+    andi.w  #7, d0                          ; block 0-7
+    btst    #0, d2                          ; Up -> +1
+    bne.s   .epb_inc
+    btst    #3, d2                          ; Right -> +1
+    bne.s   .epb_inc
+    btst    #1, d2                          ; Down -> -1
+    bne.s   .epb_dec
+    btst    #2, d2                          ; Left -> -1
+    bne.s   .epb_dec
+    rts
+.epb_inc:
+    cmpi.w  #7, d0
+    bhs.s   .epb_w
+    addq.w  #1, d0
+    bra.s   .epb_w
+.epb_dec:
+    tst.w   d0
+    beq.s   .epb_w
+    subq.w  #1, d0
+.epb_w:
+    lsl.w   #8, d0
+    lsl.w   #3, d0                          ; block << 11
+    or.w    d1, d0
+    move.w  d0, (a2)
+    rts
+.epf_fnum:                                 ; F-number = bits 0-10 (0..2047); L/R +-1, U/D +-16
+    move.w  (a2), d0
+    move.w  d0, d1
+    andi.w  #$F800, d1                       ; keep the block bits
+    andi.w  #$7FF, d0                         ; F-number part
+    btst    #0, d2                          ; Up -> +16
+    beq.s   .epn_nu
+    addi.w  #16, d0
+.epn_nu:
+    btst    #1, d2                          ; Down -> -16
+    beq.s   .epn_nd
+    subi.w  #16, d0
+.epn_nd:
+    btst    #3, d2                          ; Right -> +1
+    beq.s   .epn_nr
+    addq.w  #1, d0
+.epn_nr:
+    btst    #2, d2                          ; Left -> -1
+    beq.s   .epn_nl
+    subq.w  #1, d0
+.epn_nl:
+    bpl.s   .epn_hi
+    moveq   #0, d0                           ; underflow -> 0
+.epn_hi:
+    cmpi.w  #$7FF, d0
+    bls.s   .epn_w
+    move.w  #$7FF, d0                         ; clamp 2047
+.epn_w:
+    or.w    d1, d0
+    move.w  d0, (a2)
+    rts
 
 ; placeholder for KIT until its editor lands
 render_psg_stub:
