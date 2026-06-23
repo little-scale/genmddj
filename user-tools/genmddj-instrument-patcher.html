@@ -75,8 +75,9 @@
 </header>
 <div class="rombar">
   <label class="btn">Load .bin&hellip;<input type="file" id="romfile" accept=".bin,.md,.gen" hidden></label>
+  <label class="btn">Import VGM&hellip;<input type="file" id="vgmfile" accept=".vgm,.vgz" hidden></label>
   <button class="btn" id="patch" disabled>Download patched ROM</button>
-  <span class="romstatus" id="romstatus">Editing the factory bank &mdash; <b>load a patch</b> (.adv/.gmi/.tfi) into a slot, or drop a genmddj <code>.bin</code> to patch a ROM.</span>
+  <span class="romstatus" id="romstatus">Editing the factory bank &mdash; <b>load a patch</b> (.adv/.gmi/.tfi) into a slot, <b>Import VGM</b> to rip a game's instruments, or drop a genmddj <code>.bin</code> to patch a ROM.</span>
 </div>
 <div id="drop-ov">Drop a genmddj ROM to patch</div>
 
@@ -129,6 +130,68 @@ function loadRom(f){
     $("#patch").disabled=false; sel=0; renderList(); renderEditor();
   };
   r.readAsArrayBuffer(f);
+}
+
+async function gunzipBytes(d){ const s=new Blob([d]).stream().pipeThrough(new DecompressionStream('gzip')); return new Uint8Array(await new Response(s).arrayBuffer()); }
+
+// VGM -> YM2612 patch ripper: shadow the registers, snapshot every key-on, dedupe + rank by play count.
+// Our record's op-slot order IS the chip register order, so each operator copies verbatim.
+function extractVGMPatches(d){
+  const vu32=p=>(d[p]|(d[p+1]<<8)|(d[p+2]<<16)|(d[p+3]<<24))>>>0;
+  if(!(d[0]==0x56&&d[1]==0x67&&d[2]==0x6D&&d[3]==0x20)) throw new Error("not a VGM (bad magic)");
+  const version=vu32(8); let dataStart=0x40;
+  if(version>=0x150){ const rel=vu32(0x34); if(rel) dataStart=0x34+rel; }
+  const ym2612clock=vu32(0x2C), eof=vu32(4)+4, end=Math.min(eof||d.length, d.length);
+  const reg=[new Uint8Array(256),new Uint8Array(256)], prevMask=[0,0,0,0,0,0], patches=new Map();
+  const snap=(port,ch)=>{
+    const b0=reg[port][0xB0+ch], b4=reg[port][0xB4+ch], rec=new Uint8Array(64);
+    rec[1]=b0&7; rec[2]=(b0>>3)&7; rec[3]=(((b4>>7)&1)<<1)|((b4>>6)&1); rec[4]=(b4>>4)&3; rec[5]=b4&7;
+    rec[6]=15; rec[7]=15; let silent=true;
+    for(let s=0;s<4;s++){ const a=s*4+ch, o=8+s*10;
+      const r30=reg[port][0x30+a],r40=reg[port][0x40+a],r50=reg[port][0x50+a],r60=reg[port][0x60+a],r70=reg[port][0x70+a],r80=reg[port][0x80+a];
+      rec[o]=r30&15; rec[o+1]=(r30>>4)&7; rec[o+2]=r40&127; rec[o+3]=(r50>>6)&3; rec[o+4]=r50&31;
+      rec[o+5]=(r60>>7)&1; rec[o+6]=r60&31; rec[o+7]=r70&31; rec[o+8]=r80&15; rec[o+9]=(r80>>4)&15;
+      if(rec[o+2]<127 && rec[o+4]>0) silent=false; }
+    if(silent) return; rec[48]=0xFF;                          // skip dead channels; i_tbl = none
+    const fp=Array.from(rec.subarray(1,48)).join(','), e=patches.get(fp);
+    if(e) e.count++; else patches.set(fp,{rec,count:1});
+  };
+  let p=dataStart;
+  while(p<end){ const c=d[p++];
+    if(c==0x52||c==0x53){ const a=d[p++],v=d[p++]; reg[c-0x52][a]=v;
+      if(c==0x52 && a==0x28){ const low=v&7,mask=v&0xF0; let port,ch; if(low<4){port=0;ch=low;}else{port=1;ch=low-4;}
+        const idx=port*3+ch; if(mask && !prevMask[idx]) snap(port,ch); prevMask[idx]=mask; } }
+    else if(c==0x50||c==0x4F) p+=1;
+    else if(c==0x51||(c>=0x54&&c<=0x5F)) p+=2;
+    else if(c==0x61) p+=2;
+    else if(c==0x62||c==0x63){}
+    else if(c==0x66) break;
+    else if(c==0x67){ p+=6+vu32(p+2); }                       // data block: 0x66 tt ssss + size bytes
+    else if(c>=0x70&&c<=0x8F){}                                // 0x7n wait, 0x8n DAC+wait
+    else if(c==0x90||c==0x91||c==0x95) p+=4;
+    else if(c==0x92) p+=5; else if(c==0x93) p+=10; else if(c==0x94) p+=1;
+    else if(c==0xA0||(c>=0xB0&&c<=0xBF)) p+=2;
+    else if(c>=0xC0&&c<=0xDF) p+=3;
+    else if(c==0xE0||c==0xE1) p+=4;
+    else break;                                               // unknown -> stop (don't desync)
+  }
+  return {version,ym2612clock,patches:[...patches.values()].sort((a,b)=>b.count-a.count)};
+}
+
+async function importVGM(f){
+  if(!f) return;
+  let d=new Uint8Array(await f.arrayBuffer());
+  if(d[0]===0x1f && d[1]===0x8b){ try{ d=await gunzipBytes(d); }catch(e){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: gunzip failed</b>`; return; } }
+  let res; try{ res=extractVGMPatches(d); }
+  catch(e){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: ${e.message}</b>`; return; }
+  if(!res.ym2612clock){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: no YM2612 clock in the header (not a Mega Drive VGM?)</b>`; return; }
+  const pats=res.patches;
+  if(!pats.length){ $("#romstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: no FM key-ons found</b>`; return; }
+  const n=Math.min(NINSTR, pats.length);
+  for(let i=0;i<n;i++){ bank.set(pats[i].rec, i*REC); writeName(i, 'VGM'+i.toString().padStart(2,'0')); }
+  sel=0;
+  $("#romstatus").innerHTML=`Ripped <b>${f.name}</b>: <b>${pats.length}</b> unique FM patch${pats.length===1?'':'es'}, loaded the top ${n} (ranked by play count). Audition, rename, export each as .gmi.`;
+  renderList(); renderEditor();
 }
 
 function renderList(){
@@ -462,6 +525,7 @@ async function recordToAdv(slot){
 function exportAdv(){ if(!bank)return; recordToAdv(sel).then(gz=>{ dl(gz,(readName(sel).toLowerCase().replace(/[^a-z0-9]/g,'')||('inst'+sel))+'.adv'); $("#romstatus").textContent='Exported '+readName(sel)+'.adv (Ableton Operator) \u2014 load it onto an Operator in Live.'; }); }
 
 $("#romfile").onchange=e=>loadRom(e.target.files[0]);
+$("#vgmfile").onchange=e=>{ importVGM(e.target.files[0]); e.target.value=''; };
 $("#patch").onclick=()=>{
   if(!rom){ $("#romstatus").textContent="Load a ROM first to patch it — or use save .gmi / .tfi / .adv to export this patch."; return; }
   rom.set(bank, base);

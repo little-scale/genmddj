@@ -24,7 +24,7 @@ The handoff is always a **documented format**, never a code dependency:
 | Tool | File | Kind | Edits |
 |---|---|---|---|
 | **palette patcher** | `genmddj-palette-patcher.html` | ROM-patcher | 8 UI palettes (`GMDJPAL0`); swatch pick snaps to the nearest Sega colour |
-| **instrument patcher** | `genmddj-instrument-patcher.html` | patcher + converter | 32 FM patches (name, algo/fb, 4 operators) with a piano **audition** (register-level OPN2 core); **standalone** (no ROM) or patches `GMINSTR0` in a `.bin`; imports/exports `.gmi` (native), `.tfi`/`.vgi`, and **Ableton Operator `.adv`** |
+| **instrument patcher** | `genmddj-instrument-patcher.html` | patcher + converter + ripper | 32 FM patches (name, algo/fb, 4 operators) with a piano **audition** (register-level OPN2 core); **standalone** (no ROM) or patches `GMINSTR0` in a `.bin`; imports/exports `.gmi` (native), `.tfi`/`.vgi`, **Ableton Operator `.adv`**; **rips patches from a `.vgm`/`.vgz` game log** (Import VGM — key-on register snapshots, deduped + ranked by play count) |
 | **kit/sample patcher** | `kit/kitpatch.html` | ROM-patcher | sample kits, per-pad fade/gain (`DESIGN.md` §10.3) |
 | **de-re-interleaver** | `de-re-interleaver.html` | `.srm` tool | EverDrive 64 KB odd-byte ⇄ 32 KB logical save |
 | **factory-bank author** | `../tools/gen_factory_bank.py` | baker (one-shot) | emits the inline `fm_factory` block — the canonical 32 patches |
@@ -43,7 +43,7 @@ envelope-time→chip-rate curve, and back out as a valid Operator preset).
 |---|---|---|---|
 | `instrument/` | the **CSV** authoring path for the baker (the instrument patcher already audits + edits patches) | instrument CSV | `PRESETS.md` §4 |
 | `font/`     | UI font patcher — edit/import the 8×8 glyph tiles | patched `.bin` | `PALETTE.md` §7 |
-| `extract/`  | game-patch extractors — **SMPS**, **GEMS**, **VGM** (native re-packs) | instrument CSV | `PRESETS.md` §5 |
+| `extract/`  | game-patch extractors — **SMPS**, **GEMS** (native re-packs; **VGM now ships** in the instrument patcher's Import VGM) | instrument CSV | `PRESETS.md` §5 |
 | `ableton/`  | **`.als`** (song + per-track FM adaptation) — the `.adv` Operator↔instrument converter now ships in the instrument patcher | song | `ALS.md` |
 | `savetool/` | list/export/import/build `.srm`/`.gmdj`; config read/write | `.gmdj` / `.srm` | `SAVEFORMAT.md` |
 
