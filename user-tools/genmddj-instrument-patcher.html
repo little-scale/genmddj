@@ -351,11 +351,12 @@ function egStep(o,cnt){
 function patchFromRom(s){
   const ops=SLOTOF.map(rs=>{ const b=8+rs*10; return {
     MUL:getB(s,b),DT:getB(s,b+1),TL:getB(s,b+2),RS:getB(s,b+3),AR:getB(s,b+4),D1:getB(s,b+6),D2:getB(s,b+7),RR:getB(s,b+8),SL:getB(s,b+9) }; });
-  return { algo:getB(s,1)&7, fb:getB(s,2)&7, vol:getB(s,7)&15, ops };
+  return { algo:getB(s,1)&7, fb:getB(s,2)&7, vol:getB(s,7)&15, psweep:getB(s,62), ops };
 }
 function makeOp(o,freq,kc){
   const mul=(o.MUL===0)?0.5:o.MUL, sign=(o.DT&4)?-1:1, det=1+sign*(o.DT&3)*0.0007;
-  const op={ inc:freq*mul*det/CHIPRATE*1024, phase:0, tlatt:o.TL<<5,
+  const inc0=freq*mul*det/CHIPRATE*1024;
+  const op={ inc:inc0, baseInc:inc0, phase:0, tlatt:o.TL<<5,
     AR:o.AR, D1:o.D1, D2:o.D2, RR:o.RR*2+1, ksr:(kc>>(3-(o.RS&3))),     // RR 4-bit -> 5-bit; ksr = kc>>(3-RS)
     sl:((o.SL>=15)?31:o.SL)*32, vol:1023, state:ATT, row:18, shift:0, prev1:0, prev2:0 };
   setState(op,ATT); return op;
@@ -366,7 +367,13 @@ function renderVoice(p,freq){
   const ops=p.ops.map(o=>makeOp(o,freq,kc));
   const fbsh=p.fb?(9-p.fb):0, vg=Math.max(0.1,p.vol/15);
   const buf=new Float32Array(n); let cnt=0, sub=0;
+  const swDep=(p.psweep>>4)*4, swRate=p.psweep&15; let swOff=swDep;   // pitch sweep: depth (semis) decays by rate/tick
+  const TICK=(CHIPRATE/60)|0;                                          // one engine tick ~ one 60 Hz frame
   for(let s=0;s<n;s++){
+    if(p.psweep && (s%TICK)===0){                                     // each tick: bend the pitch, then decay
+      const pm=Math.pow(2, swOff/12); for(const o of ops) o.inc=o.baseInc*pm;
+      if(swOff>0) swOff=Math.max(0, swOff-swRate);
+    }
     if(s===koff){ for(const o of ops) setState(o,REL); }    // key-off
     if(++sub>=3){ sub=0; cnt=(cnt+1)>>>0; for(const o of ops) egStep(o,cnt); }   // EG ticks /3
     const outs=[0,0,0,0];
