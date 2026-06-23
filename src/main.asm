@@ -158,6 +158,8 @@ sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first
 sram_layout equ $00FFD427          ; SRAM probe: 0 none, 1 odd-byte (8-bit), 2 linear
 sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64; 0 = none)
 sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 for 8/16/32/64 KB)
+rom_slot   equ $00FFD42A           ; INSTR screen: selected ROM factory slot for the LOAD action
+bank_slot  equ $00FFD42B           ; INSTR screen: selected SRAM bank slot for the SAVE/LOAD actions
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -494,6 +496,8 @@ Start:
     move.b  #0, echo_head
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
+    move.b  #0, rom_slot                 ; INSTR tier-transfer slots
+    move.b  #0, bank_slot
     move.b  #0, playing                  ; boot stopped
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
@@ -1680,13 +1684,13 @@ col_max:                                  ; -> d1 = highest column index for cur
     cmpi.b  #SCR_ECHO, d1
     bhs.s   .czero                           ; placeholder screens: cursor locked at col 0
     tst.b   d1
-    beq.s   .ph
+    beq     .ph                          ; long branches: the .fm block grew (bank column)
     cmpi.b  #SCR_SONG, d1
-    beq.s   .sg
+    beq     .sg
     cmpi.b  #SCR_INSTR, d1
-    beq.s   .instr
+    beq     .instr                       ; long branch: the .fm block below grew (bank column)
     cmpi.b  #SCR_FM, d1
-    beq.s   .fm
+    beq     .fm
     cmpi.b  #SCR_TABLE, d1
     bne.s   .cmch
     moveq   #3, d1                        ; TABLE: 4 columns (VOL TSP CMD PRM)
@@ -1723,7 +1727,13 @@ col_max:                                  ; -> d1 = highest column index for cur
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
     bhs.s   .fmop
-    moveq   #0, d1
+    moveq   #0, d1                        ; voice rows: col 0, except HLD/VOL/PAN (cur_row 2-4) = col 1
+    move.b  cur_row, d0
+    subq.b  #2, d0
+    cmpi.b  #3, d0
+    bcc.s   .fmvrt
+    moveq   #1, d1
+.fmvrt:
     rts
 .fmop:
     moveq   #FM_NPARM-1, d1
@@ -2086,7 +2096,9 @@ edit_fm:
     cmpi.b  #1, cur_row
     beq.s   .typeedit                      ; row 1 = instrument TYPE
     cmpi.b  #NVOICE+2, cur_row
-    bhs.s   .opedit
+    bhs     .opedit                        ; long: .bankslot handler below grew the routine
+    tst.b   cur_col                        ; col 1 on a voice row = ROM/SRAM tier cell -> slot select
+    bne     .bankslot
     moveq   #0, d0                         ; voice param (rows 2..NVOICE+1)
     move.b  cur_row, d0
     subq.b  #2, d0
@@ -2162,6 +2174,18 @@ edit_fm:
     lea     CHSIZE(a6), a6
     dbra    d0, .fed
     rts
+.bankslot:                                ; col 1 of rows 2-4: ROM slot (row 2) / SRAM bank slot (rows 3,4)
+    cmpi.b  #2, cur_row
+    bne.s   .bs_bank
+    lea     rom_slot, a1
+    moveq   #NINSTR-1, d3
+    bra.s   .bs_adj
+.bs_bank:
+    lea     bank_slot, a1
+    moveq   #NUBANK-1, d3
+.bs_adj:
+    moveq   #1, d4
+    bra     adj_field
 
 ; TONE/NOISE/KIT/WAVE editor: INST (row 0), TYPE (row 1), PSG fields (row 2+)
 edit_psg:
@@ -2629,6 +2653,19 @@ edit_instr:
 do_insert:
     cmpi.b  #SCR_PROJ, cur_screen          ; PROJECT: B-tap triggers NEW/DEMO/SAVE/LOAD
     beq     proj_action
+    cmpi.b  #SCR_INSTR, cur_screen         ; INSTR/FM: B-tap on a tier cell (col 1, rows 2-4) = LOAD/SAVE
+    beq.s   .di_bank
+    cmpi.b  #SCR_FM, cur_screen
+    bne.s   .di_nb
+.di_bank:
+    move.b  cur_row, d0
+    subq.b  #2, d0
+    cmpi.b  #3, d0                          ; rows 2-4 only
+    bcc.s   .di_nb
+    tst.b   cur_col                         ; and col != 0 (the tier cell)
+    beq.s   .di_nb
+    bra     do_bank_action                  ; tail-call: ROM load / SRAM save / SRAM load
+.di_nb:
     cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
     blo.s   .di_go
     rts
@@ -3527,6 +3564,67 @@ render_inst_hdr:
     moveq   #8, d4
     bsr     print_hl
     rts
+
+; ROM/SRAM tier-transfer cells, right of the voice params (a0 = VDP_CTRL, preserved).
+; cells: cur_row 2 (ROM load), 3 (SRAM save), 4 (SRAM load), all at cur_col 1.
+render_bank:
+    moveq   #5, d3                          ; section header at row 5, col 18
+    moveq   #18, d4
+    lea     str_tier, a1
+    bsr     print_at
+    moveq   #6, d3                          ; ROM cell label
+    moveq   #18, d4
+    lea     str_rom, a1
+    bsr     print_at
+    moveq   #6, d0                          ; ROM slot value -> row 6, col 24 (moveq clears the high word)
+    bsr     bank_vpos
+    move.b  rom_slot, d3
+    moveq   #2, d1
+    bsr     bank_hl
+    bsr     draw_hex2
+    moveq   #7, d3                          ; SRAM SAVE cell
+    moveq   #18, d4
+    lea     str_bsv, a1
+    bsr     print_at
+    moveq   #7, d0
+    bsr     bank_vpos
+    move.b  bank_slot, d3
+    moveq   #3, d1
+    bsr     bank_hl
+    bsr     draw_hex2
+    moveq   #8, d3                          ; SRAM LOAD cell
+    moveq   #18, d4
+    lea     str_bld, a1
+    bsr     print_at
+    moveq   #8, d0
+    bsr     bank_vpos
+    move.b  bank_slot, d3
+    moveq   #4, d1
+    bsr     bank_hl
+    bsr     draw_hex2
+    rts
+bank_vpos:                                  ; d0 = row -> set VDP write addr at (row, col 24)
+    lsl.w   #6, d0
+    addi.w  #24, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    rts
+bank_hl:                                    ; d1 = target row -> d4 = $60 if cur_row==d1 and cur_col!=0, else 0
+    moveq   #0, d4
+    cmp.b   cur_row, d1
+    bne.s   .bh
+    tst.b   cur_col
+    beq.s   .bh
+    moveq   #$60, d4
+.bh:
+    rts
+str_tier:  dc.b "TIERS",0
+str_rom:   dc.b "ROM",0
+str_bsv:   dc.b "B-SV",0
+str_bld:   dc.b "B-LD",0
+    even
 
 ; placeholder for KIT until its editor lands
 render_psg_stub:
@@ -4535,6 +4633,7 @@ render_fm:                                ; a0 = VDP_CTRL
     addq.w  #1, d6
     cmpi.w  #NVOICE, d6
     bne     .vrow
+    bsr     render_bank                     ; ROM/SRAM tier-transfer cells (right of the voice params)
     moveq   #FM_OHDR, d3                    ; operator grid header (LFO moved to PROJECT screen)
     moveq   #1, d4
     lea     str_hdr_fm, a1
@@ -9078,6 +9177,25 @@ check_dirty:                               ; song_dirty = (data block != last sa
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
+do_bank_action:                            ; INSTR B-tap: cur_row 2 = ROM load, 3 = SRAM save, 4 = SRAM load
+    cmpi.b  #2, cur_row
+    bne.s   .dba_sv
+    move.b  rom_slot, d0
+    bsr     rom_load_instr
+    bra.s   .dba_redraw
+.dba_sv:
+    cmpi.b  #3, cur_row
+    bne.s   .dba_ld
+    move.b  bank_slot, d0
+    bra     bank_save_instr                 ; save: instrument unchanged, no repaint
+.dba_ld:
+    move.b  bank_slot, d0
+    bsr     bank_load_instr
+.dba_redraw:
+    move.b  #1, need_clear                  ; pulled in a new instrument -> repaint + re-rasterise envelopes
+    move.b  #1, env_dirty
+    rts
+
 rom_load_instr:                            ; d0 = factory slot -> copy fm_factory[d0] into cur_instr (RAM->RAM)
     movem.l d0-d2/a0-a1, -(sp)
     andi.w  #$FF, d0
