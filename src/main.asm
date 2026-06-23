@@ -4587,10 +4587,6 @@ render_fm:                                ; a0 = VDP_CTRL
 .vrow:
     move.w  d6, d3                          ; label at (FM_VTOP+idx, col1)
     addi.w  #FM_VTOP, d3
-    cmpi.w  #6, d6                          ; blank row after TBS (splits channel+table | FM items)
-    blo.s   .vng1
-    addq.w  #1, d3
-.vng1:
     moveq   #1, d4
     move.w  d6, d0
     lsl.w   #2, d0
@@ -4600,10 +4596,6 @@ render_fm:                                ; a0 = VDP_CTRL
     moveq   #0, d0                          ; value at (FM_VTOP+idx, col8)
     move.w  d6, d0
     addi.w  #FM_VTOP, d0
-    cmpi.w  #6, d6
-    blo.s   .vng2
-    addq.w  #1, d0
-.vng2:
     lsl.w   #6, d0
     addi.w  #8, d0
     add.w   d0, d0
@@ -9807,6 +9799,7 @@ str_fb:     dc.b "FB",0
 str_pan:    dc.b "PAN",0
 str_ams:    dc.b "AMS",0
 str_fms:    dc.b "FMS",0
+str_psw:    dc.b "SWEEP",0
 str_hld:    dc.b "HLD",0
 str_vol:    dc.b "VOL",0
 str_lfo:    dc.b "LFO",0
@@ -9839,11 +9832,12 @@ str_pitch:  dc.b "PITCHED ",0
 type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
-voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_tbl, str_tbs, str_algo, str_fb, str_ams, str_fms  ; 10
-voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_tbl, i_tbs, i_algo, i_fb, i_ams, i_fms
-voice_max:  dc.b 15, 15, 3, 255, 31, 15, 7, 7, 3, 7
-voice_step: dc.b 4, 4, 1, 12, 16, 4, 4, 4, 1, 4          ; HLD VOL PAN TSP TBL TBS | ALGO FB AMS FMS
-voice_fmt:  dc.b 0, 0, 0, 1, 4, 0, 0, 0, 0, 0            ; TSP=hex2 signed; TBL=4 (-- or hex2); rest hex1
+voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_tbl, str_tbs, str_algo, str_fb, str_ams, str_fms, str_psw  ; 11
+voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_tbl, i_tbs, i_algo, i_fb, i_ams, i_fms, i_psweep
+voice_max:  dc.b 15, 15, 3, 255, 31, 15, 7, 7, 3, 7, 255
+voice_step: dc.b 4, 4, 1, 12, 16, 4, 4, 4, 1, 4, 16      ; HLD VOL PAN TSP TBL TBS | ALGO FB AMS FMS | SWEEP
+voice_fmt:  dc.b 0, 0, 0, 1, 4, 0, 0, 0, 0, 0, 1         ; TSP=hex2 signed; TBL=4 (-- or hex2); SWEEP=hex2 (X=dep U/D, Y=rate L/R)
+            even
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
 psg_lbl:    dc.l str_vol, str_atk, str_hld, str_dcy, str_tsp, str_swp, str_vib, str_trm, str_tbl, str_tbs, str_mode, str_rate
@@ -9882,7 +9876,7 @@ str_drive:  dc.b "DRIVE",0
 str_fold:   dc.b "FOLD",0
 str_crush:  dc.b "CRUSH",0
     even
-NVOICE     equ 10                           ; HLD VOL PAN TSP (channel) + ALGO FB AMS FMS + TBL TBS
+NVOICE     equ 11                           ; HLD VOL PAN TSP TBL TBS + ALGO FB AMS FMS + SWEEP (pitch sweep)
 type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE NOISE
 map_letters: dc.b "SCPIT"                   ; map order: SONG CHAIN PHRASE INSTR TABLE
 str_play:   dc.b "PLAY",0
