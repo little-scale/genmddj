@@ -3626,19 +3626,19 @@ render_bank:
     bsr     selhl
     move.b  d2, d4
     bsr     draw_hex2
-    moveq   #1, d0                          ; SAVE button at (5, col 26), hl if (row 1, col 2)
+    moveq   #1, d0                          ; LOAD button at (5, col 22) [under ROM LOAD], hl if (row 1, col 2)
     moveq   #2, d1
     bsr     selhl
     moveq   #5, d3
     moveq   #22, d4
-    lea     str_save, a1
+    lea     str_load, a1
     bsr     print_hl
-    moveq   #1, d0                          ; LOAD button at (5, col 31), hl if (row 1, col 3)
+    moveq   #1, d0                          ; SAVE button at (5, col 27) [right of LOAD], hl if (row 1, col 3)
     moveq   #3, d1
     bsr     selhl
     moveq   #5, d3
     moveq   #27, d4
-    lea     str_load, a1
+    lea     str_save, a1
     bsr     print_hl
     rts
 bvpos:                                      ; d0 = row, d1 = col -> set VDP write addr (callers moveq -> high word clear)
@@ -9216,19 +9216,19 @@ check_dirty:                               ; song_dirty = (data block != last sa
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
-do_bank_action:                            ; row 0 col 2 = ROM LOAD; row 1 col 2 = SRAM SAVE, col 3 = SRAM LOAD
+do_bank_action:                            ; row 0 col 2 = ROM LOAD; row 1 col 2 = SRAM LOAD, col 3 = SRAM SAVE
     tst.b   cur_row
     bne.s   .dba_sram
     move.b  rom_slot, d0                    ; ROM LOAD
     bsr     rom_load_instr
     bra.s   .dba_redraw
 .dba_sram:
-    cmpi.b  #2, cur_col
+    cmpi.b  #3, cur_col
     bne.s   .dba_ld
-    move.b  bank_slot, d0                   ; SRAM SAVE: instrument unchanged, no repaint
+    move.b  bank_slot, d0                   ; SRAM SAVE (col 3): instrument unchanged, no repaint
     bra     bank_save_instr
 .dba_ld:
-    move.b  bank_slot, d0                   ; SRAM LOAD
+    move.b  bank_slot, d0                   ; SRAM LOAD (col 2)
     bsr     bank_load_instr
 .dba_redraw:
     move.b  #1, need_clear                  ; pulled in a new instrument -> repaint + re-rasterise envelopes
