@@ -447,7 +447,7 @@ async function recordToAdv(slot){
     setM(o,'Volume', Math.max(0.0003162277571,Math.pow(10,-(TL*0.75)/20)).toPrecision(7));
     setM(env,'AttackTime', Math.max(0.1,(ATKTAB[AR]||0)*1000).toPrecision(7));
     setM(env,'AttackLevel','0.0003162277571');
-    setM(env,'DecayTime', Math.max(1,(DECTAB[D1]||0)*1000*slatt/(DECF*1020)).toPrecision(7));
+    setM(env,'DecayTime', Math.max(1,(DECTAB[D1]||0)*1000*slatt/1020*(SL>=15?1/DECF:1)).toPrecision(7));   // DECF only for full-decay carriers; partial sustains decay gentler
     setM(env,'DecayLevel','1');
     setM(env,'SustainLevel', SL>=15?'0.0003162277571':Math.pow(10,-(SL*3)/20).toPrecision(7));
     setM(env,'ReleaseTime', Math.max(0.1,(DECTAB[2*RR+1]||0)*1000/DECF).toPrecision(7));
