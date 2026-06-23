@@ -158,8 +158,7 @@ sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first
 sram_layout equ $00FFD427          ; SRAM probe: 0 none, 1 odd-byte (8-bit), 2 linear
 sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64; 0 = none)
 sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 for 8/16/32/64 KB)
-rom_slot   equ $00FFD42A           ; INSTR screen: selected ROM factory slot for the LOAD action
-bank_slot  equ $00FFD42B           ; INSTR screen: selected SRAM bank slot for the SAVE/LOAD actions
+bank_slot  equ $00FFD42A           ; INSTR LIBRARY slot: one index driving ROM LOAD + SRAM LOAD/SAVE
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -496,8 +495,7 @@ Start:
     move.b  #0, echo_head
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
-    move.b  #0, rom_slot                 ; INSTR tier-transfer slots
-    move.b  #0, bank_slot
+    move.b  #0, bank_slot                ; INSTR LIBRARY slot
     move.b  #0, playing                  ; boot stopped
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
@@ -1727,12 +1725,12 @@ col_max:                                  ; -> d1 = highest column index for cur
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
     bhs.s   .fmop
-    tst.b   cur_row                       ; row 0 (INST): + ROM slot + ROM LOAD (cols 1,2)
+    tst.b   cur_row                       ; row 0 (INST): + LIBRARY slot (col 1)
     bne.s   .fmr1
-    moveq   #2, d1
+    moveq   #1, d1
     rts
 .fmr1:
-    cmpi.b  #1, cur_row                   ; row 1 (TYPE): + SRAM slot + SAVE + LOAD (cols 1,2,3)
+    cmpi.b  #1, cur_row                   ; row 1 (TYPE): + SRAM LOAD/SAVE + ROM LOAD (cols 1,2,3)
     bne.s   .fmvrt
     moveq   #3, d1
     rts
@@ -2117,16 +2115,9 @@ edit_fm:
     moveq   #0, d4
     move.b  (a2,d0.w), d4
     bra     .adj
-.typeedit:                                ; row 1: col 0 = TYPE; col 1 = SRAM slot; cols 2,3 = buttons
+.typeedit:                                ; row 1: col 0 = TYPE; cols 1,2,3 = LOAD/SAVE/ROM-LOAD buttons (no adjust)
     tst.b   cur_col
     beq     edit_psg                       ; TYPE cycles + wraps both ways (shared with the PSG editor)
-    cmpi.b  #1, cur_col
-    bne.s   .te_btn
-    lea     bank_slot, a1
-    moveq   #NUBANK-1, d3
-    moveq   #1, d4
-    bra     adj_field
-.te_btn:
     rts
 .instedit:                                ; row 0: col 0 = instrument select; col 1 = ROM slot; col 2 = button
     tst.b   cur_col
@@ -2154,15 +2145,11 @@ edit_fm:
     move.b  #1, need_clear                  ; re-render the whole instrument page
     move.b  #1, env_dirty                   ; new instrument -> re-rasterise envelopes
     rts
-.ie_lib:                                  ; row 0: col 1 = ROM slot adjust; col 2 = LOAD button (no adjust)
-    cmpi.b  #1, cur_col
-    bne.s   .ie_btn
-    lea     rom_slot, a1
-    moveq   #NINSTR-1, d3
+.ie_lib:                                  ; row 0 col 1 = LIBRARY slot (one index drives ROM + SRAM)
+    lea     bank_slot, a1
+    moveq   #NUBANK-1, d3
     moveq   #1, d4
     bra     adj_field
-.ie_btn:
-    rts
 .opedit:
     moveq   #0, d0                         ; op grid: i_op + (row-(NVOICE+2))*10 + col
     move.b  cur_row, d0
@@ -2667,19 +2654,12 @@ do_insert:
     beq.s   .di_bank
     cmpi.b  #SCR_FM, cur_screen
     bne.s   .di_nb
-.di_bank:                                  ; ROM LOAD = (row 0, col 2); SRAM SAVE/LOAD = (row 1, col 2/3)
-    tst.b   cur_row
-    bne.s   .di_b1
-    cmpi.b  #2, cur_col                     ; row 0: only col 2 (LOAD) is a button
-    beq     do_bank_action
-    bra.s   .di_nb
-.di_b1:
+.di_bank:                                  ; library buttons all on row 1: col 1 LOAD, col 2 SAVE, col 3 ROM LOAD
     cmpi.b  #1, cur_row
     bne.s   .di_nb
-    cmpi.b  #2, cur_col                     ; row 1: col 2 (SAVE) or col 3 (LOAD)
-    beq     do_bank_action
-    cmpi.b  #3, cur_col
-    beq     do_bank_action
+    tst.b   cur_col                          ; col 0 = TYPE (not a button)
+    beq.s   .di_nb
+    bra     do_bank_action
 .di_nb:
     cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
     blo.s   .di_go
@@ -3587,58 +3567,50 @@ render_inst_hdr:
 ; ROM/SRAM tier-transfer cells, right of the voice params (a0 = VDP_CTRL, preserved).
 ; cells: cur_row 2 (ROM load), 3 (SRAM save), 4 (SRAM load), all at cur_col 1.
 render_bank:
-    moveq   #3, d3                          ; "LIBRARY" header on the INST row (screen row 3, col 14)
+    ; ---- LIBRARY <slot> on the INST row (screen row 3) ; cursor row 0 col 1 = the shared slot ----
+    moveq   #3, d3
     moveq   #14, d4
     lea     str_lib, a1
     bsr     print_at
-    ; ---- ROM row (screen row 4): ROM <slot> LOAD ; cursor row 0 cols 1(slot)/2(LOAD) ----
-    moveq   #4, d3
-    moveq   #14, d4
-    lea     str_rom, a1
-    bsr     print_at
-    moveq   #4, d0                          ; ROM slot value at (4, col 19)
-    moveq   #19, d1
+    moveq   #3, d0                          ; library slot value at (3, col 22)
+    moveq   #22, d1
     bsr     bvpos
-    move.b  rom_slot, d3
-    moveq   #0, d0                          ; highlight if cursor on (row 0, col 1)
+    move.b  bank_slot, d3
+    moveq   #0, d0                          ; hl if cursor on (row 0, col 1)
     moveq   #1, d1
     bsr     selhl
     move.b  d2, d4
     bsr     draw_hex2
-    moveq   #0, d0                          ; ROM LOAD button at (4, col 26), hl if (row 0, col 2)
-    moveq   #2, d1
-    bsr     selhl
+    ; ---- SRAM LOAD SAVE (screen row 4) ; cursor row 1 cols 1(LOAD)/2(SAVE) ----
     moveq   #4, d3
-    moveq   #22, d4
-    lea     str_load, a1
-    bsr     print_hl
-    ; ---- SRAM row (screen row 5): SRAM <slot> SAVE LOAD ; cursor row 1 cols 1(slot)/2(SAVE)/3(LOAD) ----
-    moveq   #5, d3
     moveq   #14, d4
     lea     str_sram, a1
     bsr     print_at
-    moveq   #5, d0                          ; SRAM slot value at (5, col 19)
-    moveq   #19, d1
-    bsr     bvpos
-    move.b  bank_slot, d3
-    moveq   #1, d0
+    moveq   #1, d0                          ; SRAM LOAD at (4, col 19), hl if (row 1, col 1)
     moveq   #1, d1
     bsr     selhl
-    move.b  d2, d4
-    bsr     draw_hex2
-    moveq   #1, d0                          ; LOAD button at (5, col 22) [under ROM LOAD], hl if (row 1, col 2)
-    moveq   #2, d1
-    bsr     selhl
-    moveq   #5, d3
-    moveq   #22, d4
+    moveq   #4, d3
+    moveq   #19, d4
     lea     str_load, a1
     bsr     print_hl
-    moveq   #1, d0                          ; SAVE button at (5, col 27) [right of LOAD], hl if (row 1, col 3)
+    moveq   #1, d0                          ; SRAM SAVE at (4, col 24), hl if (row 1, col 2)
+    moveq   #2, d1
+    bsr     selhl
+    moveq   #4, d3
+    moveq   #24, d4
+    lea     str_save, a1
+    bsr     print_hl
+    ; ---- ROM LOAD (screen row 5) ; cursor row 1 col 3 (under SRAM LOAD) ----
+    moveq   #5, d3
+    moveq   #14, d4
+    lea     str_rom, a1
+    bsr     print_at
+    moveq   #1, d0                          ; ROM LOAD at (5, col 19), hl if (row 1, col 3)
     moveq   #3, d1
     bsr     selhl
     moveq   #5, d3
-    moveq   #27, d4
-    lea     str_save, a1
+    moveq   #19, d4
+    lea     str_load, a1
     bsr     print_hl
     rts
 bvpos:                                      ; d0 = row, d1 = col -> set VDP write addr (callers moveq -> high word clear)
@@ -9216,19 +9188,19 @@ check_dirty:                               ; song_dirty = (data block != last sa
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
-do_bank_action:                            ; row 0 col 2 = ROM LOAD; row 1 col 2 = SRAM LOAD, col 3 = SRAM SAVE
-    tst.b   cur_row
-    bne.s   .dba_sram
-    move.b  rom_slot, d0                    ; ROM LOAD
-    bsr     rom_load_instr
-    bra.s   .dba_redraw
-.dba_sram:
+do_bank_action:                            ; row 1: col 1 = SRAM LOAD, col 2 = SRAM SAVE, col 3 = ROM LOAD
+    cmpi.b  #2, cur_col
+    bne.s   .dba_nc2
+    move.b  bank_slot, d0                   ; col 2 = SRAM SAVE: instrument unchanged, no repaint
+    bra     bank_save_instr
+.dba_nc2:
     cmpi.b  #3, cur_col
     bne.s   .dba_ld
-    move.b  bank_slot, d0                   ; SRAM SAVE (col 3): instrument unchanged, no repaint
-    bra     bank_save_instr
+    move.b  bank_slot, d0                   ; col 3 = ROM LOAD (factory[slot])
+    bsr     rom_load_instr
+    bra.s   .dba_redraw
 .dba_ld:
-    move.b  bank_slot, d0                   ; SRAM LOAD (col 2)
+    move.b  bank_slot, d0                   ; col 1 = SRAM LOAD
     bsr     bank_load_instr
 .dba_redraw:
     move.b  #1, need_clear                  ; pulled in a new instrument -> repaint + re-rasterise envelopes
