@@ -12,8 +12,11 @@ on the MD planes, so a palette swap alone can't fill the cell background).
 Load normal at VRAM tile $20, inverse at tile $80 -> inverse tile = ASCII + $60.
 
     makefont.py build/font.bin
+
+A custom font from the browser font patcher (tools/font_custom.bin, the same 6144-byte
+4bpp format) is used automatically if present; delete it to fall back to the built-in font.
 """
-import sys
+import sys, os
 
 # 5x7 glyphs in an 8x8 cell (cols 0-4, rows 0-6 used) -- ported from SMSGGDJ.
 GLYPHS = {
@@ -129,6 +132,14 @@ def emit(fg, bg):
     return out
 
 
-data = emit(1, 0) + emit(2, 1)          # normal, then inverse
+_custom = os.path.join(os.path.dirname(os.path.abspath(__file__)), "font_custom.bin")
+if os.path.exists(_custom) and os.path.getsize(_custom) == 6144:
+    data = open(_custom, "rb").read()            # patched font from the browser tool
+    note = f"custom font {os.path.basename(_custom)}"
+else:
+    if os.path.exists(_custom):
+        sys.stderr.write(f"makefont: {_custom} is not 6144 bytes -- ignoring, using built-in font\n")
+    data = emit(1, 0) + emit(2, 1)               # built-in: normal, then inverse
+    note = f"{len(data)//32} tiles: 96 normal + 96 inverse"
 open(sys.argv[1], "wb").write(data)
-print(f"makefont: {len(data)} bytes ({len(data)//32} tiles: 96 normal + 96 inverse)")
+print(f"makefont: {len(data)} bytes ({note})")

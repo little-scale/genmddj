@@ -21,7 +21,8 @@ SAMPLES  := $(BUILD)/samples.bin
 $(SAMPLES): tools/makesamples.py | $(BUILD)
 	python3 tools/makesamples.py samples $(SAMPLES)
 
-$(FONT): tools/makefont.py | $(BUILD)
+# FORCE (like the factory bank): so adding/changing/removing tools/font_custom.bin always re-bakes the font.
+$(FONT): tools/makefont.py FORCE | $(BUILD)
 	python3 tools/makefont.py $(FONT)
 
 $(NOTES): tools/maketables.py | $(BUILD)

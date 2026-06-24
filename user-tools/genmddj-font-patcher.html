@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>genmddj font patcher</title>
+<style>
+  :root{ --bg:#14161c; --pan:#1b1e26; --line:#2a2e38; --ink:#d7dce6; --sub:#8a92a3;
+         --acc:#ffd23f; --warn:#ff7a7a; --ok:#7ce0a0; --md0:#1240e0; --md1:#ffee33; }
+  *{box-sizing:border-box} body{margin:0;font:14px/1.4 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--pan)}
+  h1{font-size:16px;margin:0;letter-spacing:.5px} h1 small{color:var(--sub);font-weight:400;font-size:12px}
+  .btn{background:#272b35;border:1px solid var(--line);color:var(--ink);border-radius:7px;padding:7px 11px;cursor:pointer;font-size:13px}
+  .btn:hover{border-color:#3a4150} .btn.acc{background:var(--acc);color:#1a1a1a;border-color:var(--acc);font-weight:600}
+  label.btn{display:inline-flex;align-items:center;gap:5px}
+  main{display:grid;grid-template-columns:340px 1fr 1fr;gap:16px;padding:16px;align-items:start}
+  .pan{background:var(--pan);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .pan h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--sub);margin:0 0 10px}
+  #grid{display:grid;grid-template-columns:repeat(12,1fr);gap:3px}
+  .cell{position:relative;aspect-ratio:1;background:#0e1014;border:1px solid #23262f;border-radius:3px;cursor:pointer;display:block}
+  .cell.sel{outline:2px solid var(--acc);outline-offset:0}
+  .cell.prot{border-color:#5a3b3b;background:#1a1113}
+  .cell canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
+  .cell .lk{position:absolute;top:0;right:1px;font-size:8px;color:var(--warn);line-height:1}
+  .ed{display:grid;grid-template-columns:repeat(8,1fr);gap:2px;width:240px;max-width:100%}
+  .px{aspect-ratio:1;background:#0e1014;border:1px solid #23262f;border-radius:2px;cursor:pointer}
+  .px.on{background:var(--md1)} .px.col6,.px.col7{opacity:.45}
+  .edhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap}
+  .tag{font-size:11px;color:var(--sub)} .tag b{color:var(--ink)}
+  .protbar{background:#2a1416;border:1px solid #5a3b3b;color:var(--warn);padding:7px 10px;border-radius:7px;font-size:12px;margin-top:10px;display:none}
+  .protbar.show{display:block}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+  .row label{font-size:12px;color:var(--sub);min-width:62px}
+  input[type=range]{flex:1} input[type=text]{background:#0e1014;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font:13px monospace}
+  #pv{background:var(--md0);border-radius:6px;padding:12px;display:block;width:100%;image-rendering:pixelated}
+  .small{font-size:12px;color:var(--sub)} .hint{font-size:11px;color:var(--sub);margin-top:6px}
+  code{background:#0e1014;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+  .sp{flex:1} a{color:var(--acc)}
+</style></head>
+<body>
+<header>
+  <h1>genmddj font patcher <small>&middot; preview, edit & safely repatch the 8&times;8 tile font</small></h1>
+  <span class="sp"></span>
+  <button class="btn" id="bBase">Reset to ROM font</button>
+  <button class="btn" id="bBold">Bold variant</button>
+  <label class="btn">Load .bin&hellip;<input type="file" id="fBin" accept=".bin" hidden></label>
+  <button class="btn acc" id="bSave">Save font.bin</button>
+</header>
+<main>
+  <section class="pan">
+    <h2>Character set &nbsp;<span class="small">$20&ndash;$7F &middot; <span style="color:var(--warn)">red = protected</span></span></h2>
+    <div id="grid"></div>
+    <div class="hint">10 glyphs are genmddj UI symbols (queue markers, SYNC, theta, LFO box/arrows). They're locked and never touched by imports/variants.</div>
+  </section>
+
+  <section class="pan">
+    <div class="edhead">
+      <h2 style="margin:0">Glyph editor</h2>
+      <span class="tag">code <b id="edCode">--</b> &middot; <b id="edChar">&nbsp;</b></span>
+    </div>
+    <div class="ed" id="ed"></div>
+    <div class="protbar" id="protbar"></div>
+    <div class="row"><label><input type="checkbox" id="unlock"> unlock protected glyph</label></div>
+    <div class="row"><button class="btn" id="bClr">Clear</button><button class="btn" id="bInv">Invert</button>
+      <button class="btn" id="bL">&larr;</button><button class="btn" id="bR">&rarr;</button>
+      <button class="btn" id="bU">&uarr;</button><button class="btn" id="bD">&darr;</button></div>
+    <div class="hint">Cols 0&ndash;5 are the live glyph; cols 6&ndash;7 (dimmed) stay blank in the SMSGGDJ look.</div>
+
+    <h2 style="margin-top:18px">Import a system font</h2>
+    <div class="row"><label>Family</label><input type="text" id="ff" list="fams" value="monospace" style="flex:1"></div>
+    <datalist id="fams">
+      <option>monospace</option><option>Courier New</option><option>Menlo</option><option>Monaco</option>
+      <option>Consolas</option><option>DejaVu Sans Mono</option><option>PT Mono</option><option>Andale Mono</option>
+    </datalist>
+    <div class="row"><label>Size</label><input type="range" id="fs" min="5" max="12" step="0.5" value="8"><span class="tag" id="fsv">8</span></div>
+    <div class="row"><label>X / Y</label><input type="range" id="fx" min="-2" max="3" step="0.5" value="0"><input type="range" id="fy" min="3" max="9" step="0.5" value="7"></div>
+    <div class="row"><label>Threshold</label><input type="range" id="ft" min="20" max="230" step="5" value="128"><span class="tag" id="ftv">128</span></div>
+    <div class="row"><button class="btn acc" id="bApply">Apply font to editable glyphs</button></div>
+    <div class="hint">Renders each non-protected glyph from the chosen installed font, thresholded to 1-bit. Tune size/offset/threshold so it reads at 6&times;7, then apply. Protected symbols are skipped.</div>
+  </section>
+
+  <section class="pan">
+    <h2>Preview <span class="small">&middot; genmddj palette</span></h2>
+    <canvas id="pv" width="416" height="232"></canvas>
+    <div class="hint">Top: normal text. Middle: the inverse/cursor cells (auto-derived). Bottom: the protected UI symbols &mdash; confirm these stay intact.</div>
+    <div class="hint" style="margin-top:10px">To use in the ROM: <code>Save font.bin</code>, drop it in as <code>tools/font_custom.bin</code>, then <code>make</code> &mdash; makefont.py picks it up automatically if present (delete it to go back to the built-in font).</div>
+  </section>
+</main>
+
+<script>
+const CHARS = [{"code":32,"rows":[0,0,0,0,0,0,0,0]},{"code":33,"rows":[4,4,4,4,0,4,0,0]},{"code":34,"rows":[10,10,0,0,0,0,0,0]},{"code":35,"rows":[10,31,10,10,31,10,0,0]},{"code":36,"rows":[4,30,5,14,20,15,4,0]},{"code":37,"rows":[19,19,8,4,2,25,25,0]},{"code":38,"rows":[6,9,5,2,21,9,22,0]},{"code":39,"rows":[4,4,0,0,0,0,0,0]},{"code":40,"rows":[8,4,4,4,4,4,8,0]},{"code":41,"rows":[2,4,4,4,4,4,2,0]},{"code":42,"rows":[0,4,21,14,21,4,0,0]},{"code":43,"rows":[0,4,4,31,4,4,0,0]},{"code":44,"rows":[0,0,0,0,6,6,2,0]},{"code":45,"rows":[0,0,0,31,0,0,0,0]},{"code":46,"rows":[0,0,0,0,0,6,6,0]},{"code":47,"rows":[16,8,4,4,2,1,0,0]},{"code":48,"rows":[14,17,25,21,19,17,14,0]},{"code":49,"rows":[4,6,4,4,4,4,14,0]},{"code":50,"rows":[14,17,16,12,2,1,31,0]},{"code":51,"rows":[14,17,16,12,16,17,14,0]},{"code":52,"rows":[8,12,10,9,31,8,8,0]},{"code":53,"rows":[31,1,15,16,16,17,14,0]},{"code":54,"rows":[12,2,1,15,17,17,14,0]},{"code":55,"rows":[31,16,8,4,4,4,4,0]},{"code":56,"rows":[14,17,17,14,17,17,14,0]},{"code":57,"rows":[14,17,17,30,16,8,6,0]},{"code":58,"rows":[0,6,6,0,6,6,0,0]},{"code":59,"rows":[0,6,6,0,6,4,2,0]},{"code":60,"rows":[1,3,5,9,5,3,1,0]},{"code":61,"rows":[0,0,31,0,31,0,0,0]},{"code":62,"rows":[1,3,7,15,7,3,1,0]},{"code":63,"rows":[14,17,16,12,4,0,4,0]},{"code":64,"rows":[16,24,28,30,28,24,16,0]},{"code":65,"rows":[14,17,17,31,17,17,17,0]},{"code":66,"rows":[15,17,17,15,17,17,15,0]},{"code":67,"rows":[14,17,1,1,1,17,14,0]},{"code":68,"rows":[15,17,17,17,17,17,15,0]},{"code":69,"rows":[31,1,1,15,1,1,31,0]},{"code":70,"rows":[31,1,1,15,1,1,1,0]},{"code":71,"rows":[14,17,1,29,17,17,30,0]},{"code":72,"rows":[17,17,17,31,17,17,17,0]},{"code":73,"rows":[14,4,4,4,4,4,14,0]},{"code":74,"rows":[28,8,8,8,8,9,6,0]},{"code":75,"rows":[17,9,5,3,5,9,17,0]},{"code":76,"rows":[1,1,1,1,1,1,31,0]},{"code":77,"rows":[17,27,21,21,17,17,17,0]},{"code":78,"rows":[17,19,21,25,17,17,17,0]},{"code":79,"rows":[14,17,17,17,17,17,14,0]},{"code":80,"rows":[15,17,17,15,1,1,1,0]},{"code":81,"rows":[14,17,17,17,21,9,22,0]},{"code":82,"rows":[15,17,17,15,5,9,17,0]},{"code":83,"rows":[30,1,1,14,16,16,15,0]},{"code":84,"rows":[31,4,4,4,4,4,4,0]},{"code":85,"rows":[17,17,17,17,17,17,14,0]},{"code":86,"rows":[17,17,17,17,17,10,4,0]},{"code":87,"rows":[17,17,17,21,21,27,17,0]},{"code":88,"rows":[17,17,10,4,10,17,17,0]},{"code":89,"rows":[17,17,10,4,4,4,4,0]},{"code":90,"rows":[31,16,8,4,2,1,31,0]},{"code":91,"rows":[14,2,2,2,2,2,14,0]},{"code":92,"rows":[0,14,10,10,10,27,0,0]},{"code":93,"rows":[14,8,8,8,8,8,14,0]},{"code":94,"rows":[4,10,17,0,0,0,0,0]},{"code":95,"rows":[0,0,0,0,0,0,31,0]},{"code":96,"rows":[14,17,17,31,17,17,14,0]},{"code":97,"rows":[14,17,17,31,17,17,17,0]},{"code":98,"rows":[15,17,17,15,17,17,15,0]},{"code":99,"rows":[14,17,1,1,1,17,14,0]},{"code":100,"rows":[15,17,17,17,17,17,15,0]},{"code":101,"rows":[31,1,1,15,1,1,31,0]},{"code":102,"rows":[31,1,1,15,1,1,1,0]},{"code":103,"rows":[14,17,1,29,17,17,30,0]},{"code":104,"rows":[17,17,17,31,17,17,17,0]},{"code":105,"rows":[14,4,4,4,4,4,14,0]},{"code":106,"rows":[28,8,8,8,8,9,6,0]},{"code":107,"rows":[17,9,5,3,5,9,17,0]},{"code":108,"rows":[1,1,1,1,1,1,31,0]},{"code":109,"rows":[17,27,21,21,17,17,17,0]},{"code":110,"rows":[17,19,21,25,17,17,17,0]},{"code":111,"rows":[14,17,17,17,17,17,14,0]},{"code":112,"rows":[15,17,17,15,1,1,1,0]},{"code":113,"rows":[14,17,17,17,21,9,22,0]},{"code":114,"rows":[15,17,17,15,5,9,17,0]},{"code":115,"rows":[30,1,1,14,16,16,15,0]},{"code":116,"rows":[31,4,4,4,4,4,4,0]},{"code":117,"rows":[17,17,17,17,17,17,14,0]},{"code":118,"rows":[17,17,17,17,17,10,4,0]},{"code":119,"rows":[17,17,17,21,21,27,17,0]},{"code":120,"rows":[17,17,10,4,10,17,17,0]},{"code":121,"rows":[17,17,10,4,4,4,4,0]},{"code":122,"rows":[31,16,8,4,2,1,31,0]},{"code":123,"rows":[0,63,33,33,33,33,63,0]},{"code":124,"rows":[0,0,31,14,4,0,0,0]},{"code":125,"rows":[0,63,63,63,63,63,63,0]},{"code":126,"rows":[0,0,4,14,31,0,0,0]},{"code":127,"rows":[4,14,31,0,31,14,4,0]}];
+const PROT  = {"60": "queue marker (hollow)", "62": "queue marker (solid)", "64": "SYNC IN", "92": "SYNC PULSE", "96": "theta (phase)", "123": "LFO OFF box", "125": "LFO ON box", "126": "UP triangle", "124": "DOWN triangle", "127": "double triangle"};
+let font = [];           // [{code, rows:[8], prot, note}]
+let sel = 1;             // selected index (start on 'A' region later)
+
+function loadBase(){
+  font = CHARS.map(c=>({code:c.code, rows:c.rows.slice(), prot:(''+c.code in PROT), note:PROT[c.code]||''}));
+}
+const isProt = i => font[i].prot;
+const bit = (r,x)=> (r>>x)&1;
+
+// ---- mini canvas render of one glyph ----
+function drawGlyph(cv, rows, fg, bg){
+  const cx=cv.getContext('2d'); cx.imageSmoothingEnabled=false;
+  const w=cv.width/8;
+  cx.fillStyle=bg; cx.fillRect(0,0,cv.width,cv.height);
+  cx.fillStyle=fg;
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++) if(bit(rows[y],x)) cx.fillRect(x*w,y*w,w,w);
+}
+
+// ---- character grid ----
+const grid=document.getElementById('grid');
+function buildGrid(){
+  grid.innerHTML='';
+  font.forEach((g,i)=>{
+    const d=document.createElement('div');
+    d.className='cell'+(g.prot?' prot':'')+(i===sel?' sel':'');
+    d.title='$'+g.code.toString(16).toUpperCase()+' '+(g.code>=33?String.fromCharCode(g.code):'space')+(g.prot?' — '+g.note+' (protected)':'');
+    const cv=document.createElement('canvas'); cv.width=cv.height=22; d.appendChild(cv);
+    if(g.prot){ const lk=document.createElement('span'); lk.className='lk'; lk.textContent='◆'; d.appendChild(lk); }
+    d.onclick=()=>select(i);
+    grid.appendChild(d); g._cv=cv;
+  });
+  refreshGrid();
+}
+function refreshGrid(){ font.forEach(g=>drawGlyph(g._cv,g.rows,g.prot?'#ff9b9b':'#ffe14a','#0e1014')); 
+  [...grid.children].forEach((c,i)=>c.classList.toggle('sel',i===sel)); }
+
+// ---- glyph editor ----
+const ed=document.getElementById('ed');
+const cells=[];
+for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+  const p=document.createElement('div'); p.className='px col'+x; p.dataset.x=x; p.dataset.y=y;
+  p.onclick=()=>togglePx(x,y); ed.appendChild(p); cells.push(p);
+}
+function canEdit(){ return !isProt(sel) || document.getElementById('unlock').checked; }
+function togglePx(x,y){ if(!canEdit())return; font[sel].rows[y]^=1<<x; refreshEd(); refreshGrid(); drawPreview(); }
+function refreshEd(){
+  const g=font[sel];
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+    const p=cells[y*8+x]; p.classList.toggle('on',!!bit(g.rows[y],x));
+  }
+  document.getElementById('edCode').textContent='$'+g.code.toString(16).toUpperCase();
+  document.getElementById('edChar').textContent = g.code>=33?String.fromCharCode(g.code):'(space)';
+  const pb=document.getElementById('protbar');
+  if(g.prot){ pb.classList.add('show'); pb.innerHTML='◆ Protected UI symbol: <b>'+g.note+'</b>. Editing it can break the interface — tick “unlock” only if you mean it.'; }
+  else pb.classList.remove('show');
+}
+function select(i){ sel=i; refreshEd(); refreshGrid(); }
+
+// editor ops (respect protection)
+function eachEditableRow(fn){ const g=font[sel]; if(!canEdit())return; for(let y=0;y<8;y++) g.rows[y]=fn(g.rows[y],y)&0xFF; refreshEd();refreshGrid();drawPreview(); }
+document.getElementById('bClr').onclick=()=>eachEditableRow(()=>0);
+document.getElementById('bInv').onclick=()=>eachEditableRow(r=>(~r)&0x3F);   // invert within the 6-col field
+document.getElementById('bL').onclick=()=>eachEditableRow(r=>r>>1);
+document.getElementById('bR').onclick=()=>eachEditableRow(r=>(r<<1)&0x3F);
+document.getElementById('bU').onclick=()=>{ if(!canEdit())return; const g=font[sel]; g.rows.push(g.rows.shift()); refreshEd();refreshGrid();drawPreview(); };
+document.getElementById('bD').onclick=()=>{ if(!canEdit())return; const g=font[sel]; g.rows.unshift(g.rows.pop()); refreshEd();refreshGrid();drawPreview(); };
+
+// ---- presets / imports ----
+document.getElementById('bBase').onclick=()=>{ loadBase(); buildGrid(); select(sel); drawPreview(); };
+document.getElementById('bBold').onclick=()=>{
+  font.forEach(g=>{ if(g.prot)return; for(let y=0;y<8;y++) g.rows[y]=(g.rows[y]|(g.rows[y]<<1))&0x7F; });
+  refreshGrid(); refreshEd(); drawPreview();
+};
+const $=id=>document.getElementById(id);
+['fs','ft'].forEach(id=>$(id).oninput=()=>$(id+'v').textContent=$(id).value);
+$('bApply').onclick=()=>{
+  const fam=$('ff').value, size=+$('fs').value, ox=+$('fx').value, oy=+$('fy').value, th=+$('ft').value;
+  const cv=document.createElement('canvas'); cv.width=cv.height=8; const cx=cv.getContext('2d');
+  font.forEach(g=>{
+    if(g.prot || g.code===0x20) return;
+    cx.fillStyle='#000'; cx.fillRect(0,0,8,8); cx.fillStyle='#fff';
+    cx.font=size+'px "'+fam+'", monospace'; cx.textBaseline='alphabetic';
+    cx.fillText(String.fromCharCode(g.code), ox, oy);
+    const d=cx.getImageData(0,0,8,8).data, rows=[];
+    for(let y=0;y<8;y++){ let b=0; for(let x=0;x<6;x++){ if(d[(y*8+x)*4]>th) b|=1<<x; } rows.push(b); }
+    g.rows=rows;
+  });
+  refreshGrid(); refreshEd(); drawPreview();
+};
+
+// ---- file in/out ----
+function emit(fg,bg){ const out=[]; for(const g of font){ for(let y=0;y<8;y++){ const r=g.rows[y]||0;
+  for(let bx=0;bx<8;bx+=2){ const hi=bit(r,bx)?fg:bg, lo=bit(r,bx+1)?fg:bg; out.push((hi<<4)|lo); } } } return out; }
+$('bSave').onclick=()=>{
+  const bytes=new Uint8Array(emit(1,0).concat(emit(2,1)));
+  dl(bytes,'font.bin','application/octet-stream');
+};
+$('fBin').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
+  r.onload=()=>{ const b=new Uint8Array(r.result);
+    if(b.length<3072){ alert('Not a genmddj font.bin (expected 6144 bytes).'); return; }
+    font.forEach((g,i)=>{ if(g.prot)return; const off=i*32, rows=[];
+      for(let y=0;y<8;y++){ let bt=0; for(let bx=0;bx<8;bx+=2){ const by=b[off+y*4+bx/2];
+        if((by>>4)&0xF) bt|=1<<bx; if(by&0xF) bt|=1<<(bx+1); } rows.push(bt); } g.rows=rows; });
+    refreshGrid(); refreshEd(); drawPreview();
+  }; r.readAsArrayBuffer(f);
+};
+function dl(bytes,name,type){ const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([bytes],{type})); a.download=name; a.click(); }
+
+// ---- preview ----
+const PV_LINES=['GENMDDJ V0.01  0123456789','SONG CHAIN PHRASE INSTR FM','THE QUICK BROWN FOX. A#4 C-5'];
+function pvIndex(code){ return (code>=0x20&&code<0x80)? code-0x20 : 0; }
+function drawText(cx, s, px, py, scale, inv){
+  for(let i=0;i<s.length;i++){ const g=font[pvIndex(s.charCodeAt(i))];
+    for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+      const on=bit(g.rows[y],x);
+      if(inv){ cx.fillStyle = on?'#1240e0':'#ffee33'; cx.fillRect(px+i*8*scale+x*scale,py+y*scale,scale,scale); }
+      else if(on){ cx.fillStyle='#ffee33'; cx.fillRect(px+i*8*scale+x*scale,py+y*scale,scale,scale); }
+    } }
+}
+function drawPreview(){
+  const cv=$('pv'), cx=cv.getContext('2d'); cx.imageSmoothingEnabled=false;
+  cx.fillStyle='#1240e0'; cx.fillRect(0,0,cv.width,cv.height);
+  const sc=3; let y=10;
+  PV_LINES.forEach(l=>{ drawText(cx,l,8,y,sc,false); y+=8*sc+5; });
+  // inverse band (cursor cells)
+  cx.fillStyle='#ffee33'; cx.fillRect(8,y, ('CURSOR'.length)*8*sc, 8*sc);
+  drawText(cx,'CURSOR',8,y,sc,true); y+=8*sc+8;
+  // protected symbols row
+  const syms=Object.keys(PROT).map(c=>String.fromCharCode(+c)).join(' ');
+  cx.fillStyle='#9aa3b2'; cx.font='12px monospace'; cx.fillText('UI symbols:',8,y+10);
+  drawText(cx,syms,96,y,sc,false);
+}
+
+// ---- boot ----
+loadBase(); buildGrid(); sel=font.findIndex(g=>g.code===0x41); select(sel<0?1:sel); drawPreview();
+</script>
+</body></html>
