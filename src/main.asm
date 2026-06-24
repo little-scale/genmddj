@@ -1186,6 +1186,8 @@ input_tick:
     cmpi.b  #SCR_INSTR, cur_screen
     bne.s   .ne
 .reapply:
+    tst.b   cur_row                        ; row 0 = INST# + LIBRARY-slot selectors: selecting an instrument or
+    beq.s   .ne                            ;   browsing slots must NOT re-patch the live F1 voice (only LOAD/edits do)
     lea     instrum, a1                    ; only FM instruments re-push the YM patch
     moveq   #0, d0
     move.b  cur_instr, d0
