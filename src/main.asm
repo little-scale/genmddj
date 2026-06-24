@@ -1711,9 +1711,9 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     bne.s   .crp
     moveq   #13, d1                         ; NOISE: 1 + 12 fields
 .crp:
-    cmpi.b  #5, d0                          ; PERC: INST,TYPE,BASE,MODE,HLD,SWP,OP1-4,TBL/TBS/ALG (rows 0-10)
+    cmpi.b  #5, d0                          ; PERC: INST,TYPE,BASE,MODE,HLD,SWP,TBL,TBS,ALGO,OP1-4 (rows 0-12)
     bne.s   .crd
-    moveq   #10, d1
+    moveq   #12, d1
 .crd:
     rts
 .crfm:
@@ -1778,14 +1778,9 @@ col_max:                                  ; -> d1 = highest column index for cur
 .izero:
     moveq   #0, d1
     rts
-.pcol:                                    ; PERC: rows 0-5 single col; rows 6-9 = ops (FREQ/MUL/DT/TL); row 10 = TBL/TBS/ALG
-    cmpi.b  #6, cur_row
+.pcol:                                    ; PERC: rows 0-8 single col (incl TBL/TBS/ALGO); rows 9-12 = ops (FREQ/MUL/DT/TL)
+    cmpi.b  #9, cur_row
     blo.s   .izero
-    cmpi.b  #10, cur_row
-    bne.s   .pcolop
-    moveq   #2, d1
-    rts
-.pcolop:
     moveq   #3, d1
     rts
 .fm:
@@ -3813,18 +3808,71 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  (i_psweep,a3), d3
     move.b  d2, d4
     bsr     draw_hex2
-    moveq   #11, d3                         ; column header (row 11, col 5)
+    moveq   #11, d3                          ; TBL ($FF=none) (row 11, col 1) val col 6, hl cursor row 6
+    moveq   #1, d4
+    lea     str_ptbl, a1
+    bsr     print_at
+    moveq   #11, d0
+    moveq   #6, d1
+    bsr     bvpos
+    moveq   #6, d0
+    moveq   #0, d1
+    bsr     selhl
+    move.b  (i_tbl,a3), d3
+    cmpi.b  #$FF, d3
+    bne.s   .rp_tblh
+    move.w  #'-', d0                        ; -- = no table
+    add.w   d2, d0
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+    bra.s   .rp_tbld
+.rp_tblh:
+    move.b  d2, d4
+    bsr     draw_hex2
+.rp_tbld:
+    moveq   #12, d3                          ; TBS (row 12, col 1) val col 6, hl cursor row 7
+    moveq   #1, d4
+    lea     str_ptbs, a1
+    bsr     print_at
+    moveq   #12, d0
+    moveq   #6, d1
+    bsr     bvpos
+    moveq   #7, d0
+    moveq   #0, d1
+    bsr     selhl
+    move.b  (i_tbs,a3), d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    moveq   #13, d3                          ; ALGO (base's algorithm) (row 13, col 1) val col 6, hl cursor row 8
+    moveq   #1, d4
+    lea     str_palg, a1
+    bsr     print_at
+    moveq   #13, d0
+    moveq   #6, d1
+    bsr     bvpos
+    moveq   #8, d0
+    moveq   #0, d1
+    bsr     selhl
+    moveq   #0, d3
+    move.b  (i_pbase,a3), d3
+    mulu.w  #INSTR_SIZE, d3
+    lea     instrum, a1
+    move.b  (i_algo,a1,d3.w), d3
+    andi.w  #7, d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    moveq   #15, d3                         ; column header (row 15, col 5)
     moveq   #5, d4
     lea     str_perc_hdr, a1
     bsr     print_at
     moveq   #0, d6                          ; op index 0-3
 .rp_op:
-    moveq   #0, d5                          ; screen row = 12 + op
+    moveq   #0, d5                          ; screen row = 16 + op
     move.b  d6, d5
-    add.w   #12, d5
-    moveq   #0, d7                          ; cursor row = 6 + op
+    add.w   #16, d5
+    moveq   #0, d7                          ; cursor row = 9 + op
     move.b  d6, d7
-    addq.w  #6, d7
+    add.w   #9, d7
     move.l  d5, d0                          ; op label (3 chars) at (row, col 1)
     moveq   #1, d1
     bsr     bvpos
@@ -3916,59 +3964,6 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .rp_op
-    moveq   #17, d3                          ; TBL ($FF=none) at (row 17, col 1), val col 6, hl (row 10 col 0)
-    moveq   #1, d4
-    lea     str_ptbl, a1
-    bsr     print_at
-    moveq   #17, d0
-    moveq   #6, d1
-    bsr     bvpos
-    moveq   #10, d0
-    moveq   #0, d1
-    bsr     selhl
-    move.b  (i_tbl,a3), d3
-    cmpi.b  #$FF, d3
-    bne.s   .rp_tblh
-    move.w  #'-', d0                        ; -- = no table
-    add.w   d2, d0
-    move.w  d0, VDP_DATA
-    move.w  d0, VDP_DATA
-    bra.s   .rp_tbld
-.rp_tblh:
-    move.b  d2, d4
-    bsr     draw_hex2
-.rp_tbld:
-    moveq   #17, d3                          ; TBS at (row 17, col 11), val col 15, hl (row 10 col 1)
-    moveq   #11, d4
-    lea     str_ptbs, a1
-    bsr     print_at
-    moveq   #17, d0
-    moveq   #15, d1
-    bsr     bvpos
-    moveq   #10, d0
-    moveq   #1, d1
-    bsr     selhl
-    move.b  (i_tbs,a3), d3
-    move.b  d2, d4
-    bsr     draw_hex1
-    moveq   #17, d3                          ; ALG (base's algorithm) at (row 17, col 17), val col 22, hl (row 10 col 2)
-    moveq   #17, d4
-    lea     str_palg, a1
-    bsr     print_at
-    moveq   #17, d0
-    moveq   #22, d1
-    bsr     bvpos
-    moveq   #10, d0
-    moveq   #2, d1
-    bsr     selhl
-    moveq   #0, d3
-    move.b  (i_pbase,a3), d3
-    mulu.w  #INSTR_SIZE, d3
-    lea     instrum, a1
-    move.b  (i_algo,a1,d3.w), d3
-    andi.w  #7, d3
-    move.b  d2, d4
-    bsr     draw_hex1
     rts
 init_perc_defaults:                       ; a3 = PERC record -> cowbell-style frequencies (~540/800/1080/1600 Hz)
     move.b  #0, (i_pbase,a3)               ; base instrument 0
@@ -4002,7 +3997,7 @@ str_phld:      dc.b "HLD",0
 str_pswp:      dc.b "SWP",0
 str_ptbl:      dc.b "TBL",0
 str_ptbs:      dc.b "TBS",0
-str_palg:      dc.b "ALG",0
+str_palg:      dc.b "ALGO",0
     even
 pcmod_lbl:     dc.l str_pfix, str_ppit
     even
@@ -4010,16 +4005,22 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     moveq   #0, d0
     move.b  cur_row, d0
     cmpi.b  #2, d0
-    beq     .epf_base                        ; row 2 = BASE
+    bne.s   .epf_n2
+    bra     .epf_base                        ; row 2 = BASE
+.epf_n2:
     cmpi.b  #3, d0
     beq     .epf_mode                        ; row 3 = MODE
     cmpi.b  #4, d0
     beq.s   .epf_hld                         ; row 4 = HLD
     cmpi.b  #5, d0
     beq.s   .epf_swp                         ; row 5 = SWP
-    cmpi.b  #10, d0
-    beq.s   .epf_row10                       ; row 10 = TBL/TBS/ALG
-    bra     .epf_op                          ; rows 6-9 = ops
+    cmpi.b  #6, d0
+    beq.s   .epf_tbl                         ; row 6 = TBL
+    cmpi.b  #7, d0
+    beq.s   .epf_tbs                         ; row 7 = TBS
+    cmpi.b  #8, d0
+    beq.s   .epf_algo                        ; row 8 = ALGO
+    bra     .epf_op                          ; rows 9-12 = ops
 .epf_hld:
     lea     (i_hld,a3), a1                  ; HLD 0-15
     moveq   #15, d3
@@ -4030,22 +4031,6 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     moveq   #255, d3
     moveq   #16, d4
     jmp     adj_field
-.epf_row10:
-    moveq   #0, d0                            ; row 10: TBL / TBS / ALG
-    move.b  cur_col, d0
-    beq.s   .epf_tbl
-    cmpi.b  #1, d0
-    beq.s   .epf_tbs
-    moveq   #0, d0                            ; col 2 = ALG -> the base instrument's algorithm
-    move.b  (i_pbase,a3), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a1
-    adda.w  d0, a1
-    lea     (i_algo,a1), a1
-    moveq   #7, d3
-    moveq   #1, d4
-    jsr     adj_field
-    bra     .epf_inval                       ; base changed -> live re-patch + pshadow clear
 .epf_tbl:
     lea     (i_tbl,a3), a1
     jmp     edit_tbl_field
@@ -4054,12 +4039,39 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     moveq   #15, d3
     moveq   #1, d4
     jmp     adj_field
-.epf_base:
-    lea     (i_pbase,a3), a1
-    moveq   #NINSTR_ED, d3
+.epf_algo:
+    moveq   #0, d0                            ; ALGO -> the base instrument's algorithm
+    move.b  (i_pbase,a3), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    lea     (i_algo,a1), a1
+    moveq   #7, d3
     moveq   #1, d4
     jsr     adj_field
-    bra.s   .epf_inval
+    bra     .epf_inval
+.epf_base:
+    moveq   #0, d0                            ; BASE: L/R +-1, U/D +-8, wrap 0..31
+    move.b  (i_pbase,a3), d0
+    btst    #2, d2
+    beq.s   .epb_r
+    subq.w  #1, d0
+.epb_r:
+    btst    #3, d2
+    beq.s   .epb_u
+    addq.w  #1, d0
+.epb_u:
+    btst    #0, d2
+    beq.s   .epb_d
+    addq.w  #8, d0
+.epb_d:
+    btst    #1, d2
+    beq.s   .epb_wr
+    subq.w  #8, d0
+.epb_wr:
+    andi.w  #$1F, d0
+    move.b  d0, (i_pbase,a3)
+    bra     .epf_inval
 .epf_mode:
     bchg    #0, (i_pmode,a3)                ; toggle fixed/pitched
 .epf_inval:
@@ -4073,9 +4085,9 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     move.b  #1, need_clear                 ; base changed -> re-render the base-derived ALG/TL fields
     rts
 .epf_op:
-    moveq   #0, d0                          ; op index = cur_row - 6
+    moveq   #0, d0                          ; op index = cur_row - 9
     move.b  cur_row, d0
-    subq.b  #6, d0
+    subi.b  #9, d0
     mulu.w  #FM_NPARM, d0
     lea     (i_op,a3), a2
     adda.w  d0, a2                          ; a2 = this op's params
@@ -4090,7 +4102,7 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     mulu.w  #INSTR_SIZE, d0
     moveq   #0, d1
     move.b  cur_row, d1
-    subq.b  #6, d1
+    subi.b  #9, d1
     mulu.w  #FM_NPARM, d1
     add.w   d1, d0
     addi.w  #(i_op+2), d0
@@ -8386,6 +8398,7 @@ perc_note_route:
     adda.w  d0, a0
     cmpi.b  #5, (i_type,a0)
     bne     .pnr_pop
+    move.b  #$FF, pshadow+2                 ; F3 PERC re-emits its base patch every note (algo/special mode stay put across the wrap)
     tst.b   (i_pmode,a0)
     bne.s   .pnr_pitched
     move.b  c_instr(a6), d0                ; FIXED: (re)load the stored cluster on a new patch
