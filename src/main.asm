@@ -467,21 +467,13 @@ Start:
 
     bsr     z80_load
 
-    bsr     load_demo                     ; phrases -> rests + copy demo phrases/chains/song
-    bsr     copy_factory_bank             ; load the 32-patch factory instrument bank from ROM
-    lea     instrum+INSTR_SIZE, a2        ; instrument 1 = a default TONE voice (demo PSG tracks)
-    lea     default_tone, a1
-    moveq   #INSTR_SIZE-1, d0
-.cdt:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .cdt
     lea     tbl_ram, a2                   ; copy the ROM default macro tables into RAM
     lea     psg_tables, a1
     move.w  #(NTABLE*TBL_ROWS*TROW)-1, d0
 .cdtb:
     move.b  (a1)+, (a2)+
     dbra    d0, .cdtb
-
+    bsr     clear_song                    ; boot exactly like a fresh NEW project (blank song + factory bank)
     bsr     engine_init
     bsr     ym_setup                     ; build YM ch0's patch from instrument 0
     move.b  #0, cur_row
@@ -10443,6 +10435,13 @@ load_demo:                                ; phrases -> rests, then copy demo phr
 .ld_cs:
     move.b  (a1)+, (a2)+
     dbra    d0, .ld_cs
+    bsr     copy_factory_bank             ; demo instruments: factory bank + a TONE in slot 1 for the PSG tracks
+    lea     instrum+INSTR_SIZE, a2
+    lea     default_tone, a1
+    moveq   #INSTR_SIZE-1, d0
+.ld_dt:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .ld_dt
     rts
 
 copy_factory_bank:                        ; fm_factory (ROM) -> instrum (RAM): all NINSTR patches, 1:1
