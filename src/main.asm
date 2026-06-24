@@ -114,7 +114,7 @@ DBLTAP_FRAMES equ 16               ; max frames between B-taps to count as a dou
 pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
 patch_done equ $00FFE3BE           ; 1 = an FM operator patch was emitted this tick (budget 1/tick)
 PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write patch (SCB headroom)
-YM_CAP     equ 38                  ; max ym_count before a note's freq/key (keeps a tick well under the buffer)
+YM_CAP     equ 43                  ; max ym_count before a note's freq/key (per-tick work budget; buffer at $1000 holds 256)
 lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $B0 value (FB<<3|ALGO)
 lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
 lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
@@ -8688,11 +8688,7 @@ push_scb:
 .nopsg:
     moveq   #0, d7                        ; --- YM section (triples) ---
     move.b  ym_count, d7                 ; running triple count (composed note SCB)
-    cmpi.b  #44, d7                        ; HARD GUARD: keep YM data clear of the DAC state at $1FB0+ --
-    bls.s   .ps_ymok                       ;   an overrun corrupts the DAC bank/ptr, Z80 reads bad ROM -> crash
-    moveq   #44, d7                        ;   (caps below should keep us well under this; this is the net)
-.ps_ymok:
-    lea     Z80_RAM+$1F21, a2            ; mailbox YM write pointer
+    lea     Z80_RAM+$1000, a2            ; YM write buffer (relocated to free Z80 RAM; 256-triple room)
     tst.b   d7
     beq.s   .ymap
     move.w  d7, d0
@@ -9105,7 +9101,7 @@ ym_setup:                                 ; editor/boot path: own BUSREQ, build 
     btst    #0, Z80_BUSREQ
     bne.s   .w
     move.b  #0, Z80_RAM+$1F01            ; psg_count = 0
-    lea     Z80_RAM+$1F21, a2            ; build straight into the YM mailbox
+    lea     Z80_RAM+$1000, a2            ; build straight into the YM buffer (free RAM at $1000)
     moveq   #0, d7
     bsr     ym_build_patch
     move.b  d7, Z80_RAM+$1F20            ; ym_count

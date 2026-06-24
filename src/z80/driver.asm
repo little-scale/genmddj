@@ -10,7 +10,7 @@
 ;   $1F01  psgcnt  - number of raw SN76489 bytes that follow
 ;   $1F02+ psg     - PSG bytes (up to ~30)
 ;   $1F20  ymcnt   - number of YM2612 writes that follow
-;   $1F21+ ym      - YM writes, 3 bytes each: part(0/1), reg, value
+;   $1000+ ym      - YM writes (free RAM, 256-triple room), 3 bytes each: part(0/1), reg, value
 ;   $1FB0  dactrig - bumped by the 68k to start a new sample
 ;   $1FB1  dbank   - starting bank (9-bit, little-endian word)
 ;   $1FB3  dptr    - starting window read pointer ($8000.. , little-endian)
@@ -41,7 +41,7 @@ BANKS 1
 .DEFINE SCB_CNT   $1F01
 .DEFINE SCB_DATA  $1F02
 .DEFINE SCB_YMCNT $1F20
-.DEFINE SCB_YMDAT $1F21
+.DEFINE SCB_YMDAT $1000     ; YM buffer in free RAM ($1000-$12FF, 256 triples) -- byte count can't overrun
 .DEFINE SCB_DAC   $1FB0     ; dac trigger seq
 .DEFINE SCB_DBANK $1FB1     ; starting bank (LE word)
 .DEFINE SCB_DPTR  $1FB3     ; starting window pointer (LE word)
@@ -56,8 +56,8 @@ BANKS 1
 .DEFINE D_HALF    $1FC9
 .DEFINE D_HFLIP   $1FCA     ; half-rate toggle
 ; --- wavetable mode (32-byte wave looped from local RAM via a phase accumulator) ---
-; In the SCB mailbox region (the 68k reliably writes here); above the DAC fields and
-; the YM-write area (which the engine keeps under $1FB0), so no clobber in practice.
+; In the SCB mailbox region (the 68k reliably writes here). The YM-write area now lives in
+; free RAM at $1000, so the mailbox DAC/wave control bytes can never be clobbered by it.
 .DEFINE WV_TRIG   $1FCB     ; wave trigger seq (68k bumps it)
 .DEFINE WV_INC    $1FCC     ; phase increment, 8.8 fixed (LE word)
 .DEFINE WV_BUF    $1FD0     ; 32-byte baked wave buffer ($1FD0-$1FEF)
