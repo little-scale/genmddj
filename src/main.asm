@@ -100,6 +100,7 @@ perc_mask  equ $00FFDFE9           ; PERC: C-selected operator mask this row
 perc_cset  equ $00FFDFEA           ; PERC: 1 if C set the operator mask this row
 perc_ld    equ $00FFDFEB           ; PERC: instrument # loaded into perc_live ($FF = none)
 perc_note  equ $00FFDFEC           ; PERC: 4 live operator notes 0-95 ($FF = voice off) for the display
+perc_repatch equ $00FFDFF0         ; PERC: 1 = re-emit F3's base patch live on the next tick (BASE/MODE edit)
 last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entered (B-tap repeats it)
 scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
@@ -499,6 +500,7 @@ Start:
     move.b  #0, ch3_spc                   ; PERC CH3 special mode off at boot
     move.b  #$FF, perc_ld                 ; PERC: no live cluster loaded yet
     move.l  #$FFFFFFFF, perc_note         ; PERC: all 4 display notes = off
+    move.b  #0, perc_repatch             ; PERC: no live re-patch pending
     move.b  #0, echo_mode                 ; ECHO off; sensible tap/reduction defaults
     move.b  #2, echo_tap1
     move.b  #4, echo_tap2
@@ -3961,7 +3963,7 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     cmpi.b  #2, cur_row
     beq.s   .epf_row2
     cmpi.b  #7, cur_row
-    bne.s   .epf_op
+    bne     .epf_op
     tst.b   cur_col                          ; row 7: TBL / TBS
     bne.s   .epf_tbs
     lea     (i_tbl,a3), a1
@@ -4003,6 +4005,7 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     move.b  #$FF, (a1)+
     dbra    d0, .epf_bclr
     move.b  #$FF, perc_ld
+    move.b  #1, perc_repatch               ; F3 re-emits its (base) patch live, no re-key
     rts
 .epf_op:
     moveq   #0, d0                          ; op index = cur_row - 3
@@ -8018,6 +8021,19 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .cf_defer:
     rts                                     ; c_trig stays set -> retry next tick (no key-on yet)
 .nochg:
+    cmpi.b  #2, c_track(a6)               ; F3: a BASE/MODE edit re-emits the patch live (no re-key)
+    bne.s   .nrepatch
+    tst.b   perc_repatch
+    beq.s   .nrepatch
+    tst.b   patch_done                      ; respect the 1-patch/tick + SCB budget
+    bne.s   .nrepatch
+    cmpi.w  #PATCH_CAP, d5
+    bhi.s   .nrepatch
+    move.b  #1, patch_done
+    move.b  #0, perc_repatch
+    move.b  c_instr(a6), d1
+    bsr     emit_ch_patch
+.nrepatch:
     tst.b   c_keyon(a6)                     ; per-tick FM-freq re-send: only while the note is on
     beq.s   .nofreqres
     tst.b   c_psweep(a6)                    ; ...pitch sweep active -> re-send (it decays the pitch each tick)
