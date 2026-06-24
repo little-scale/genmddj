@@ -182,7 +182,7 @@ env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connec
 env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
 env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
-opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=IN 2=OUT
+opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
@@ -784,10 +784,10 @@ VBlankInt:
     tst.b   opt_sync                      ; sync activity counter at row0 col32 (OUT=sent, IN=received)
     beq.s   .nosyncind
     move.l  #$40400003, (a0)
-    move.b  sync_last, d3                  ; IN: the counter read from the wire
-    cmpi.b  #2, opt_sync
+    move.b  sync_cnt, d3                  ; OUT/PULSE: the counter we drive
+    cmpi.b  #3, opt_sync
     bne.s   .syind
-    move.b  sync_cnt, d3                  ; OUT: the counter we drive
+    move.b  sync_last, d3                  ; IN: the counter read from the wire
 .syind:
     moveq   #0, d4
     bsr     draw_hex2
@@ -863,6 +863,9 @@ VBlankInt:
     tst.b   playing
     beq.s   .ps
     lea     str_play, a1
+    tst.b   sync_wait                      ; SYNC IN armed -> WAIT until the first external clock starts it
+    beq.s   .ps
+    lea     str_wait, a1
 .ps:
     moveq   #3, d3
     moveq   #35, d4
@@ -5843,7 +5846,7 @@ toggle_play:
     rts
 
 start_sync_wait:                          ; B+Start: SYNC IN -> start the transport armed to wait for the clock
-    cmpi.b  #1, opt_sync
+    cmpi.b  #3, opt_sync
     bne     toggle_play                    ; not SYNC IN -> behave as a plain Start
     tst.b   playing
     bne.s   .ssw_x                         ; already running -> leave it
@@ -6038,13 +6041,19 @@ engine_play_reset:
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
     move.b  #0, sync_cnt                   ; sync transport: set the port + arm a slave
     move.b  #0, sync_wait
-    cmpi.b  #2, opt_sync                  ; OUT -> drive TR+TH (control bits 5,6 = output)
-    bne.s   .epr_synci
+    cmpi.b  #1, opt_sync                  ; OUT -> drive TR+TH 2-bit counter (control bits 5,6 = output)
+    bne.s   .epr_syncp
     move.b  #$60, $00A1000B               ; port 2 control: TR(5) + TH(6) output
     move.b  #0, $00A10005                 ; counter starts at 0 on the lines
     bra.s   .epr_syncd
+.epr_syncp:
+    cmpi.b  #2, opt_sync                  ; PULSE -> drive TR only (Volca/PO clock); TH stays input
+    bne.s   .epr_synci
+    move.b  #$20, $00A1000B               ; port 2 control: TR(5) output
+    move.b  #0, $00A10005                 ; pulse line starts low
+    bra.s   .epr_syncd
 .epr_synci:
-    cmpi.b  #1, opt_sync                  ; IN -> inputs; arm + latch (stale levels must not count)
+    cmpi.b  #3, opt_sync                  ; IN -> inputs; arm + latch (stale levels must not count)
     bne.s   .epr_syncoff
     move.b  #0, $00A1000B                 ; port 2 control: all input
     bsr     sync_read
@@ -6553,6 +6562,23 @@ sync_out:                                 ; OUT: bump the counter and drive it o
     move.b  d0, $00A10005
     rts
 
+sync_pulse_out:                           ; PULSE: TR (bit5) high for one tick every 12 ticks (2 PPQN)
+    moveq   #0, d0
+    move.b  sync_cnt, d0
+    bne.s   .spo_low
+    move.b  #$20, $00A10005               ; tick 0 -> TR high (the clock edge)
+    bra.s   .spo_inc
+.spo_low:
+    move.b  #0, $00A10005                 ; TR low for the other 11 ticks
+.spo_inc:
+    addq.b  #1, d0
+    cmpi.b  #12, d0                          ; PULSE_DIV = 12 ticks per pulse
+    blo.s   .spo_st
+    moveq   #0, d0
+.spo_st:
+    move.b  d0, sync_cnt
+    rts
+
 sync_in_delta:                            ; IN: -> d3.b = engine ticks to run this frame (0-3); handles arming
     bsr     sync_read                     ; d0 = current counter
     moveq   #0, d3
@@ -6602,7 +6628,7 @@ engine_tick:
     bsr     wave_silence                  ; stopped -> park any sounding wave
     rts
 .play:
-    cmpi.b  #1, opt_sync                  ; SYNC IN -> external counter drives the tick (slave)
+    cmpi.b  #3, opt_sync                  ; SYNC IN -> external counter drives the tick (slave)
     beq.s   .play_slave
     ; row advance is groove-driven: row lasts active-groove[groove_pos] ticks (1 tick = 1 frame)
     addq.b  #1, g_gctr
@@ -6647,9 +6673,14 @@ engine_tick:
     lea     CHSIZE(a6), a6
     dbra    d7, .adv
 .noadv:
-    cmpi.b  #2, opt_sync                  ; SYNC OUT -> drive the 2-bit counter (one count per tick)
-    bne.s   .noout
+    cmpi.b  #1, opt_sync                  ; SYNC OUT -> drive the 2-bit counter (one count per tick)
+    bne.s   .nopout
     bsr     sync_out
+    bra.s   .noout
+.nopout:
+    cmpi.b  #2, opt_sync                  ; SYNC PULSE -> drive the Volca/PO pulse (TR, 2 PPQN)
+    bne.s   .noout
+    bsr     sync_pulse_out
 .noout:
     bsr     echo_tick                     ; capture input + drive echo targets (overrides their phrase)
     ; per-channel envelope + compose (PSG -> a3/d6, FM -> a5/d5)
@@ -9430,9 +9461,9 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
 .os:
     moveq   #0, d1
     move.b  opt_sync, d1
-    cmpi.w  #2, d1
+    cmpi.w  #3, d1
     bls.s   .osc
-    moveq   #2, d1
+    moveq   #3, d1
 .osc:
     lsl.w   #2, d1
     lea     sync_lbl, a1
@@ -9788,7 +9819,7 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     bra.s   .eo_apply
 .eo_sync:
     lea     opt_sync, a1
-    moveq   #2, d3
+    moveq   #3, d3
     moveq   #1, d4
 .eo_apply:
     bsr     adj_field
@@ -10606,14 +10637,15 @@ str_go:     dc.b "GO",0
 str_vid_n:  dc.b "NTSC",0
 str_vid_p:  dc.b "PAL ",0
 str_vid_a:  dc.b "AUTO",0
-str_syn_o:  dc.b "OFF",0
-str_syn_i:  dc.b "IN ",0
-str_syn_u:  dc.b "OUT",0
+str_syn_o:  dc.b "OFF  ",0
+str_syn_i:  dc.b "IN   ",0
+str_syn_u:  dc.b "OUT  ",0
+str_syn_p:  dc.b "PULSE",0
 str_md_s:   dc.b "SONG",0
 str_md_live: dc.b "LIVE",0
     even
 vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
-sync_lbl:   dc.l str_syn_o, str_syn_i, str_syn_u
+sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i   ; OFF=0 OUT=1 PULSE=2 IN=3
 pmode_lbl:  dc.l str_md_s, str_md_live
     even
 str_voice:  dc.b "VOICE:",0
@@ -10705,6 +10737,7 @@ type_names: dc.b "FMKTWVTNNS"               ; 2 chars per type: FM KIT WAVE TONE
 map_letters: dc.b "SCPIT"                   ; map order: SONG CHAIN PHRASE INSTR TABLE
 str_play:   dc.b "PLAY",0
 str_stop:   dc.b "STOP",0
+str_wait:   dc.b "WAIT",0
 hexd:       dc.b "0123456789ABCDEF"
 note_names: dc.b "C-C#D-D#E-F-F#G-G#A-A#B-"
 field_scol: dc.b 4, 9, 12, 13
