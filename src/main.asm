@@ -6639,7 +6639,7 @@ engine_tick:
     move.b  g_wait, d0
 .nowait:
     cmp.b   g_gctr, d0
-    bhi.s   .noadv                         ; not enough ticks elapsed yet
+    bhi     .noadv                         ; not enough ticks elapsed yet
     move.b  #0, g_gctr
     move.b  #0, g_wait                      ; W is one row only
     bsr     groove_step                   ; step the groove to the next row's slot
@@ -6647,6 +6647,8 @@ engine_tick:
     bra.s   .do_adv
 .play_slave:
     bsr     sync_in_delta                 ; d3 = clocks received this frame (0-3)
+    tst.b   sync_wait                      ; still armed (no clock yet)? hold silently -- don't play row 0 early
+    bne.s   .noadv
     moveq   #6, d0                          ; SLAVE locks to flat groove 6 (24 PPQN; ignore stored groove + W)
     add.b   d3, g_gctr
     cmp.b   g_gctr, d0
