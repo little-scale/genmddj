@@ -526,8 +526,7 @@ Start:
     move.b  #2, opt_vid                   ; OPTIONS defaults: region AUTO
     move.b  #0, opt_sync                  ;   sync OFF
     move.b  #0, opt_pal                   ;   UI palette 0
-    bsr     load_config                   ; SRAM overrides the OPTIONS defaults if a config exists
-    bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout
+    bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
     move.b  sram_size, d0
     beq.s   .sl_none
