@@ -1787,10 +1787,10 @@ col_max:                                  ; -> d1 = highest column index for cur
 .pcolr7:
     cmpi.b  #7, cur_row
     bne.s   .pcolop
-    moveq   #1, d1
+    moveq   #2, d1
     rts
 .pcolop:
-    moveq   #2, d1
+    moveq   #3, d1
     rts
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
@@ -3896,6 +3896,23 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  (p_dt,a2), d3
     move.b  d2, d4
     bsr     draw_hex1
+    move.l  d5, d0                          ; TL (base's op level) at (row, col 19), hl col 3
+    moveq   #19, d1
+    bsr     bvpos
+    move.w  d7, d0
+    moveq   #3, d1
+    bsr     selhl
+    moveq   #0, d3
+    move.b  (i_pbase,a3), d3
+    mulu.w  #INSTR_SIZE, d3
+    move.w  d6, d0
+    mulu.w  #FM_NPARM, d0
+    add.w   d0, d3
+    addi.w  #(i_op+2), d3
+    lea     instrum, a1
+    move.b  (a1,d3.w), d3                   ; base op TL
+    move.b  d2, d4
+    bsr     draw_hex2
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .rp_op
@@ -3925,6 +3942,24 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  (i_tbs,a3), d3
     move.b  d2, d4
     bsr     draw_hex1
+    moveq   #11, d3                          ; ALG (base's algorithm) at (row 11, col 17), val col 22, hl (row 7 col 2)
+    moveq   #17, d4
+    lea     str_palg, a1
+    bsr     print_at
+    moveq   #11, d0
+    moveq   #22, d1
+    bsr     bvpos
+    moveq   #7, d0
+    moveq   #2, d1
+    bsr     selhl
+    moveq   #0, d3
+    move.b  (i_pbase,a3), d3
+    mulu.w  #INSTR_SIZE, d3
+    lea     instrum, a1
+    move.b  (i_algo,a1,d3.w), d3
+    andi.w  #7, d3
+    move.b  d2, d4
+    bsr     draw_hex1
     rts
 init_perc_defaults:                       ; a3 = PERC record -> cowbell-style frequencies (~540/800/1080/1600 Hz)
     move.b  #0, (i_pbase,a3)               ; base instrument 0
@@ -3948,7 +3983,7 @@ perc_default:                             ; per op: fnum.w (block<<11|F), mul.b,
     dc.w    $2BD8
     dc.b    1, 0
 str_base:      dc.b "BASE",0
-str_perc_hdr:  dc.b "FREQ   MUL DT",0
+str_perc_hdr:  dc.b "FREQ  MUL DT TL",0
 str_pmode:     dc.b "MODE",0
 str_pfix:      dc.b "FIXED",0
 str_ppit:      dc.b "PITCH",0
@@ -3956,6 +3991,7 @@ str_phld:      dc.b "HLD",0
 str_pswp:      dc.b "SWP",0
 str_ptbl:      dc.b "TBL",0
 str_ptbs:      dc.b "TBS",0
+str_palg:      dc.b "ALG",0
     even
 pcmod_lbl:     dc.l str_pfix, str_ppit
     even
@@ -3964,8 +4000,22 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     beq.s   .epf_row2
     cmpi.b  #7, cur_row
     bne     .epf_op
-    tst.b   cur_col                          ; row 7: TBL / TBS
-    bne.s   .epf_tbs
+    moveq   #0, d0                            ; row 7: TBL / TBS / ALG
+    move.b  cur_col, d0
+    beq.s   .epf_tbl
+    cmpi.b  #1, d0
+    beq.s   .epf_tbs
+    moveq   #0, d0                            ; col 2 = ALG -> the base instrument's algorithm
+    move.b  (i_pbase,a3), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    lea     (i_algo,a1), a1
+    moveq   #7, d3
+    moveq   #1, d4
+    jsr     adj_field
+    bra     .epf_inval                       ; base changed -> live re-patch + pshadow clear
+.epf_tbl:
     lea     (i_tbl,a3), a1
     jmp     edit_tbl_field
 .epf_tbs:
@@ -4006,6 +4056,7 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     dbra    d0, .epf_bclr
     move.b  #$FF, perc_ld
     move.b  #1, perc_repatch               ; F3 re-emits its (base) patch live, no re-key
+    move.b  #1, need_clear                 ; base changed -> re-render the base-derived ALG/TL fields
     rts
 .epf_op:
     moveq   #0, d0                          ; op index = cur_row - 3
@@ -4017,8 +4068,26 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     tst.b   cur_col
     beq.s   .epf_freq                       ; col 0 = FREQ (Hz)
     cmpi.b  #1, cur_col
-    bne.s   .epf_dt                         ; col 2 = DT
-    lea     (p_mul,a2), a1                 ; col 1 = MUL 0-15
+    beq.s   .epf_mul                        ; col 1 = MUL
+    cmpi.b  #2, cur_col
+    beq.s   .epf_dt                         ; col 2 = DT
+    moveq   #0, d0                            ; col 3 = TL -> the base op's level
+    move.b  (i_pbase,a3), d0
+    mulu.w  #INSTR_SIZE, d0
+    moveq   #0, d1
+    move.b  cur_row, d1
+    subq.b  #3, d1
+    mulu.w  #FM_NPARM, d1
+    add.w   d1, d0
+    addi.w  #(i_op+2), d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    moveq   #127, d3
+    moveq   #16, d4
+    jsr     adj_field
+    bra     .epf_inval                       ; base changed -> live re-patch
+.epf_mul:
+    lea     (p_mul,a2), a1                 ; MUL 0-15
     moveq   #15, d3
     moveq   #1, d4
     jmp     adj_field
