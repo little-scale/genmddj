@@ -3927,8 +3927,17 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     moveq   #0, d1
     bsr     selhl
     move.b  (i_tbl,a3), d3
+    cmpi.b  #$FF, d3
+    bne.s   .rp_tblh
+    move.w  #'-', d0                        ; -- = no table
+    add.w   d2, d0
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+    bra.s   .rp_tbld
+.rp_tblh:
     move.b  d2, d4
     bsr     draw_hex2
+.rp_tbld:
     moveq   #11, d3                          ; TBS at (row 11, col 11), val col 15, hl (row 7 col 1)
     moveq   #11, d4
     lea     str_ptbs, a1
@@ -3963,6 +3972,8 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     rts
 init_perc_defaults:                       ; a3 = PERC record -> cowbell-style frequencies (~540/800/1080/1600 Hz)
     move.b  #0, (i_pbase,a3)               ; base instrument 0
+    move.b  #$FF, (i_tbl,a3)               ; no macro table (a stray table modifies the patch over the phrase)
+    move.b  #0, (i_tbs,a3)
     lea     perc_default, a0
     lea     (i_op,a3), a1
     moveq   #4-1, d0
