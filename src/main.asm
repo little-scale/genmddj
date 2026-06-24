@@ -114,7 +114,7 @@ DBLTAP_FRAMES equ 16               ; max frames between B-taps to count as a dou
 pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
 patch_done equ $00FFE3BE           ; 1 = an FM operator patch was emitted this tick (budget 1/tick)
 PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write patch (SCB headroom)
-YM_CAP     equ 43                  ; max ym_count before emitting a note's freq/key
+YM_CAP     equ 38                  ; max ym_count before a note's freq/key (keeps a tick well under the buffer)
 lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $B0 value (FB<<3|ALGO)
 lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
 lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
@@ -8688,6 +8688,10 @@ push_scb:
 .nopsg:
     moveq   #0, d7                        ; --- YM section (triples) ---
     move.b  ym_count, d7                 ; running triple count (composed note SCB)
+    cmpi.b  #44, d7                        ; HARD GUARD: keep YM data clear of the DAC state at $1FB0+ --
+    bls.s   .ps_ymok                       ;   an overrun corrupts the DAC bank/ptr, Z80 reads bad ROM -> crash
+    moveq   #44, d7                        ;   (caps below should keep us well under this; this is the net)
+.ps_ymok:
     lea     Z80_RAM+$1F21, a2            ; mailbox YM write pointer
     tst.b   d7
     beq.s   .ymap
