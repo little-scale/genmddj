@@ -99,6 +99,7 @@ perc_keys  equ $00FFDFE8           ; PERC: current key mask (bits 0-3 = the 4 op
 perc_mask  equ $00FFDFE9           ; PERC: C-selected operator mask this row
 perc_cset  equ $00FFDFEA           ; PERC: 1 if C set the operator mask this row
 perc_ld    equ $00FFDFEB           ; PERC: instrument # loaded into perc_live ($FF = none)
+perc_note  equ $00FFDFEC           ; PERC: 4 live operator notes 0-95 ($FF = voice off) for the display
 last_cmd   equ $00FFE3A0           ; PHRASE C-column memory: last command entered (B-tap repeats it)
 scr_row    equ $00FFE3A1           ; saved cursor row per screen (4 bytes, indexed by SCR_*)
 scr_col    equ $00FFE3A5           ; saved cursor col per screen (4 bytes)
@@ -497,6 +498,7 @@ Start:
     move.b  #0, sel_active                ; not in block-select mode
     move.b  #0, ch3_spc                   ; PERC CH3 special mode off at boot
     move.b  #$FF, perc_ld                 ; PERC: no live cluster loaded yet
+    move.l  #$FFFFFFFF, perc_note         ; PERC: all 4 display notes = off
     move.b  #0, echo_mode                 ; ECHO off; sensible tap/reduction defaults
     move.b  #2, echo_tap1
     move.b  #4, echo_tap2
@@ -3813,7 +3815,20 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.w  d7, d0
     moveq   #0, d1
     bsr     selhl
-    move.w  (p_fnum,a2), d0                 ; live (perc_live) while this instrument is playing on F3, else stored
+    tst.b   (i_pmode,a3)                    ; PITCH mode -> note name; FIXED -> Hz
+    beq.s   .rp_fixed
+    moveq   #0, d3
+    move.b  d6, d3
+    lea     perc_note, a1
+    move.b  (a1,d3.w), d3                   ; perc_note[op] (note 0-95 or $FF)
+    move.b  d2, d4
+    bsr     draw_note
+    moveq   #$20, d0                        ; clear the 4th cell (note name is 3 wide, Hz is 4)
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    bra.s   .rp_freqdone
+.rp_fixed:
+    move.w  (p_fnum,a2), d0                 ; live perc_live while playing on F3, else stored
     tst.b   playing
     beq.s   .rp_stf
     move.b  cur_instr, d3
@@ -3829,6 +3844,7 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.l  (sp)+, d2
     move.b  d2, d4
     bsr     draw_dec4
+.rp_freqdone:
     move.l  d5, d0                          ; MUL at (row, col 13), hl col 1
     moveq   #13, d1
     bsr     bvpos
@@ -8193,12 +8209,14 @@ perc_note_route:
     bra.s   .pnr_pop
 .pnr_pitched:
     move.b  #$FF, perc_ld                  ; pitched: perc_live is note-driven, not the stored cluster
+    move.l  #$FFFFFFFF, perc_note          ; all display notes off until set below
     move.w  d2, d6                          ; d6 = note (survives fm_freq)
     moveq   #1, d7                          ; perc_keys: op0 (root) always
     lea     perc_live, a2
     move.w  d6, d0
     bsr     perc_note_fnum                 ; op0 = note
     move.w  d3, (a2)
+    move.b  d6, perc_note                  ; display: op0 = root
     moveq   #0, d0                          ; C offsets from c_chord[track]
     move.b  c_track(a6), d0
     lea     c_chord, a1
@@ -8210,6 +8228,7 @@ perc_note_route:
     beq.s   .pnr_lo
     ext.w   d0
     add.w   d6, d0
+    move.b  d0, perc_note+1
     bsr     perc_note_fnum
     move.w  d3, (2,a2)
     bset    #1, d7
@@ -8219,6 +8238,7 @@ perc_note_route:
     beq.s   .pnr_pk
     ext.w   d0
     add.w   d6, d0
+    move.b  d0, perc_note+2
     bsr     perc_note_fnum
     move.w  d3, (4,a2)
     bset    #2, d7
