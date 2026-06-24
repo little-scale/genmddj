@@ -8390,7 +8390,6 @@ perc_note_route:
     adda.w  d0, a0
     cmpi.b  #5, (i_type,a0)
     bne     .pnr_pop
-    move.b  #$FF, pshadow+2                 ; F3 PERC re-emits its base patch every note (algo/special mode stay put across the wrap)
     tst.b   (i_pmode,a0)
     bne.s   .pnr_pitched
     move.b  c_instr(a6), d0                ; FIXED: (re)load the stored cluster on a new patch
@@ -8526,6 +8525,43 @@ perc_freq_send:
     lea     FM_NPARM(a2), a2
     addq.l  #2, a3
     dbra    d3, .pfs_op
+    moveq   #0, d0                          ; --- re-assert the channel patch the wrap loses: $B0 algo/fb, $B4 pan ---
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a2
+    adda.w  d0, a2
+    moveq   #0, d0                          ; PERC -> its base instrument supplies the channel registers
+    move.b  (i_pbase,a2), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a2
+    adda.w  d0, a2
+    move.b  c_ympart(a6), (a5)+            ; $B0 = (FB<<3)|ALGO
+    moveq   #0, d0
+    move.b  c_ymchreg(a6), d0
+    addi.w  #$B0, d0
+    move.b  d0, (a5)+
+    move.b  (i_fb,a2), d1
+    lsl.b   #3, d1
+    move.b  (i_algo,a2), d0
+    or.b    d1, d0
+    move.b  d0, (a5)+
+    addq.w  #1, d5
+    move.b  c_ympart(a6), (a5)+            ; $B4 = (pan<<6)|(AMS<<4)|FMS
+    moveq   #0, d0
+    move.b  c_ymchreg(a6), d0
+    addi.w  #$B4, d0
+    move.b  d0, (a5)+
+    move.b  (i_pan,a2), d0
+    lsl.b   #6, d0
+    move.b  (i_ams,a2), d1
+    andi.b  #3, d1
+    lsl.b   #4, d1
+    or.b    d1, d0
+    move.b  (i_fms,a2), d1
+    andi.b  #7, d1
+    or.b    d1, d0
+    move.b  d0, (a5)+
+    addq.w  #1, d5
     movem.l (sp)+, d0-d3/a2-a4
     rts
 perc_freg:                                ; per record op (S1,S3,S2,S4): {DT/MUL reg, freq-hi, freq-lo}
