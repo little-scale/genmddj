@@ -8098,8 +8098,10 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  #0, (a5)+                       ; key-on: part0, $28
     move.b  #$28, (a5)+
     move.b  c_ymkey(a6), d3
-    tst.b   ch3_spc                        ; PERC: key only the current operator set
+    tst.b   ch3_spc                        ; PERC special mode: key only the chord operators...
     beq.s   .cf_konall
+    cmpi.b  #2, c_track(a6)               ; ...but ONLY on F3; every other channel keys all four
+    bne.s   .cf_konall
     move.b  perc_keys, d4
     lsl.b   #4, d4
     or.b    d4, d3
