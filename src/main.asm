@@ -284,6 +284,7 @@ i_pbase    equ 1                    ; PERC: base instrument # (borrows algo/fb/T
 p_fnum     equ 0                    ; PERC op: F-number word (block<<11 | 11-bit F-number)
 p_mul      equ 2                    ; PERC op: frequency multiplier 0-15
 p_dt       equ 3                    ; PERC op: detune 0-7
+i_pmode    equ 63                   ; PERC: 0 = fixed-frequency, 1 = pitched (note+C-driven chord)
 ; PSG (TONE/NOISE) fields overlay the FM-op bytes (an instrument is FM or PSG, never both)
 ip_vol     equ 8                    ; PSG peak/hold volume 0-F
 ip_atk     equ 9                    ; attack: ticks per volume step up (0 = instant)
@@ -1773,9 +1774,13 @@ col_max:                                  ; -> d1 = highest column index for cur
 .izero:
     moveq   #0, d1
     rts
-.pcol:                                    ; PERC: rows 0-2 single col; op rows 3-6 = FREQ/MUL/DT
-    cmpi.b  #3, cur_row
+.pcol:                                    ; PERC: rows 0-1 single col; row 2 = BASE/MODE; op rows = FREQ/MUL/DT
+    cmpi.b  #2, cur_row
     blo.s   .izero
+    bne.s   .pcolop
+    moveq   #1, d1
+    rts
+.pcolop:
     moveq   #2, d1
     rts
 .fm:
@@ -3761,6 +3766,18 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  (i_pbase,a3), d3
     move.b  d2, d4
     bsr     draw_hex2
+    moveq   #2, d0                          ; MODE (FIXED/PITCH) at (row 5, col 11), hl on (row 2, col 1)
+    moveq   #1, d1
+    bsr     selhl
+    moveq   #0, d0
+    move.b  (i_pmode,a3), d0
+    andi.w  #1, d0
+    lsl.w   #2, d0
+    lea     pcmod_lbl, a1
+    move.l  (a1,d0.w), a1
+    moveq   #5, d3
+    moveq   #11, d4
+    bsr     print_hl
     moveq   #6, d3                          ; column header (row 6, col 5)
     moveq   #5, d4
     lea     str_perc_hdr, a1
@@ -3857,20 +3874,32 @@ perc_default:                             ; per op: fnum.w (block<<11|F), mul.b,
     dc.b    1, 0
 str_base:      dc.b "BASE",0
 str_perc_hdr:  dc.b "FREQ   MUL DT",0
+str_pmode:     dc.b "MODE",0
+str_pfix:      dc.b "FIXED",0
+str_ppit:      dc.b "PITCH",0
+    even
+pcmod_lbl:     dc.l str_pfix, str_ppit
     even
 edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows 3-6 = ops; d2 = dpad
     cmpi.b  #2, cur_row
     bne.s   .epf_op
-    lea     (i_pbase,a3), a1               ; BASE = base instrument 0..NINSTR_ED
+    tst.b   cur_col
+    bne.s   .epf_mode                       ; col 1 = MODE
+    lea     (i_pbase,a3), a1               ; col 0 = BASE = base instrument 0..NINSTR_ED
     moveq   #NINSTR_ED, d3
     moveq   #1, d4
     jsr     adj_field
-    lea     pshadow, a1                    ; base timbre changed -> force a re-patch on the next note
+.epf_inval:
+    lea     pshadow, a1                    ; timbre/mode changed -> force a re-patch on the next note
     moveq   #NCH-1, d0
 .epf_bclr:
     move.b  #$FF, (a1)+
     dbra    d0, .epf_bclr
+    move.b  #$FF, perc_ld
     rts
+.epf_mode:
+    bchg    #0, (i_pmode,a3)                ; toggle fixed/pitched
+    bra.s   .epf_inval
 .epf_op:
     moveq   #0, d0                          ; op index = cur_row - 3
     move.b  cur_row, d0
@@ -7270,12 +7299,6 @@ exec_cmd:
     move.b  d2, (a4,d3.w)
     lea     c_cphase, a4
     move.b  #0, (a4,d3.w)                 ; restart the arp phase
-    cmpi.b  #2, c_track(a6)               ; F3 -> also stash the PERC operator mask (perc_note_route uses it iff PERC)
-    bne     .cmddone
-    move.b  d2, d3
-    andi.b  #$0F, d3
-    move.b  d3, perc_mask
-    move.b  #1, perc_cset
     bra     .cmddone
 .cmd_p:
     move.b  #1, p_set                      ; P on this row -> note-on keeps c_bend
@@ -8140,57 +8163,84 @@ ch_freq_send:
 .cfs_norm:
     clr.b   ch3_spc                        ; F3 not PERC -> special mode off
     bra     fm_freq_send
-; F3 PERC note routing: a6=ch, d2=note(0-95). Loads perc_live from the instrument on a new patch, then
-; (with C this row) writes the note's F-number into the C-masked operators; without C keys all four.
+; F3 PERC note routing. a6=ch, d2=note. FIXED: (re)load the stored cluster, key all four. PITCHED: op1=note,
+; op2=note+C.hi, op3=note+C.lo (a 0 nibble skips that voice); op4 (table TSP) handled elsewhere.
 perc_note_route:
     cmpi.b  #2, c_track(a6)
     bne     .pnr_ret
-    movem.l d0-d4/a0-a2, -(sp)
+    movem.l d0-d7/a0-a2, -(sp)
     moveq   #0, d0
     move.b  c_instr(a6), d0
     mulu.w  #INSTR_SIZE, d0
     lea     instrum, a0
     adda.w  d0, a0
     cmpi.b  #5, (i_type,a0)
-    bne.s   .pnr_pop
-    move.b  c_instr(a6), d0                ; new patch -> (re)load the stored cluster into perc_live
+    bne     .pnr_pop
+    tst.b   (i_pmode,a0)
+    bne.s   .pnr_pitched
+    move.b  c_instr(a6), d0                ; FIXED: (re)load the stored cluster on a new patch
     cmp.b   perc_ld, d0
-    beq.s   .pnr_loaded
+    beq.s   .pnr_fk
     move.b  d0, perc_ld
-    clr.b   perc_keys
     lea     (i_op,a0), a1
     lea     perc_live, a2
     move.w  (a1), (a2)+
     move.w  (FM_NPARM,a1), (a2)+
     move.w  (2*FM_NPARM,a1), (a2)+
     move.w  (3*FM_NPARM,a1), (a2)+
-.pnr_loaded:
-    tst.b   perc_cset                      ; no C this row -> key all four at their current frequencies
-    bne.s   .pnr_cset
+.pnr_fk:
     move.b  #$0F, perc_keys
     bra.s   .pnr_pop
-.pnr_cset:
-    move.w  d2, d0                          ; note -> F-number word = (d1<<8)|d2
+.pnr_pitched:
+    move.b  #$FF, perc_ld                  ; pitched: perc_live is note-driven, not the stored cluster
+    move.w  d2, d6                          ; d6 = note (survives fm_freq)
+    moveq   #1, d7                          ; perc_keys: op0 (root) always
+    lea     perc_live, a2
+    move.w  d6, d0
+    bsr     perc_note_fnum                 ; op0 = note
+    move.w  d3, (a2)
+    moveq   #0, d0                          ; C offsets from c_chord[track]
+    move.b  c_track(a6), d0
+    lea     c_chord, a1
+    move.b  (a1,d0.w), d5
+    tst.b   d5
+    beq.s   .pnr_pk
+    move.b  d5, d0                          ; op1 = note + hi nibble (skip if 0)
+    lsr.b   #4, d0
+    beq.s   .pnr_lo
+    ext.w   d0
+    add.w   d6, d0
+    bsr     perc_note_fnum
+    move.w  d3, (2,a2)
+    bset    #1, d7
+.pnr_lo:
+    moveq   #$0F, d0                        ; op2 = note + lo nibble (skip if 0)
+    and.b   d5, d0
+    beq.s   .pnr_pk
+    ext.w   d0
+    add.w   d6, d0
+    bsr     perc_note_fnum
+    move.w  d3, (4,a2)
+    bset    #2, d7
+.pnr_pk:
+    move.b  d7, perc_keys
+.pnr_pop:
+    movem.l (sp)+, d0-d7/a0-a2
+.pnr_ret:
+    rts
+perc_note_fnum:                           ; d0 = note -> d3 = F-number word (clamped 0..95). clobbers d0-d2/d4/a1
+    tst.w   d0
+    bpl.s   .pnf_lo
+    moveq   #0, d0
+.pnf_lo:
+    cmpi.w  #95, d0
+    bls.s   .pnf_ok
+    moveq   #95, d0
+.pnf_ok:
     bsr     fm_freq
     move.w  d1, d3
     lsl.w   #8, d3
     or.w    d2, d3
-    move.b  perc_mask, d0
-    or.b    d0, perc_keys                  ; accumulate the keyed operators
-    lea     perc_live, a2
-    moveq   #0, d4
-.pnr_op:
-    btst    d4, d0
-    beq.s   .pnr_nop
-    move.w  d3, (a2)                         ; perc_live[op] = the note
-.pnr_nop:
-    addq.l  #2, a2
-    addq.w  #1, d4
-    cmpi.w  #4, d4
-    bne.s   .pnr_op
-.pnr_pop:
-    movem.l (sp)+, d0-d4/a0-a2
-.pnr_ret:
     rts
 
 ; emit the 4 CH3-special operator frequencies + per-op MUL/DT. a6=ch (PERC), a5/d5=SCB.
