@@ -3864,7 +3864,13 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     lea     (i_pbase,a3), a1               ; BASE = base instrument 0..NINSTR_ED
     moveq   #NINSTR_ED, d3
     moveq   #1, d4
-    jmp     adj_field
+    jsr     adj_field
+    lea     pshadow, a1                    ; base timbre changed -> force a re-patch on the next note
+    moveq   #NCH-1, d0
+.epf_bclr:
+    move.b  #$FF, (a1)+
+    dbra    d0, .epf_bclr
+    rts
 .epf_op:
     moveq   #0, d0                          ; op index = cur_row - 3
     move.b  cur_row, d0
@@ -7256,28 +7262,20 @@ exec_cmd:
     move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_c:
-    cmpi.b  #2, c_track(a6)               ; F3 + PERC -> C is a per-operator mask, not a chord
-    bne.s   .cc_chord
-    moveq   #0, d3
-    move.b  c_instr(a6), d3
-    mulu.w  #INSTR_SIZE, d3
-    lea     instrum, a4
-    cmpi.b  #5, (i_type,a4,d3.w)
-    bne.s   .cc_chord
-    move.b  (3,a1,d1.w), d2               ; low nibble = the 4 operator rows
-    andi.b  #$0F, d2
-    move.b  d2, perc_mask
-    move.b  #1, perc_cset
-    bra     .cmddone
-.cc_chord:
     move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
-    move.b  (3,a1,d1.w), d2               ; C xy = chord offsets (x<<4)|y semitones; 0 = off
+    move.b  (3,a1,d1.w), d2               ; C xy = chord offsets / (PERC) operator mask
     moveq   #0, d3
     move.b  c_track(a6), d3
     lea     c_chord, a4
     move.b  d2, (a4,d3.w)
     lea     c_cphase, a4
     move.b  #0, (a4,d3.w)                 ; restart the arp phase
+    cmpi.b  #2, c_track(a6)               ; F3 -> also stash the PERC operator mask (perc_note_route uses it iff PERC)
+    bne     .cmddone
+    move.b  d2, d3
+    andi.b  #$0F, d3
+    move.b  d3, perc_mask
+    move.b  #1, perc_cset
     bra     .cmddone
 .cmd_p:
     move.b  #1, p_set                      ; P on this row -> note-on keeps c_bend
