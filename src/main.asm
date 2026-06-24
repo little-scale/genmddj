@@ -1709,9 +1709,9 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     bne.s   .crp
     moveq   #13, d1                         ; NOISE: 1 + 12 fields
 .crp:
-    cmpi.b  #5, d0                          ; type 5 = PERC: INST, TYPE, BASE, OP1-4 (rows 0-6)
+    cmpi.b  #5, d0                          ; type 5 = PERC: INST,TYPE,BASE,OP1-4,TBL/TBS (rows 0-7)
     bne.s   .crd
-    moveq   #6, d1
+    moveq   #7, d1
 .crd:
     rts
 .crfm:
@@ -1776,11 +1776,16 @@ col_max:                                  ; -> d1 = highest column index for cur
 .izero:
     moveq   #0, d1
     rts
-.pcol:                                    ; PERC: rows 0-1 single col; row 2 = BASE/MODE/HLD/SWP; ops = FREQ/MUL/DT
+.pcol:                                    ; PERC: row 2 = BASE/MODE/HLD/SWP; row 7 = TBL/TBS; ops = FREQ/MUL/DT
     cmpi.b  #2, cur_row
     blo.s   .izero
-    bne.s   .pcolop
+    bne.s   .pcolr7
     moveq   #3, d1
+    rts
+.pcolr7:
+    cmpi.b  #7, cur_row
+    bne.s   .pcolop
+    moveq   #1, d1
     rts
 .pcolop:
     moveq   #2, d1
@@ -3892,6 +3897,32 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .rp_op
+    moveq   #11, d3                          ; TBL ($FF=none) at (row 11, col 1), val col 6, hl (row 7 col 0)
+    moveq   #1, d4
+    lea     str_ptbl, a1
+    bsr     print_at
+    moveq   #11, d0
+    moveq   #6, d1
+    bsr     bvpos
+    moveq   #7, d0
+    moveq   #0, d1
+    bsr     selhl
+    move.b  (i_tbl,a3), d3
+    move.b  d2, d4
+    bsr     draw_hex2
+    moveq   #11, d3                          ; TBS at (row 11, col 11), val col 15, hl (row 7 col 1)
+    moveq   #11, d4
+    lea     str_ptbs, a1
+    bsr     print_at
+    moveq   #11, d0
+    moveq   #15, d1
+    bsr     bvpos
+    moveq   #7, d0
+    moveq   #1, d1
+    bsr     selhl
+    move.b  (i_tbs,a3), d3
+    move.b  d2, d4
+    bsr     draw_hex1
     rts
 init_perc_defaults:                       ; a3 = PERC record -> cowbell-style frequencies (~540/800/1080/1600 Hz)
     move.b  #0, (i_pbase,a3)               ; base instrument 0
@@ -3921,12 +3952,26 @@ str_pfix:      dc.b "FIXED",0
 str_ppit:      dc.b "PITCH",0
 str_phld:      dc.b "HLD",0
 str_pswp:      dc.b "SWP",0
+str_ptbl:      dc.b "TBL",0
+str_ptbs:      dc.b "TBS",0
     even
 pcmod_lbl:     dc.l str_pfix, str_ppit
     even
 edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows 3-6 = ops; d2 = dpad
     cmpi.b  #2, cur_row
+    beq.s   .epf_row2
+    cmpi.b  #7, cur_row
     bne.s   .epf_op
+    tst.b   cur_col                          ; row 7: TBL / TBS
+    bne.s   .epf_tbs
+    lea     (i_tbl,a3), a1
+    jmp     edit_tbl_field
+.epf_tbs:
+    lea     (i_tbs,a3), a1
+    moveq   #15, d3
+    moveq   #1, d4
+    jmp     adj_field
+.epf_row2:
     moveq   #0, d0
     move.b  cur_col, d0
     beq.s   .epf_base                       ; col 0 = BASE
@@ -8307,7 +8352,35 @@ perc_note_fnum:                           ; d0 = note -> d3 = F-number word (cla
     rts
 
 ; emit the 4 CH3-special operator frequencies + per-op MUL/DT. a6=ch (PERC), a5/d5=SCB.
+; First (pitched mode) resolves op4 from the table TSP: table set + TBS=0 + this row's TSP != 0 -> op4 = root+TSP.
 perc_freq_send:
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    tst.b   (i_pmode,a1)
+    beq.s   .pfs_emit                       ; FIXED mode -> leave perc_keys (all four) untouched
+    cmpi.b  #$FF, (i_tbl,a1)               ; PITCHED: 4th voice needs a table...
+    beq.s   .pfs_no4
+    tst.b   (i_tbs,a1)                      ; ...with TBS=0 (per-note step)...
+    bne.s   .pfs_no4
+    move.b  c_ttsp(a6), d0                 ; ...and a non-zero TSP on this row
+    ext.w   d0
+    beq.s   .pfs_no4
+    moveq   #0, d1
+    move.b  perc_note, d1                  ; op4 = root + TSP
+    add.w   d0, d1
+    move.b  d1, perc_note+3
+    move.w  d1, d0
+    bsr     perc_note_fnum
+    move.w  d3, perc_live+6
+    bset    #3, perc_keys
+    bra.s   .pfs_emit
+.pfs_no4:
+    bclr    #3, perc_keys                   ; pitched, no table voice -> op4 silent
+    move.b  #$FF, perc_note+3
+.pfs_emit:
     movem.l d0-d3/a2-a4, -(sp)
     moveq   #0, d0
     move.b  c_instr(a6), d0
