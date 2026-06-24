@@ -1776,11 +1776,11 @@ col_max:                                  ; -> d1 = highest column index for cur
 .izero:
     moveq   #0, d1
     rts
-.pcol:                                    ; PERC: rows 0-1 single col; row 2 = BASE/MODE; op rows = FREQ/MUL/DT
+.pcol:                                    ; PERC: rows 0-1 single col; row 2 = BASE/MODE/HLD/SWP; ops = FREQ/MUL/DT
     cmpi.b  #2, cur_row
     blo.s   .izero
     bne.s   .pcolop
-    moveq   #1, d1
+    moveq   #3, d1
     rts
 .pcolop:
     moveq   #2, d1
@@ -3780,6 +3780,32 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     moveq   #5, d3
     moveq   #11, d4
     bsr     print_hl
+    moveq   #5, d3                          ; HLD (gate) at (row 5, col 17), val col 21, hl col 2
+    moveq   #17, d4
+    lea     str_phld, a1
+    bsr     print_at
+    moveq   #5, d0
+    moveq   #21, d1
+    bsr     bvpos
+    moveq   #2, d0
+    moveq   #2, d1
+    bsr     selhl
+    move.b  (i_hld,a3), d3
+    move.b  d2, d4
+    bsr     draw_hex1
+    moveq   #5, d3                          ; SWP (sweep) at (row 5, col 23), val col 27, hl col 3
+    moveq   #23, d4
+    lea     str_pswp, a1
+    bsr     print_at
+    moveq   #5, d0
+    moveq   #27, d1
+    bsr     bvpos
+    moveq   #2, d0
+    moveq   #3, d1
+    bsr     selhl
+    move.b  (i_psweep,a3), d3
+    move.b  d2, d4
+    bsr     draw_hex2
     moveq   #6, d3                          ; column header (row 6, col 5)
     moveq   #5, d4
     lea     str_perc_hdr, a1
@@ -3893,18 +3919,38 @@ str_perc_hdr:  dc.b "FREQ   MUL DT",0
 str_pmode:     dc.b "MODE",0
 str_pfix:      dc.b "FIXED",0
 str_ppit:      dc.b "PITCH",0
+str_phld:      dc.b "HLD",0
+str_pswp:      dc.b "SWP",0
     even
 pcmod_lbl:     dc.l str_pfix, str_ppit
     even
 edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows 3-6 = ops; d2 = dpad
     cmpi.b  #2, cur_row
     bne.s   .epf_op
-    tst.b   cur_col
-    bne.s   .epf_mode                       ; col 1 = MODE
-    lea     (i_pbase,a3), a1               ; col 0 = BASE = base instrument 0..NINSTR_ED
+    moveq   #0, d0
+    move.b  cur_col, d0
+    beq.s   .epf_base                       ; col 0 = BASE
+    cmpi.b  #1, d0
+    beq.s   .epf_mode                       ; col 1 = MODE
+    cmpi.b  #2, d0
+    bne.s   .epf_swp                        ; col 3 = SWP
+    lea     (i_hld,a3), a1                  ; col 2 = HLD 0-15
+    moveq   #15, d3
+    moveq   #1, d4
+    jmp     adj_field
+.epf_swp:
+    lea     (i_psweep,a3), a1               ; col 3 = SWP byte (depth/rate nibbles)
+    moveq   #255, d3
+    moveq   #16, d4
+    jmp     adj_field
+.epf_base:
+    lea     (i_pbase,a3), a1
     moveq   #NINSTR_ED, d3
     moveq   #1, d4
     jsr     adj_field
+    bra.s   .epf_inval
+.epf_mode:
+    bchg    #0, (i_pmode,a3)                ; toggle fixed/pitched
 .epf_inval:
     lea     pshadow, a1                    ; timbre/mode changed -> force a re-patch on the next note
     moveq   #NCH-1, d0
@@ -3913,9 +3959,6 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     dbra    d0, .epf_bclr
     move.b  #$FF, perc_ld
     rts
-.epf_mode:
-    bchg    #0, (i_pmode,a3)                ; toggle fixed/pitched
-    bra.s   .epf_inval
 .epf_op:
     moveq   #0, d0                          ; op index = cur_row - 3
     move.b  cur_row, d0
