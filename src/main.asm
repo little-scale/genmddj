@@ -8713,8 +8713,10 @@ push_scb:
     move.b  d0, (a2)+
     addq.b  #1, d7
 .nolfo22:
-    tst.b   repatch                       ; Q/X command or FM edit -> append the patch to THIS push
+    tst.b   repatch                       ; Q/X command or FM edit -> append F1's patch to THIS push
     beq.s   .noym
+    cmpi.b  #PATCH_CAP, d7                 ; ...only with ~30 triples of headroom, else the patch overruns
+    bhi.s   .noym                          ;    the buffer; leave repatch set and append it next tick instead
     move.b  #0, repatch
     bsr     ym_build_patch                ; appends into (a2)+, d7 += patch count (no race)
 .noym:
