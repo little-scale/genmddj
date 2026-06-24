@@ -7642,8 +7642,15 @@ env_ch:                                   ; a6 = channel
     lsl.w   #2, d1
     add.w   d1, d3
     lea     tbl_ram, a1
-    move.b  (t_vol,a1,d3.w), c_tvol(a6)   ; VOL column ($FF = no change) -> live carrier-TL override
-    move.b  (t_tsp,a1,d3.w), c_ttsp(a6)   ; signed TSP -> fm_freq_send
+    move.b  (t_tsp,a1,d3.w), c_ttsp(a6)   ; signed TSP -> fm_freq_send (drives op4 on PERC)
+    move.b  #$FF, c_tvol(a6)              ; default: no VOL override
+    moveq   #0, d1                          ; PERC reads the TSP column ONLY -- VOL must not touch the patch
+    move.b  c_instr(a6), d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a4
+    cmpi.b  #5, (i_type,a4,d1.w)
+    beq     .e_done
+    move.b  (t_vol,a1,d3.w), c_tvol(a6)   ; non-PERC FM: VOL column ($FF = no change) -> carrier-TL override
     bra     .e_done
 .ec_psg:
     move.b  c_estate(a6), d0
