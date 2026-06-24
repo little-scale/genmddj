@@ -1711,9 +1711,9 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     bne.s   .crp
     moveq   #13, d1                         ; NOISE: 1 + 12 fields
 .crp:
-    cmpi.b  #5, d0                          ; type 5 = PERC: INST,TYPE,BASE,OP1-4,TBL/TBS (rows 0-7)
+    cmpi.b  #5, d0                          ; PERC: INST,TYPE,BASE,MODE,HLD,SWP,OP1-4,TBL/TBS/ALG (rows 0-10)
     bne.s   .crd
-    moveq   #7, d1
+    moveq   #10, d1
 .crd:
     rts
 .crfm:
@@ -1778,14 +1778,10 @@ col_max:                                  ; -> d1 = highest column index for cur
 .izero:
     moveq   #0, d1
     rts
-.pcol:                                    ; PERC: row 2 = BASE/MODE/HLD/SWP; row 7 = TBL/TBS; ops = FREQ/MUL/DT
-    cmpi.b  #2, cur_row
+.pcol:                                    ; PERC: rows 0-5 single col; rows 6-9 = ops (FREQ/MUL/DT/TL); row 10 = TBL/TBS/ALG
+    cmpi.b  #6, cur_row
     blo.s   .izero
-    bne.s   .pcolr7
-    moveq   #3, d1
-    rts
-.pcolr7:
-    cmpi.b  #7, cur_row
+    cmpi.b  #10, cur_row
     bne.s   .pcolop
     moveq   #2, d1
     rts
@@ -3762,11 +3758,11 @@ perc_hz:                                  ; d0 = fnum word (block<<11|F) -> d3 =
     rts
 render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): base instr + 4 op frequencies
     bsr     render_inst_hdr               ; INST (row 3) + TYPE (row 4); a3 = instrum[cur_instr]
-    moveq   #5, d3                          ; BASE label (row 5, col 1)
+    moveq   #6, d3                          ; BASE label (row 6, col 1)
     moveq   #1, d4
     lea     str_base, a1
     bsr     print_at
-    moveq   #5, d0                          ; BASE value (row 5, col 6), hl if cursor row 2
+    moveq   #6, d0                          ; BASE value (row 6, col 6), hl cursor row 2
     moveq   #6, d1
     bsr     bvpos
     moveq   #2, d0
@@ -3775,8 +3771,12 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  (i_pbase,a3), d3
     move.b  d2, d4
     bsr     draw_hex2
-    moveq   #2, d0                          ; MODE (FIXED/PITCH) at (row 5, col 11), hl on (row 2, col 1)
-    moveq   #1, d1
+    moveq   #7, d3                          ; MODE label (row 7, col 1)
+    moveq   #1, d4
+    lea     str_pmode, a1
+    bsr     print_at
+    moveq   #3, d0                          ; MODE value (FIXED/PITCH) (row 7, col 6), hl cursor row 3
+    moveq   #0, d1
     bsr     selhl
     moveq   #0, d0
     move.b  (i_pmode,a3), d0
@@ -3784,47 +3784,47 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     lsl.w   #2, d0
     lea     pcmod_lbl, a1
     move.l  (a1,d0.w), a1
-    moveq   #5, d3
-    moveq   #11, d4
+    moveq   #7, d3
+    moveq   #6, d4
     bsr     print_hl
-    moveq   #5, d3                          ; HLD (gate) at (row 5, col 17), val col 21, hl col 2
-    moveq   #17, d4
+    moveq   #8, d3                          ; HLD label (row 8, col 1)
+    moveq   #1, d4
     lea     str_phld, a1
     bsr     print_at
-    moveq   #5, d0
-    moveq   #21, d1
+    moveq   #8, d0                          ; HLD value (row 8, col 6), hl cursor row 4
+    moveq   #6, d1
     bsr     bvpos
-    moveq   #2, d0
-    moveq   #2, d1
+    moveq   #4, d0
+    moveq   #0, d1
     bsr     selhl
     move.b  (i_hld,a3), d3
     move.b  d2, d4
     bsr     draw_hex1
-    moveq   #5, d3                          ; SWP (sweep) at (row 5, col 23), val col 27, hl col 3
-    moveq   #23, d4
+    moveq   #9, d3                          ; SWP label (row 9, col 1)
+    moveq   #1, d4
     lea     str_pswp, a1
     bsr     print_at
-    moveq   #5, d0
-    moveq   #27, d1
+    moveq   #9, d0                          ; SWP value (row 9, col 6), hl cursor row 5
+    moveq   #6, d1
     bsr     bvpos
-    moveq   #2, d0
-    moveq   #3, d1
+    moveq   #5, d0
+    moveq   #0, d1
     bsr     selhl
     move.b  (i_psweep,a3), d3
     move.b  d2, d4
     bsr     draw_hex2
-    moveq   #6, d3                          ; column header (row 6, col 5)
+    moveq   #11, d3                         ; column header (row 11, col 5)
     moveq   #5, d4
     lea     str_perc_hdr, a1
     bsr     print_at
     moveq   #0, d6                          ; op index 0-3
 .rp_op:
-    moveq   #0, d5                          ; screen row = 7 + op
+    moveq   #0, d5                          ; screen row = 12 + op
     move.b  d6, d5
-    addq.w  #7, d5
-    moveq   #0, d7                          ; cursor row = 3 + op
+    add.w   #12, d5
+    moveq   #0, d7                          ; cursor row = 6 + op
     move.b  d6, d7
-    addq.w  #3, d7
+    addq.w  #6, d7
     move.l  d5, d0                          ; op label (3 chars) at (row, col 1)
     moveq   #1, d1
     bsr     bvpos
@@ -3916,14 +3916,14 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .rp_op
-    moveq   #11, d3                          ; TBL ($FF=none) at (row 11, col 1), val col 6, hl (row 7 col 0)
+    moveq   #17, d3                          ; TBL ($FF=none) at (row 17, col 1), val col 6, hl (row 10 col 0)
     moveq   #1, d4
     lea     str_ptbl, a1
     bsr     print_at
-    moveq   #11, d0
+    moveq   #17, d0
     moveq   #6, d1
     bsr     bvpos
-    moveq   #7, d0
+    moveq   #10, d0
     moveq   #0, d1
     bsr     selhl
     move.b  (i_tbl,a3), d3
@@ -3938,27 +3938,27 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  d2, d4
     bsr     draw_hex2
 .rp_tbld:
-    moveq   #11, d3                          ; TBS at (row 11, col 11), val col 15, hl (row 7 col 1)
+    moveq   #17, d3                          ; TBS at (row 17, col 11), val col 15, hl (row 10 col 1)
     moveq   #11, d4
     lea     str_ptbs, a1
     bsr     print_at
-    moveq   #11, d0
+    moveq   #17, d0
     moveq   #15, d1
     bsr     bvpos
-    moveq   #7, d0
+    moveq   #10, d0
     moveq   #1, d1
     bsr     selhl
     move.b  (i_tbs,a3), d3
     move.b  d2, d4
     bsr     draw_hex1
-    moveq   #11, d3                          ; ALG (base's algorithm) at (row 11, col 17), val col 22, hl (row 7 col 2)
+    moveq   #17, d3                          ; ALG (base's algorithm) at (row 17, col 17), val col 22, hl (row 10 col 2)
     moveq   #17, d4
     lea     str_palg, a1
     bsr     print_at
-    moveq   #11, d0
+    moveq   #17, d0
     moveq   #22, d1
     bsr     bvpos
-    moveq   #7, d0
+    moveq   #10, d0
     moveq   #2, d1
     bsr     selhl
     moveq   #0, d3
@@ -4007,11 +4007,31 @@ str_palg:      dc.b "ALG",0
 pcmod_lbl:     dc.l str_pfix, str_ppit
     even
 edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows 3-6 = ops; d2 = dpad
-    cmpi.b  #2, cur_row
-    beq.s   .epf_row2
-    cmpi.b  #7, cur_row
-    bne     .epf_op
-    moveq   #0, d0                            ; row 7: TBL / TBS / ALG
+    moveq   #0, d0
+    move.b  cur_row, d0
+    cmpi.b  #2, d0
+    beq     .epf_base                        ; row 2 = BASE
+    cmpi.b  #3, d0
+    beq     .epf_mode                        ; row 3 = MODE
+    cmpi.b  #4, d0
+    beq.s   .epf_hld                         ; row 4 = HLD
+    cmpi.b  #5, d0
+    beq.s   .epf_swp                         ; row 5 = SWP
+    cmpi.b  #10, d0
+    beq.s   .epf_row10                       ; row 10 = TBL/TBS/ALG
+    bra     .epf_op                          ; rows 6-9 = ops
+.epf_hld:
+    lea     (i_hld,a3), a1                  ; HLD 0-15
+    moveq   #15, d3
+    moveq   #1, d4
+    jmp     adj_field
+.epf_swp:
+    lea     (i_psweep,a3), a1               ; SWP byte (depth/rate nibbles)
+    moveq   #255, d3
+    moveq   #16, d4
+    jmp     adj_field
+.epf_row10:
+    moveq   #0, d0                            ; row 10: TBL / TBS / ALG
     move.b  cur_col, d0
     beq.s   .epf_tbl
     cmpi.b  #1, d0
@@ -4034,23 +4054,6 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     moveq   #15, d3
     moveq   #1, d4
     jmp     adj_field
-.epf_row2:
-    moveq   #0, d0
-    move.b  cur_col, d0
-    beq.s   .epf_base                       ; col 0 = BASE
-    cmpi.b  #1, d0
-    beq.s   .epf_mode                       ; col 1 = MODE
-    cmpi.b  #2, d0
-    bne.s   .epf_swp                        ; col 3 = SWP
-    lea     (i_hld,a3), a1                  ; col 2 = HLD 0-15
-    moveq   #15, d3
-    moveq   #1, d4
-    jmp     adj_field
-.epf_swp:
-    lea     (i_psweep,a3), a1               ; col 3 = SWP byte (depth/rate nibbles)
-    moveq   #255, d3
-    moveq   #16, d4
-    jmp     adj_field
 .epf_base:
     lea     (i_pbase,a3), a1
     moveq   #NINSTR_ED, d3
@@ -4070,9 +4073,9 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     move.b  #1, need_clear                 ; base changed -> re-render the base-derived ALG/TL fields
     rts
 .epf_op:
-    moveq   #0, d0                          ; op index = cur_row - 3
+    moveq   #0, d0                          ; op index = cur_row - 6
     move.b  cur_row, d0
-    subq.b  #3, d0
+    subq.b  #6, d0
     mulu.w  #FM_NPARM, d0
     lea     (i_op,a3), a2
     adda.w  d0, a2                          ; a2 = this op's params
@@ -4087,7 +4090,7 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     mulu.w  #INSTR_SIZE, d0
     moveq   #0, d1
     move.b  cur_row, d1
-    subq.b  #3, d1
+    subq.b  #6, d1
     mulu.w  #FM_NPARM, d1
     add.w   d1, d0
     addi.w  #(i_op+2), d0
