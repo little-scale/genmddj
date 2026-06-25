@@ -1839,14 +1839,14 @@ col_max:                                  ; -> d1 = highest column index for cur
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
     bhs.s   .fmop
-    tst.b   cur_row                       ; row 0 (INST): LIBRARY slot (col 1) + 4 name chars (cols 2-5)
+    tst.b   cur_row                       ; row 0 (INST): full 8-char name (cols 1-8); slot is on the bank row
     bne.s   .fmr1
-    moveq   #5, d1
+    moveq   #8, d1
     rts
 .fmr1:
-    cmpi.b  #1, cur_row                   ; row 1 (TYPE): + SRAM LOAD/SAVE + ROM LOAD (cols 1,2,3)
+    cmpi.b  #1, cur_row                   ; row 1 (TYPE): slot (col 1) + SRAM LOAD/SAVE + ROM LOAD (cols 2,3,4)
     bne.s   .fmvrt
-    moveq   #3, d1
+    moveq   #4, d1
     rts
 .fmvrt:
     moveq   #0, d1                        ; other voice rows: single column
@@ -2229,16 +2229,16 @@ edit_fm:
     moveq   #0, d4
     move.b  (a2,d0.w), d4
     bra     .adj
-.typeedit:                                ; row 1: col 0 = TYPE; cols 1,2,3 = LOAD/SAVE/ROM-LOAD buttons (no adjust)
+.typeedit:                                ; row 1: col 0 = TYPE; col 1 = slot; cols 2-4 = LOAD/SAVE/ROM-LOAD buttons
     tst.b   cur_col
     beq     edit_psg                       ; TYPE cycles + wraps both ways (shared with the PSG editor)
+    cmpi.b  #1, cur_col
+    beq     .ie_lib                        ; col 1 = SRAM/ROM slot (one shared index)
     rts
-.instedit:                                ; row 0: col 0 = INST select; col 1 = ROM slot; cols 2-9 = name chars
+.instedit:                                ; row 0: col 0 = INST select; cols 1-8 = name chars
     tst.b   cur_col
     beq.s   .ie_inst
-    cmpi.b  #2, cur_col
-    bhs     edit_iname
-    bra     .ie_lib
+    bra     edit_iname
 .ie_inst:
     move.b  cur_instr, d0
     btst    #2, d2                          ; Left -> previous
@@ -2809,11 +2809,11 @@ do_insert:
     beq.s   .di_bank
     cmpi.b  #SCR_FM, cur_screen
     bne.s   .di_nb
-.di_bank:                                  ; library buttons all on row 1: col 1 LOAD, col 2 SAVE, col 3 ROM LOAD
+.di_bank:                                  ; bank buttons on row 1: col 2 LOAD, col 3 SAVE, col 4 ROM LOAD (col 1 = slot)
     cmpi.b  #1, cur_row
     bne.s   .di_nb
-    tst.b   cur_col                          ; col 0 = TYPE (not a button)
-    beq.s   .di_nb
+    cmpi.b  #2, cur_col                      ; cols 0 (TYPE) + 1 (slot) aren't buttons
+    blo.s   .di_nb
     bra     do_bank_action
 .di_nb:
     cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
@@ -3677,10 +3677,10 @@ ENV_AMAX equ ENV_BOT-ENV_TOP               ; max amplitude in px (curve clears t
 
 ; FM editor: VOICE section (one param per row) then the 4-operator grid
 ; shared INST + TYPE header for every instrument page; returns a3 = instrum[cur_instr]
-edit_iname:                               ; cur_col 2-9: cycle the name char at (cur_col-2). a3 = instrum[cur_instr]
+edit_iname:                               ; cur_col 1-8: cycle the name char at (cur_col-1). a3 = instrum[cur_instr]
     moveq   #0, d0
     move.b  cur_col, d0
-    subq.w  #2, d0
+    subq.w  #1, d0
     lea     (i_name,a3), a1
     adda.w  d0, a1
     move.b  (a1), d3                       ; current char
@@ -3747,7 +3747,7 @@ render_inst_hdr:
     moveq   #$60, d4
 .inh:
     bsr     draw_hex2
-    move.l  #$41940003, (a0)              ; instrument name (i_name, 4 chars) at row 3, col 10 (before the LIBRARY panel)
+    move.l  #$41960003, (a0)              ; instrument name (i_name, 8 chars) at row 3, col 11 (gap after the number)
     lea     (i_name,a3), a2
     moveq   #0, d5
 .inh_nm:
@@ -3764,14 +3764,14 @@ render_inst_hdr:
     bne.s   .inh_nmw
     moveq   #0, d4
     move.b  cur_col, d4
-    subq.b  #2, d4
+    subq.b  #1, d4
     cmp.b   d5, d4
     bne.s   .inh_nmw
     addi.w  #$60, d3                        ; inverse tile = char + $60
 .inh_nmw:
     move.w  d3, VDP_DATA
     addq.w  #1, d5
-    cmpi.w  #4, d5
+    cmpi.w  #8, d5
     bne.s   .inh_nm
     moveq   #4, d3                         ; TYPE field (cur_row 1)
     moveq   #1, d4
@@ -3798,46 +3798,50 @@ render_inst_hdr:
 ; ROM/SRAM tier-transfer cells, right of the voice params (a0 = VDP_CTRL, preserved).
 ; cells: cur_row 2 (ROM load), 3 (SRAM save), 4 (SRAM load), all at cur_col 1.
 render_bank:
-    ; ---- LIBRARY <slot> on the INST row (screen row 3) ; cursor row 0 col 1 = the shared slot ----
-    moveq   #3, d3
-    moveq   #14, d4
-    lea     str_lib, a1
-    bsr     print_at
-    moveq   #3, d0                          ; library slot value at (3, col 22)
-    moveq   #22, d1
-    bsr     bvpos
-    move.b  bank_slot, d3
-    moveq   #0, d0                          ; hl if cursor on (row 0, col 1)
-    moveq   #1, d1
-    bsr     selhl
-    move.b  d2, d4
-    bsr     draw_hex2
-    ; ---- SRAM LOAD SAVE (screen row 4) ; cursor row 1 cols 1(LOAD)/2(SAVE) ----
+    ; ---- SRAM <slot> LOAD SAVE (screen row 4) ; cursor row 1: col 1 slot, col 2 LOAD, col 3 SAVE ----
     moveq   #4, d3
     moveq   #14, d4
     lea     str_sram, a1
     bsr     print_at
-    moveq   #1, d0                          ; SRAM LOAD at (4, col 22 = under the slot), hl if (row 1, col 1)
+    moveq   #4, d0                          ; shared slot value at (4, col 19), hl if (row 1, col 1)
+    moveq   #19, d1
+    bsr     bvpos
+    move.b  bank_slot, d3
+    moveq   #1, d0
     moveq   #1, d1
+    bsr     selhl
+    move.b  d2, d4
+    bsr     draw_hex2
+    moveq   #1, d0                          ; SRAM LOAD at (4, col 22), hl if (row 1, col 2)
+    moveq   #2, d1
     bsr     selhl
     moveq   #4, d3
     moveq   #22, d4
     lea     str_load, a1
     bsr     print_hl
-    moveq   #1, d0                          ; SRAM SAVE at (4, col 27), hl if (row 1, col 2)
-    moveq   #2, d1
+    moveq   #1, d0                          ; SRAM SAVE at (4, col 27), hl if (row 1, col 3)
+    moveq   #3, d1
     bsr     selhl
     moveq   #4, d3
     moveq   #27, d4
     lea     str_save, a1
     bsr     print_hl
-    ; ---- ROM LOAD (screen row 5) ; cursor row 1 col 3 (under SRAM LOAD) ----
+    ; ---- ROM <slot> LOAD (screen row 5) ; cursor row 1: col 1 slot, col 4 LOAD ----
     moveq   #5, d3
     moveq   #14, d4
     lea     str_rom, a1
     bsr     print_at
-    moveq   #1, d0                          ; ROM LOAD at (5, col 22 = under SRAM LOAD), hl if (row 1, col 3)
-    moveq   #3, d1
+    moveq   #5, d0                          ; shared slot value at (5, col 19), hl if (row 1, col 1)
+    moveq   #19, d1
+    bsr     bvpos
+    move.b  bank_slot, d3
+    moveq   #1, d0
+    moveq   #1, d1
+    bsr     selhl
+    move.b  d2, d4
+    bsr     draw_hex2
+    moveq   #1, d0                          ; ROM LOAD at (5, col 22), hl if (row 1, col 4)
+    moveq   #4, d1
     bsr     selhl
     moveq   #5, d3
     moveq   #22, d4
@@ -10241,19 +10245,19 @@ check_dirty:                               ; song_dirty = (data block != last sa
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
-do_bank_action:                            ; row 1: col 1 = SRAM LOAD, col 2 = SRAM SAVE, col 3 = ROM LOAD
-    cmpi.b  #2, cur_col
+do_bank_action:                            ; row 1: col 2 = SRAM LOAD, col 3 = SRAM SAVE, col 4 = ROM LOAD
+    cmpi.b  #3, cur_col
     bne.s   .dba_nc2
-    move.b  bank_slot, d0                   ; col 2 = SRAM SAVE: instrument unchanged, no repaint
+    move.b  bank_slot, d0                   ; col 3 = SRAM SAVE: instrument unchanged, no repaint
     bra     bank_save_instr
 .dba_nc2:
-    cmpi.b  #3, cur_col
+    cmpi.b  #4, cur_col
     bne.s   .dba_ld
-    move.b  bank_slot, d0                   ; col 3 = ROM LOAD (factory[slot])
+    move.b  bank_slot, d0                   ; col 4 = ROM LOAD (factory[slot])
     bsr     rom_load_instr
     bra.s   .dba_redraw
 .dba_ld:
-    move.b  bank_slot, d0                   ; col 1 = SRAM LOAD
+    move.b  bank_slot, d0                   ; col 2 = SRAM LOAD
     bsr     bank_load_instr
 .dba_redraw:
     move.b  #1, need_clear                  ; pulled in a new instrument -> repaint + re-rasterise envelopes
