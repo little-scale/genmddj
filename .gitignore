@@ -22,3 +22,9 @@ current goal.txt
 
 # browser-tool custom bakes (generated; makefont.py/makewaves.py pick them up if present)
 tools/*_custom.bin
+
+# local-only docs (kept on disk, not in the public repo; re-add later with `git add -f`)
+#   TESTING.md — internal QA checklist (references private dev ROMs)
+#   CLAUDE.md  — AI-assistant project context
+TESTING.md
+CLAUDE.md
