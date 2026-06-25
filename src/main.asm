@@ -3767,7 +3767,7 @@ render_inst_hdr:
     moveq   #$60, d4
 .inh:
     bsr     draw_hex2
-    move.l  #$41960003, (a0)              ; instrument name (i_name, 8 chars) at row 3, col 11 (gap after the number)
+    move.l  #$419C0003, (a0)              ; instrument name (i_name, 8 chars) at row 3, col 14 (aligned with SRAM)
     lea     (i_name,a3), a2
     moveq   #0, d5
 .inh_nm:
@@ -5283,19 +5283,29 @@ render_fm:                                ; a0 = VDP_CTRL
     bsr     render_inst_hdr               ; INST + TYPE; a3 = instrum[cur_instr]
     moveq   #0, d6                         ; voice param: HLD VOL PAN TSP | ALGO FB AMS FMS
 .vrow:
-    move.w  d6, d3                          ; label at (FM_VTOP+idx, col1)
-    addi.w  #FM_VTOP, d3
-    moveq   #1, d4
+    moveq   #FM_VTOP, d3                     ; display row = FM_VTOP + idx, +1 gap after TBS (idx 5)
+    add.w   d6, d3
+    cmpi.w  #6, d6                           ; ALGO/FB/AMS/FMS (idx>=6) drop one row (FM-param separator)
+    blo.s   .vr_pos
+    addq.w  #1, d3
+.vr_pos:
+    moveq   #1, d4                           ; label col 1
+    cmpi.w  #10, d6                          ; SWEEP (idx 10) -> below ROM: row 6, col 14
+    bne.s   .vr_lbl
+    moveq   #6, d3
+    moveq   #14, d4
+.vr_lbl:
     move.w  d6, d0
     lsl.w   #2, d0
     lea     voice_lbl, a1
     move.l  (a1,d0.w), a1
-    bsr     print_at
-    moveq   #0, d0                          ; value at (FM_VTOP+idx, col8)
-    move.w  d6, d0
-    addi.w  #FM_VTOP, d0
+    bsr     print_at                         ; label at (d3, d4)
+    moveq   #0, d0                           ; value at (d3, d4+7) -- clear high word for the VDP command
+    move.w  d3, d0
     lsl.w   #6, d0
-    addi.w  #8, d0
+    move.w  d4, d1
+    addq.w  #7, d1
+    add.w   d1, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
