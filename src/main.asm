@@ -167,7 +167,8 @@ sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first
 sram_layout equ $00FFD427          ; SRAM probe: 0 none, 1 odd-byte (8-bit), 2 linear
 sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64; 0 = none)
 sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 for 8/16/32/64 KB)
-bank_slot  equ $00FFD42A           ; INSTR LIBRARY slot: one index driving ROM LOAD + SRAM LOAD/SAVE
+bank_slot  equ $00FFD42A           ; INSTR SRAM bank slot (LOAD/SAVE)
+rom_slot   equ $00FFD42B           ; INSTR ROM factory slot (LOAD) -- independent of bank_slot
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -502,7 +503,8 @@ Start:
     move.b  #0, echo_head
     move.b  #$FF, e_audnote
     move.b  #0, cur_phrase
-    move.b  #0, bank_slot                ; INSTR LIBRARY slot
+    move.b  #0, bank_slot                ; INSTR SRAM bank slot
+    move.b  #0, rom_slot                 ; INSTR ROM factory slot
     move.b  #0, playing                  ; boot stopped
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
@@ -1608,25 +1610,34 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     beq.s   .mc_ndis
     clr.b   proj_armed
 .mc_ndis:
-    cmpi.b  #SCR_INSTR, cur_screen          ; library panel: ROM LOAD (row1 col3) sits below SRAM LOAD;
-    bne.s   .mc_move                         ; let Up/Down hop between them instead of jumping to the voice grid
+    cmpi.b  #SCR_INSTR, cur_screen          ; bank panel: SRAM half (cols 1-3) over ROM half (cols 4-5);
+    bne.s   .mc_move                         ; Up/Down hops between the halves instead of the voice grid
     cmpi.b  #1, cur_row
     bne.s   .mc_move
     move.b  cur_col, d0
-    btst    #1, d2                          ; Down on SRAM LOAD/SAVE (col 1/2) -> ROM LOAD (col 3)
+    btst    #1, d2                          ; Down: SRAM half -> ROM half
     beq.s   .mc_pu
     cmpi.b  #1, d0
-    blo.s   .mc_move
-    cmpi.b  #3, d0
-    bhs.s   .mc_move
-    move.b  #3, cur_col
+    blo.s   .mc_move                         ; col 0 (TYPE) -> normal
+    cmpi.b  #4, d0
+    bhs.s   .mc_move                         ; cols 4-5 (already ROM) -> down to the voice grid
+    cmpi.b  #1, d0                            ; SRAM slot (1) -> ROM slot (4); LOAD/SAVE (2/3) -> ROM LOAD (5)
+    bne.s   .mc_d_ld
+    move.b  #4, cur_col
+    rts
+.mc_d_ld:
+    move.b  #5, cur_col
     rts
 .mc_pu:
-    btst    #0, d2                          ; Up on ROM LOAD (col 3) -> SRAM LOAD (col 1)
+    btst    #0, d2                          ; Up: ROM half -> SRAM half
     beq.s   .mc_move
-    cmpi.b  #3, d0
-    bne.s   .mc_move
+    cmpi.b  #4, d0
+    blo.s   .mc_move                         ; cols 0-3 -> normal up
+    bne.s   .mc_u_ld                          ; ROM slot (4) -> SRAM slot (1); ROM LOAD (5) -> SRAM LOAD (2)
     move.b  #1, cur_col
+    rts
+.mc_u_ld:
+    move.b  #2, cur_col
     rts
 .mc_move:
     bsr     row_max                       ; d1 = highest row for this screen/type
@@ -1844,9 +1855,9 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #8, d1
     rts
 .fmr1:
-    cmpi.b  #1, cur_row                   ; row 1 (TYPE): slot (col 1) + SRAM LOAD/SAVE + ROM LOAD (cols 2,3,4)
+    cmpi.b  #1, cur_row                   ; row 1 (TYPE): SRAM slot+LOAD+SAVE (cols 1-3), ROM slot+LOAD (cols 4-5)
     bne.s   .fmvrt
-    moveq   #4, d1
+    moveq   #5, d1
     rts
 .fmvrt:
     moveq   #0, d1                        ; other voice rows: single column
@@ -2229,11 +2240,13 @@ edit_fm:
     moveq   #0, d4
     move.b  (a2,d0.w), d4
     bra     .adj
-.typeedit:                                ; row 1: col 0 = TYPE; col 1 = slot; cols 2-4 = LOAD/SAVE/ROM-LOAD buttons
+.typeedit:                                ; row 1: col 0 = TYPE; col 1 = SRAM slot; col 4 = ROM slot; cols 2,3,5 = buttons
     tst.b   cur_col
     beq     edit_psg                       ; TYPE cycles + wraps both ways (shared with the PSG editor)
     cmpi.b  #1, cur_col
-    beq     .ie_lib                        ; col 1 = SRAM/ROM slot (one shared index)
+    beq     .ie_lib                        ; col 1 = SRAM slot
+    cmpi.b  #4, cur_col
+    beq     .ie_lib                        ; col 4 = ROM slot
     rts
 .instedit:                                ; row 0: col 0 = INST select; cols 1-8 = name chars
     tst.b   cur_col
@@ -2263,8 +2276,12 @@ edit_fm:
     move.b  #1, need_clear                  ; re-render the whole instrument page
     move.b  #1, env_dirty                   ; new instrument -> re-rasterise envelopes
     rts
-.ie_lib:                                  ; row 0 col 1 = LIBRARY slot (one index drives ROM + SRAM)
+.ie_lib:                                  ; row 1: col 1 = SRAM slot (bank_slot), col 4 = ROM slot (rom_slot)
     lea     bank_slot, a1
+    cmpi.b  #4, cur_col
+    bne.s   .iel_w
+    lea     rom_slot, a1
+.iel_w:
     moveq   #NUBANK-1, d3
     moveq   #1, d4
     bra     adj_field
@@ -2809,11 +2826,14 @@ do_insert:
     beq.s   .di_bank
     cmpi.b  #SCR_FM, cur_screen
     bne.s   .di_nb
-.di_bank:                                  ; bank buttons on row 1: col 2 LOAD, col 3 SAVE, col 4 ROM LOAD (col 1 = slot)
+.di_bank:                                  ; bank buttons on row 1: col 2 LOAD, col 3 SAVE, col 5 ROM LOAD (cols 1,4 = slots)
     cmpi.b  #1, cur_row
     bne.s   .di_nb
-    cmpi.b  #2, cur_col                      ; cols 0 (TYPE) + 1 (slot) aren't buttons
+    move.b  cur_col, d0
+    cmpi.b  #2, d0                            ; cols 0 (TYPE), 1 (SRAM slot) aren't buttons
     blo.s   .di_nb
+    cmpi.b  #4, d0                            ; col 4 (ROM slot) isn't a button
+    beq.s   .di_nb
     bra     do_bank_action
 .di_nb:
     cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
@@ -3803,7 +3823,7 @@ render_bank:
     moveq   #14, d4
     lea     str_sram, a1
     bsr     print_at
-    moveq   #4, d0                          ; shared slot value at (4, col 19), hl if (row 1, col 1)
+    moveq   #4, d0                          ; SRAM slot value at (4, col 19), hl if (row 1, col 1)
     moveq   #19, d1
     bsr     bvpos
     move.b  bank_slot, d3
@@ -3826,22 +3846,22 @@ render_bank:
     moveq   #27, d4
     lea     str_save, a1
     bsr     print_hl
-    ; ---- ROM <slot> LOAD (screen row 5) ; cursor row 1: col 1 slot, col 4 LOAD ----
+    ; ---- ROM <slot> LOAD (screen row 5) ; cursor row 1: col 4 slot, col 5 LOAD ----
     moveq   #5, d3
     moveq   #14, d4
     lea     str_rom, a1
     bsr     print_at
-    moveq   #5, d0                          ; shared slot value at (5, col 19), hl if (row 1, col 1)
+    moveq   #5, d0                          ; ROM slot value at (5, col 19), hl if (row 1, col 4)
     moveq   #19, d1
     bsr     bvpos
-    move.b  bank_slot, d3
+    move.b  rom_slot, d3
     moveq   #1, d0
-    moveq   #1, d1
+    moveq   #4, d1
     bsr     selhl
     move.b  d2, d4
     bsr     draw_hex2
-    moveq   #1, d0                          ; ROM LOAD at (5, col 22), hl if (row 1, col 4)
-    moveq   #4, d1
+    moveq   #1, d0                          ; ROM LOAD at (5, col 22), hl if (row 1, col 5)
+    moveq   #5, d1
     bsr     selhl
     moveq   #5, d3
     moveq   #22, d4
@@ -10251,9 +10271,9 @@ do_bank_action:                            ; row 1: col 2 = SRAM LOAD, col 3 = S
     move.b  bank_slot, d0                   ; col 3 = SRAM SAVE: instrument unchanged, no repaint
     bra     bank_save_instr
 .dba_nc2:
-    cmpi.b  #4, cur_col
+    cmpi.b  #5, cur_col
     bne.s   .dba_ld
-    move.b  bank_slot, d0                   ; col 4 = ROM LOAD (factory[slot])
+    move.b  rom_slot, d0                    ; col 5 = ROM LOAD (factory[rom_slot])
     bsr     rom_load_instr
     bra.s   .dba_redraw
 .dba_ld:
