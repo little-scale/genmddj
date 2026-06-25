@@ -871,7 +871,7 @@ VBlankInt:
     moveq   #35, d4
     bsr     print_at
     bsr     draw_map                      ; map at row5 col35
-    bsr     draw_meters                   ; 10 channel activity meters below the map
+;    bsr     draw_meters                   ; DISABLED: ~50 cells/frame overruns VBlank on the SONG redraw (accurate VDP / hardware). Re-enable after an incremental rework (redraw a bar only on level change).
     bsr     amp_refresh                   ; smooth per-frame AMP bars (LFO screen + playing)
     cmpi.b  #SCR_TABLE, cur_screen        ; animate the TABLE playhead each frame while playing
     bne.s   .ntblph
@@ -9830,6 +9830,17 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     addq.w  #1, d5
     cmpi.w  #8, d5
     bne.s   .ppn_m
+    moveq   #4, d0                           ; clear the marker row (row 4, cols 6-13) so the old marker doesn't linger
+    lsl.w   #6, d0
+    addq.w  #6, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #8-1, d5
+.ppn_mclr:
+    move.w  #' ', VDP_DATA
+    dbra    d5, .ppn_mclr
     cmpi.b  #9, cur_row                      ; cursor marker (up-triangle) on row 4, below the cur_col char
     bne.s   .ppn_nocurs
     moveq   #4, d3
