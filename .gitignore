@@ -12,3 +12,13 @@ tools/emu/*.dylib
 tools/emu/*.zip
 tools/emu/retroshot
 tools/__pycache__/
+
+# test saves + scratch (user data, not source)
+*.SRM
+*.srm
+*.sav
+*.xlsx
+current goal.txt
+
+# browser-tool custom bakes (generated; makefont.py/makewaves.py pick them up if present)
+tools/*_custom.bin

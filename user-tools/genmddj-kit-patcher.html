@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj kit patcher</title>
+<style>
+  :root { --bg:#10131a; --panel:#1b2030; --ink:#e7ecf5; --dim:#8b96ab;
+          --accent:#ffd23f; --accent2:#46c0ff; --empty:#2a3140; --good:#5ad17a; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+           padding:12px 16px; background:var(--panel); border-bottom:1px solid #000; }
+  h1 { font-size:16px; margin:0; color:var(--accent); letter-spacing:1px; }
+  button { font:inherit; color:var(--ink); background:#2a3140; border:1px solid #3a4358;
+           border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent2); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:var(--accent); color:#000; border-color:var(--accent); font-weight:700; }
+  .spacer { flex:1; }
+  #romInfo { color:var(--dim); }
+  .budget { width:180px; height:10px; background:#000; border-radius:5px; overflow:hidden; border:1px solid #3a4358; }
+  .budget>div { height:100%; background:var(--good); width:0; }
+  main { display:grid; grid-template-columns:1fr 420px; gap:16px; padding:16px; }
+  @media (max-width:900px){ main { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid #000; border-radius:10px; padding:14px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+  .tab { padding:6px 12px; border-radius:6px; background:var(--empty); cursor:pointer; border:1px solid transparent; }
+  .tab.on { background:var(--accent2); color:#000; font-weight:700; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .pad { aspect-ratio:1.7; border-radius:8px; background:var(--empty); border:1px solid #3a4358;
+         display:flex; flex-direction:column; justify-content:space-between; padding:8px; cursor:pointer; overflow:hidden; }
+  .pad.filled { background:#243a2c; border-color:#3a5a44; }
+  .pad.on { outline:2px solid var(--accent); }
+  .pad .n { font-size:11px; color:var(--dim); }
+  .pad .nm { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pad .dur { font-size:11px; color:var(--dim); }
+  .pad.dragover { border-color:var(--accent); background:#3a3320; }
+  label.row { display:grid; grid-template-columns:64px 1fr 56px; gap:8px; align-items:center; margin:8px 0; }
+  label.row span:last-child { text-align:right; color:var(--accent); }
+  input[type=range] { width:100%; }
+  input[type=text] { font:inherit; background:#000; color:var(--ink); border:1px solid #3a4358; border-radius:6px; padding:6px; width:100%; }
+  canvas { width:100%; height:120px; background:#000; border-radius:8px; display:block; }
+  .controls button { margin:2px; }
+  .muted { color:var(--dim); font-size:12px; }
+  #status { padding:8px 16px; color:var(--dim); min-height:20px; }
+  #status.err { color:var(--bad); } #status.ok { color:var(--good); }
+  .hint { color:var(--dim); font-size:12px; margin:10px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>genmddj KIT PATCHER</h1>
+  <button id="loadRom">Load ROM…</button>
+  <span id="romInfo">no ROM loaded</span>
+  <div class="budget" title="sample pool vs available ROM space"><div id="budgetBar"></div></div>
+  <span id="budgetTxt" class="muted"></span>
+  <div class="spacer"></div>
+  <button id="exportRom" class="primary" disabled>Export patched ROM</button>
+  <button id="exportBin" disabled>Export pool .bin</button>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="tabs" id="kitTabs"></div>
+    <div class="grid" id="padGrid"></div>
+    <p class="hint">Click a pad to edit. Drag a .wav onto a pad, or drop several .wav files
+      to fill a kit from that pad. On F6, note&nbsp;N plays pad&nbsp;(N&nbsp;mod&nbsp;16).</p>
+  </section>
+
+  <section class="panel" id="editor">
+    <div id="editEmpty" class="muted">Select a pad…</div>
+    <div id="editBody" style="display:none">
+      <label class="row" style="grid-template-columns:64px 1fr"><span>name</span>
+        <input type="text" id="padName" maxlength="8" placeholder="(8 chars)"></label>
+      <canvas id="wave" width="780" height="240"></canvas>
+      <div class="muted" id="sampInfo"></div>
+      <label class="row"><span>trim ⟸</span><input type="range" id="trimStart" min="0" max="1000" value="0"><span id="trimStartV"></span></label>
+      <label class="row"><span>trim ⟹</span><input type="range" id="trimEnd" min="0" max="1000" value="1000"><span id="trimEndV"></span></label>
+      <label class="row"><span>gain</span><input type="range" id="gain" min="0" max="400" value="100"><span id="gainV"></span></label>
+      <label class="row"><span>tanh</span><input type="range" id="tanh" min="0" max="80" value="0"><span id="tanhV"></span></label>
+      <label class="row"><span>fade in</span><input type="range" id="fadeIn" min="0" max="500" value="0"><span id="fadeInV"></span></label>
+      <label class="row"><span>fade out</span><input type="range" id="fadeOut" min="0" max="500" value="0"><span id="fadeOutV"></span></label>
+      <div class="controls">
+        <button id="playOrig">▶ original</button>
+        <button id="play8bit">▶ 8-bit @ rate</button>
+        <button id="normalize">normalize</button>
+        <button id="resetEdits">reset edits</button>
+        <button id="importWav">replace .wav…</button>
+        <button id="exportWav">export .wav</button>
+        <button id="clearPad">clear pad</button>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="status"></div>
+
+<input type="file" id="romFile" accept=".bin,.md,.gen" hidden>
+<input type="file" id="wavFile" accept=".wav,audio/*" hidden>
+<input type="file" id="bulkFile" accept=".wav,audio/*" multiple hidden>
+
+<script>
+const MAGIC = "GMDJKIT1";
+const HEADER = 16, MEMBER = 16;
+let NKITS = 16, NPADS = 16, DAC_RATE = 5327;   // shipping DAC rate (YM2612 Timer-A 1024-TA=10 = 5327Hz); overridden from the ROM header on load
+let DIR_SIZE = NKITS*NPADS*MEMBER, POOL_BASE = HEADER + DIR_SIZE;
+
+let rom = null, poolOffset = -1, poolAvail = 0;
+let kits = [];                 // kits[k][p] = pad | null
+let sel = {k:0, p:0};
+let actx = null;
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+function emptyKits(){ kits = Array.from({length:NKITS}, () => Array(NPADS).fill(null)); }
+function newPad(name, src, srcRate){
+  return { name:(name||"").slice(0,8), src, srcRate,
+           trimStart:0, trimEnd:1, gain:1, tanh:0, fadeIn:0, fadeOut:0 };
+}
+function status(msg, cls){ const s=$("status"); s.textContent=msg; s.className=cls||""; }
+
+/* ---------- ROM parse ---------- */
+function findMagic(u8){
+  const m = enc.encode(MAGIC);
+  outer: for (let i=0;i<u8.length-m.length;i++){
+    for (let j=0;j<m.length;j++) if (u8[i+j]!==m[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+function be32(u8,o){ return (u8[o]*0x1000000)+(u8[o+1]<<16)+(u8[o+2]<<8)+u8[o+3]; }
+function be16(u8,o){ return (u8[o]<<8)+u8[o+1]; }
+
+function parsePool(){
+  poolOffset = findMagic(rom);
+  if (poolOffset < 0) throw new Error("no 'GMDJKIT1' sample pool found — is this a genmddj ROM?");
+  NKITS = rom[poolOffset+8]; NPADS = rom[poolOffset+9]; DAC_RATE = be16(rom, poolOffset+10);
+  DIR_SIZE = NKITS*NPADS*MEMBER; POOL_BASE = HEADER + DIR_SIZE;
+  poolAvail = rom.length - poolOffset;            // pool may grow into the $FF padding tail
+  emptyKits();
+  for (let k=0;k<NKITS;k++) for (let p=0;p<NPADS;p++){
+    const m = poolOffset + HEADER + (k*NPADS+p)*MEMBER;
+    const off = be32(rom,m), len = be32(rom,m+4);
+    let name = dec.decode(rom.slice(m+8,m+16)).replace(/\0+$/,"").trim();
+    if (len > 0){
+      const pcm = rom.slice(poolOffset+off, poolOffset+off+len);   // 8-bit unsigned
+      const src = new Float32Array(len);
+      for (let i=0;i<len;i++) src[i] = (pcm[i]-128)/127;
+      kits[k][p] = newPad(name, src, DAC_RATE);
+    }
+  }
+}
+
+/* ---------- DSP ---------- */
+function processed(pad){
+  const n = pad.src.length;
+  let a = Math.floor(pad.trimStart*n), b = Math.ceil(pad.trimEnd*n);
+  a = Math.max(0,Math.min(n,a)); b = Math.max(a+1,Math.min(n,b));
+  const len = b-a, out = new Float32Array(len);
+  const fi = Math.max(0,Math.floor(pad.fadeIn*len)), fo = Math.max(0,Math.floor(pad.fadeOut*len));
+  for (let i=0;i<len;i++){
+    let v = pad.src[a+i]*pad.gain;
+    if (pad.tanh>0) v = Math.tanh(pad.tanh*v);
+    if (fi>0 && i<fi) v *= i/fi;
+    if (fo>0 && i>=len-fo) v *= (len-i)/fo;
+    out[i] = Math.max(-1,Math.min(1,v));
+  }
+  return out;
+}
+function resample(s, srcRate, dst){
+  if (srcRate===dst) return s;
+  const m = Math.max(1, Math.round(s.length/srcRate*dst)), out = new Float32Array(m);
+  for (let i=0;i<m;i++){
+    const t = i/Math.max(1,m-1)*(s.length-1), i0=Math.floor(t), f=t-i0;
+    out[i] = s[i0]*(1-f) + (s[Math.min(i0+1,s.length-1)])*f;
+  }
+  return out;
+}
+function to8bit(pad){
+  const f = resample(processed(pad), pad.srcRate, DAC_RATE);
+  // no end-of-sample declick (DESIGN.md Q5); use the fade-out slider above if you want one baked in.
+  let u = new Uint8Array(f.length);
+  for (let i=0;i<f.length;i++) u[i] = Math.max(0,Math.min(255, Math.round(f[i]*127)+128));
+  if (u.length & 1){ const e=new Uint8Array(u.length+1); e.set(u); e[u.length]=128; u=e; }
+  return u;
+}
+
+/* ---------- preview ---------- */
+function play(f32, rate){
+  actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+  const buf = actx.createBuffer(1, f32.length, rate);
+  buf.copyToChannel(f32, 0);
+  const s = actx.createBufferSource(); s.buffer = buf; s.connect(actx.destination); s.start();
+}
+function play8(pad){
+  const u = to8bit(pad), f = new Float32Array(u.length);
+  for (let i=0;i<u.length;i++) f[i] = (u[i]-128)/127;
+  play(f, DAC_RATE);
+}
+
+/* ---------- export ---------- */
+function buildPool(){
+  const dirs = [], pcm = [];
+  let pcmLen = 0;
+  for (let k=0;k<NKITS;k++) for (let p=0;p<NPADS;p++){
+    const pad = kits[k][p];
+    if (!pad){ dirs.push(null); continue; }
+    const u = to8bit(pad);
+    dirs.push({off:POOL_BASE+pcmLen, len:u.length, name:pad.name});
+    pcm.push(u); pcmLen += u.length;
+  }
+  const total = POOL_BASE + pcmLen;
+  const out = new Uint8Array(total);
+  enc.encode(MAGIC).forEach((b,i)=>out[i]=b);
+  out[8]=NKITS; out[9]=NPADS; out[10]=(DAC_RATE>>8)&255; out[11]=DAC_RATE&255;
+  let di = HEADER;
+  for (const d of dirs){
+    if (d){
+      out[di]=(d.off>>>24)&255; out[di+1]=(d.off>>>16)&255; out[di+2]=(d.off>>>8)&255; out[di+3]=d.off&255;
+      out[di+4]=(d.len>>>24)&255; out[di+5]=(d.len>>>16)&255; out[di+6]=(d.len>>>8)&255; out[di+7]=d.len&255;
+      const nb = enc.encode(d.name); for (let i=0;i<8;i++) out[di+8+i] = i<nb.length?nb[i]:0;
+    }
+    di += MEMBER;
+  }
+  let po = POOL_BASE;
+  for (const u of pcm){ out.set(u, po); po += u.length; }
+  return out;
+}
+function fixChecksum(u8){
+  let s = 0;
+  for (let i=0x200;i+1<u8.length;i+=2) s = (s + (u8[i]<<8) + u8[i+1]) & 0xFFFF;
+  u8[0x18E] = (s>>8)&255; u8[0x18F] = s&255;
+  return s;
+}
+function exportRom(){
+  const pool = buildPool();
+  if (pool.length > poolAvail) { status(`pool ${pool.length}B exceeds ${poolAvail}B of ROM space — trim/shorten samples`, "err"); return; }
+  const out = rom.slice();
+  out.fill(0xFF, poolOffset, out.length);
+  out.set(pool, poolOffset);
+  const cs = fixChecksum(out);
+  download(out, "genmddj-patched.bin");
+  status(`exported patched ROM — pool ${pool.length}B, checksum $${cs.toString(16).toUpperCase()}`, "ok");
+}
+function download(u8, name){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([u8], {type:"application/octet-stream"}));
+  a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+function wavBlob(f32, rate){
+  const n=f32.length, buf=new ArrayBuffer(44+n*2), v=new DataView(buf);
+  const w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+  w(0,"RIFF"); v.setUint32(4,36+n*2,true); w(8,"WAVE"); w(12,"fmt "); v.setUint32(16,16,true);
+  v.setUint16(20,1,true); v.setUint16(22,1,true); v.setUint32(24,rate,true);
+  v.setUint32(28,rate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  w(36,"data"); v.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++) v.setInt16(44+i*2, Math.max(-32768,Math.min(32767,f32[i]*32767)), true);
+  return new Uint8Array(buf);
+}
+
+/* ---------- budget ---------- */
+function refreshBudget(){
+  if (!rom){ $("budgetTxt").textContent=""; $("budgetBar").style.width="0"; return; }
+  let bytes = POOL_BASE;
+  for (let k=0;k<NKITS;k++) for (let p=0;p<NPADS;p++) if (kits[k][p]) bytes += to8bit(kits[k][p]).length;
+  const frac = bytes/poolAvail;
+  $("budgetBar").style.width = Math.min(100,frac*100)+"%";
+  $("budgetBar").style.background = frac>1 ? "var(--bad)" : frac>0.85 ? "var(--accent)" : "var(--good)";
+  $("budgetTxt").textContent = `${(bytes/1024).toFixed(1)} / ${(poolAvail/1024).toFixed(0)} KB`;
+  const over = frac>1;
+  $("exportRom").disabled = over; $("exportBin").disabled = false;
+}
+
+/* ---------- UI ---------- */
+function renderTabs(){
+  $("kitTabs").innerHTML="";
+  for (let k=0;k<NKITS;k++){
+    const t=document.createElement("div"); t.className="tab"+(k===sel.k?" on":"");
+    const filled = kits[k].filter(Boolean).length;
+    t.textContent = `KIT ${k}` + (filled?` (${filled})`:"");
+    t.onclick=()=>{ sel.k=k; renderAll(); };
+    $("kitTabs").appendChild(t);
+  }
+}
+function renderGrid(){
+  const g=$("padGrid"); g.innerHTML="";
+  for (let p=0;p<NPADS;p++){
+    const pad=kits[sel.k][p];
+    const d=document.createElement("div");
+    d.className="pad"+(pad?" filled":"")+(p===sel.p?" on":"");
+    const dur = pad ? (to8bit(pad).length/DAC_RATE*1000).toFixed(0)+"ms" : "";
+    d.innerHTML = `<div class="n">${p}</div><div class="nm">${pad?escape_(pad.name||"·"):"—"}</div><div class="dur">${dur}</div>`;
+    d.onclick=()=>{ sel.p=p; renderAll(); };
+    d.ondragover=e=>{ e.preventDefault(); d.classList.add("dragover"); };
+    d.ondragleave=()=>d.classList.remove("dragover");
+    d.ondrop=e=>{ e.preventDefault(); d.classList.remove("dragover"); dropWavs(e.dataTransfer.files, p); };
+    g.appendChild(d);
+  }
+}
+function escape_(s){ return s.replace(/[<&]/g,c=>c==="<"?"&lt;":"&amp;"); }
+
+function renderEditor(){
+  const pad = kits[sel.k][sel.p];
+  $("editEmpty").style.display = pad?"none":"block";
+  $("editBody").style.display = pad?"block":"none";
+  if (!pad) return;
+  $("padName").value = pad.name;
+  $("trimStart").value = pad.trimStart*1000; $("trimEnd").value = pad.trimEnd*1000;
+  $("gain").value = pad.gain*100; $("tanh").value = pad.tanh*10;
+  $("fadeIn").value = pad.fadeIn*1000; $("fadeOut").value = pad.fadeOut*1000;
+  $("trimStartV").textContent=(pad.trimStart*100).toFixed(0)+"%";
+  $("trimEndV").textContent=(pad.trimEnd*100).toFixed(0)+"%";
+  $("gainV").textContent=pad.gain.toFixed(2)+"×";
+  $("tanhV").textContent=pad.tanh?pad.tanh.toFixed(1):"off";
+  $("fadeInV").textContent=(pad.fadeIn*100).toFixed(0)+"%";
+  $("fadeOutV").textContent=(pad.fadeOut*100).toFixed(0)+"%";
+  const u=to8bit(pad);
+  $("sampInfo").textContent = `${u.length} B @ ${DAC_RATE} Hz · ${(u.length/DAC_RATE*1000).toFixed(0)} ms · src ${pad.srcRate} Hz`;
+  drawWave(processed(pad));
+}
+function drawWave(f){
+  const c=$("wave"), x=c.getContext("2d"), W=c.width, H=c.height;
+  x.fillStyle="#000"; x.fillRect(0,0,W,H);
+  x.strokeStyle="#2a3140"; x.beginPath(); x.moveTo(0,H/2); x.lineTo(W,H/2); x.stroke();
+  x.strokeStyle="#ffd23f"; x.beginPath();
+  const step=Math.max(1,Math.floor(f.length/W));
+  for (let px=0;px<W;px++){
+    let mn=1,mx=-1; const s0=px*step;
+    for (let i=0;i<step;i++){ const v=f[s0+i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+    x.moveTo(px, H/2-mx*H/2); x.lineTo(px, H/2-mn*H/2);
+  }
+  x.stroke();
+}
+function renderAll(){ renderTabs(); renderGrid(); renderEditor(); refreshBudget(); }
+
+/* ---------- wav import ---------- */
+async function decodeWav(file){
+  actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+  const ab = await file.arrayBuffer();
+  const audio = await actx.decodeAudioData(ab);
+  let f = audio.getChannelData(0);
+  if (audio.numberOfChannels>1){
+    const g=audio.getChannelData(1), m=new Float32Array(f.length);
+    for (let i=0;i<f.length;i++) m[i]=(f[i]+g[i])/2; f=m;
+  }
+  return { f:f.slice(), rate:audio.sampleRate, name:file.name.replace(/\.[^.]+$/,"").replace(/^\s*\d+\s*/,"") };
+}
+async function dropWavs(files, startPad){
+  const wavs = [...files].filter(f=>/\.wav$/i.test(f.name)||f.type.startsWith("audio"));
+  if (!wavs.length) return;
+  let p = startPad;
+  for (const file of wavs){
+    if (p>=NPADS) break;
+    try { const {f,rate,name}=await decodeWav(file); kits[sel.k][p]=newPad(name,f,rate); }
+    catch(e){ status("decode failed: "+file.name+" ("+e.message+")","err"); }
+    p++;
+  }
+  sel.p = Math.min(startPad, NPADS-1); renderAll();
+  status(`loaded ${Math.min(wavs.length,NPADS-startPad)} sample(s)`, "ok");
+}
+
+/* ---------- events ---------- */
+$("loadRom").onclick=()=>$("romFile").click();
+$("romFile").onchange=async e=>{
+  const file=e.target.files[0]; if(!file) return;
+  rom = new Uint8Array(await file.arrayBuffer());
+  try { parsePool(); } catch(err){ status(err.message,"err"); rom=null; return; }
+  sel={k:0,p:0};
+  $("romInfo").textContent = `${file.name} · ${(rom.length/1024)|0} KB · pool @ 0x${poolOffset.toString(16)} · ${NKITS}×${NPADS} @ ${DAC_RATE}Hz`;
+  renderAll(); status("ROM loaded — pool decoded","ok");
+};
+$("exportRom").onclick=exportRom;
+$("exportBin").onclick=()=>{ download(buildPool(),"samples.bin"); status("exported pool .bin","ok"); };
+
+const bind=(id,fn)=>$(id).oninput=e=>{ const pad=kits[sel.k][sel.p]; if(!pad)return; fn(pad,+e.target.value); renderEditor(); refreshBudget(); renderGrid(); };
+bind("trimStart",(p,v)=>{ p.trimStart=Math.min(v/1000, p.trimEnd-0.001); });
+bind("trimEnd",  (p,v)=>{ p.trimEnd=Math.max(v/1000, p.trimStart+0.001); });
+bind("gain",     (p,v)=>p.gain=v/100);
+bind("tanh",     (p,v)=>p.tanh=v/10);
+bind("fadeIn",   (p,v)=>p.fadeIn=v/1000);
+bind("fadeOut",  (p,v)=>p.fadeOut=v/1000);
+$("padName").oninput=e=>{ const pad=kits[sel.k][sel.p]; if(pad){ pad.name=e.target.value.slice(0,8); renderGrid(); } };
+
+$("playOrig").onclick=()=>{ const p=kits[sel.k][sel.p]; if(p) play(processed(p), p.srcRate); };
+$("play8bit").onclick=()=>{ const p=kits[sel.k][sel.p]; if(p) play8(p); };
+$("normalize").onclick=()=>{ const p=kits[sel.k][sel.p]; if(!p)return;
+  let mx=0; for (let i=0;i<p.src.length;i++) mx=Math.max(mx,Math.abs(p.src[i]));
+  p.gain = mx>0 ? 0.99/mx : 1; renderEditor(); refreshBudget(); renderGrid(); };
+$("resetEdits").onclick=()=>{ const p=kits[sel.k][sel.p]; if(!p)return;
+  Object.assign(p,{trimStart:0,trimEnd:1,gain:1,tanh:0,fadeIn:0,fadeOut:0}); renderEditor(); refreshBudget(); renderGrid(); };
+$("clearPad").onclick=()=>{ kits[sel.k][sel.p]=null; renderAll(); };
+$("importWav").onclick=()=>$("wavFile").click();
+$("wavFile").onchange=async e=>{ if(e.target.files[0]){ const {f,rate,name}=await decodeWav(e.target.files[0]);
+  kits[sel.k][sel.p]=newPad(name,f,rate); renderAll(); status("replaced pad sample","ok"); } e.target.value=""; };
+$("exportWav").onclick=()=>{ const p=kits[sel.k][sel.p]; if(p) download(wavBlob(processed(p), p.srcRate), (p.name||"pad")+".wav"); };
+
+window.addEventListener("dragover",e=>e.preventDefault());
+window.addEventListener("drop",e=>e.preventDefault());
+
+emptyKits(); renderAll();
+status("load a genmddj ROM (or drop .wav files onto pads) to begin");
+</script>
+</body>
+</html>

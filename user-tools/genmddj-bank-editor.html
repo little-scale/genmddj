@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj bank editor</title>
+<style>
+  :root { --bg:#10131a; --panel:#1b2030; --ink:#e7ecf5; --dim:#8b96ab;
+          --accent:#ffd23f; --accent2:#46c0ff; --empty:#2a3140; --good:#5ad17a; --bad:#ff6b6b; }
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;}
+  .wrap{max-width:900px;margin:0 auto;padding:20px;}
+  h1{font-size:20px;letter-spacing:1px;margin:0 0 4px;} h1 span{color:var(--accent);}
+  p.dim,.dim{color:var(--dim);} code{color:var(--accent);}
+  .zone{border:2px dashed #3a4256;border-radius:10px;padding:18px;text-align:center;color:var(--dim);cursor:pointer;margin:12px 0;transition:.15s;}
+  .zone.hot{border-color:var(--accent);color:var(--ink);background:#161b27;}
+  .bar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;background:var(--panel);border-radius:8px;padding:10px 14px;margin:10px 0;}
+  button,select{background:#2a3550;color:var(--ink);border:1px solid #3c4a68;border-radius:6px;padding:4px 9px;font:inherit;cursor:pointer;}
+  button:hover:not(:disabled){border-color:var(--accent2);} button.primary{background:var(--accent);color:#1a1400;border-color:var(--accent);font-weight:bold;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  .slot{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid #2a3346;border-radius:7px;padding:5px 10px;margin:5px 0;flex-wrap:wrap;}
+  .slot .n{color:var(--accent);width:3ch;} .slot .ty{width:6ch;color:var(--accent2);}
+  .slot .nm{flex:1;min-width:8ch;} .slot .mt{color:var(--empty);} .slot .sub{color:var(--dim);font-size:12px;}
+  .slot button{padding:2px 8px;font-size:12px;}
+  .tag{font-size:11px;color:var(--dim);border:1px solid #34405a;border-radius:4px;padding:0 5px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span>genmddj</span> BANK EDITOR</h1>
+  <p class="dim">Edit the <b>32-slot SRAM instrument bank</b> — the cross-song library (the middle tier
+  between the factory ROM bank and a song's instruments). Drop a de-interleaved <code>.sav</code>/<code>.srm</code>
+  to edit its bank in place (config + songs untouched), or start a blank cart. Drop <code>.gmi</code> patches
+  to load them into slots. Saves the <code>.sav</code> back.</p>
+
+  <div class="zone" id="zone">drop a <b>.sav / .srm</b> or <b>.gmi</b> patches here · or click
+    &nbsp;—&nbsp; <select id="size"><option value="32">32 KB</option><option value="64" selected>64 KB</option></select>
+    <button id="blank">start blank</button></div>
+  <input type="file" id="file" multiple hidden accept=".sav,.srm,.bin,.gmi">
+
+  <div id="main" style="display:none">
+    <div class="bar">
+      <span class="tag" id="layoutTag">—</span>
+      <span class="tag" id="fillTag">—</span>
+      <button id="loadInto">load .gmi → from slot 0</button>
+      <input type="file" id="gmiFiles" multiple hidden accept=".gmi">
+      <button class="primary" id="save">save .sav</button>
+      <span class="dim" id="note"></span>
+    </div>
+    <div id="slots"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const CONFIG_SZ=256, BANK_BASE=256, NUBANK=32, BANK_REC=64, BANK_SIZE=NUBANK*BANK_REC;
+const SLOT0=2304, SLOT_SIZE=20848, GMI_MAGIC="GMDJINS1", INSTR_SZ=64;
+const ITYPE=["FM","KIT","WAVE","TONE","NOISE","PERC"];
+const $=id=>document.getElementById(id);
+const enc=new TextEncoder(), dec=new TextDecoder("latin1");
+let sram=null, usedDeint=false, gmiStart=0;
+
+function ascii(u8,o,n){let s="";for(let i=0;i<n;i++){const c=u8[o+i];if(c===0)break;s+=String.fromCharCode(c);}return s.trim();}
+function findStr(u8,str,from=0){const m=enc.encode(str);outer:for(let i=from;i<=u8.length-m.length;i++){for(let j=0;j<m.length;j++)if(u8[i+j]!==m[j])continue outer;return i;}return -1;}
+const deinterleave=u8=>{const o=new Uint8Array(u8.length>>1);for(let i=0;i<o.length;i++)o[i]=u8[i*2+1];return o;};
+function looksLikeSram(u8){ if(u8.length<SLOT0) return false; if(u8[0]===0xA5) return true; return findStr(u8,"GMDDJ",SLOT0-4)>=0; }
+const recOff=i=>BANK_BASE+i*BANK_REC;
+const isEmpty=i=>sram[recOff(i)]===0xFF || sram[recOff(i)]>5;
+
+function dl(u8,name){const b=new Blob([u8],{type:"application/octet-stream"});const a=document.createElement("a");
+  a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
+
+function loadSram(raw, forceDeint){
+  let u8=raw; usedDeint=false;
+  if(forceDeint || (!looksLikeSram(raw) && looksLikeSram(deinterleave(raw)))){ u8=deinterleave(raw); usedDeint=true; }
+  sram=u8; show();
+  note(`${usedDeint?"de-interleaved · ":""}loaded ${(u8.length/1024|0)} KB`,false);
+}
+function blankSram(kb){ const u=new Uint8Array(kb*1024).fill(0); u[0]=0xA5;             // config magic
+  for(let i=0;i<NUBANK;i++) u[BANK_BASE+i*BANK_REC]=0xFF;                                // empty bank
+  sram=u; usedDeint=false; show(); note(`blank ${kb} KB cart`,false); }
+
+function loadGmiInto(buf, slot){
+  if(ascii(buf,0,8)!==GMI_MAGIC){ note("not a .gmi patch",true); return false; }
+  sram.set(buf.subarray(8,8+INSTR_SZ), recOff(slot)); return true;
+}
+
+function render(){
+  const box=$("slots"); box.innerHTML="";
+  let filled=0;
+  for(let i=0;i<NUBANK;i++){
+    const o=recOff(i), t=sram[o], empty=isEmpty(i); if(!empty) filled++;
+    const d=document.createElement("div"); d.className="slot";
+    const name=empty?"":ascii(sram,o+54,8);
+    const sub=(!empty && t===0)?`algo ${sram[o+1]} · fb ${sram[o+2]}`:"";
+    d.innerHTML=`<span class="n">${i.toString(16).toUpperCase()}</span>
+      <span class="ty">${empty?'<span class=mt>—</span>':(ITYPE[t]||t)}</span>
+      <span class="nm">${empty?'<span class=mt>empty</span>':(name||"(unnamed)")}</span>
+      <span class="sub">${sub}</span>`;
+    const mk=(txt,fn,dis)=>{const b=document.createElement("button");b.textContent=txt;b.disabled=!!dis;b.onclick=fn;d.appendChild(b);};
+    mk("load .gmi",()=>pickGmi(i));
+    mk("save .gmi",()=>{ const out=new Uint8Array(8+INSTR_SZ); enc.encodeInto(GMI_MAGIC,out); out.set(sram.subarray(o,o+INSTR_SZ),8);
+      dl(out,(name||("inst"+i)).toLowerCase().replace(/[^a-z0-9]/g,"")+".gmi"); }, empty);
+    mk("clear",()=>{ sram.fill(0,o,o+INSTR_SZ); sram[o]=0xFF; render(); }, empty);
+    box.appendChild(d);
+  }
+  $("layoutTag").textContent = usedDeint?"odd-byte → de-interleaved":"linear";
+  $("fillTag").textContent = `${filled}/${NUBANK} filled`;
+}
+function show(){ $("main").style.display="block"; render(); }
+function note(m,bad){ const e=$("note"); e.textContent=m; e.style.color=bad?"#ff6b6b":""; }
+
+// per-slot .gmi picker
+let pickSlot=0;
+function pickGmi(slot){ pickSlot=slot; gmiOne.click(); }
+const gmiOne=document.createElement("input"); gmiOne.type="file"; gmiOne.accept=".gmi"; gmiOne.hidden=true; document.body.appendChild(gmiOne);
+gmiOne.onchange=async()=>{ if(gmiOne.files[0]){ const ok=loadGmiInto(new Uint8Array(await gmiOne.files[0].arrayBuffer()),pickSlot); if(ok){render();note("loaded into slot "+pickSlot.toString(16).toUpperCase(),false);} } gmiOne.value=""; };
+
+// bulk .gmi -> consecutive slots from gmiStart
+$("loadInto").onclick=()=>$("gmiFiles").click();
+$("gmiFiles").onchange=async()=>{ await loadGmis([...$("gmiFiles").files]); $("gmiFiles").value=""; };
+async function loadGmis(files){ let slot=sram?0:0, n=0;
+  const list=files.filter(f=>/\.gmi$/i.test(f.name)).sort((a,b)=>a.name.localeCompare(b.name));
+  for(const f of list){ if(slot>=NUBANK) break; if(loadGmiInto(new Uint8Array(await f.arrayBuffer()),slot)){ slot++; n++; } }
+  render(); note(`loaded ${n} patch(es) from slot 0`,false);
+}
+
+// intake
+async function take(files){
+  const srams=files.filter(f=>/\.(sav|srm|bin)$/i.test(f.name));
+  const gmis=files.filter(f=>/\.gmi$/i.test(f.name));
+  if(srams.length){ loadSram(new Uint8Array(await srams[0].arrayBuffer()), false); }
+  if(gmis.length){ if(!sram) blankSram(+$("size").value); await loadGmis(gmis); }
+}
+const zone=$("zone"), inp=$("file");
+zone.onclick=e=>{ if(e.target.tagName!=="SELECT"&&e.target.id!=="blank") inp.click(); };
+inp.onchange=()=>{ if(inp.files.length) take([...inp.files]); inp.value=""; };
+$("blank").onclick=e=>{ e.stopPropagation(); blankSram(+$("size").value); };
+$("save").onclick=()=>{ if(!sram)return; dl(sram, `genmddj-bank-${(sram.length/1024|0)}k.sav`); note("saved",false); };
+["dragenter","dragover"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.add("hot");}));
+["dragleave","drop"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.remove("hot");}));
+zone.addEventListener("drop",ev=>{ if(ev.dataTransfer.files.length) take([...ev.dataTransfer.files]); });
+</script>
+</body>
+</html>

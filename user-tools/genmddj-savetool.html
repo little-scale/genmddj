@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj save tool</title>
+<style>
+  :root { --bg:#10131a; --panel:#1b2030; --ink:#e7ecf5; --dim:#8b96ab;
+          --accent:#ffd23f; --accent2:#46c0ff; --empty:#2a3140; --good:#5ad17a; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  .wrap { max-width:960px; margin:0 auto; padding:20px; }
+  h1 { font-size:20px; letter-spacing:1px; margin:0 0 4px; }
+  h1 span { color:var(--accent); }
+  h3 { color:var(--accent2); margin:18px 0 6px; font-size:14px; letter-spacing:.5px; }
+  p.dim, .dim { color:var(--dim); }
+  a { color:var(--accent2); }
+  .zone { border:2px dashed #3a4256; border-radius:10px; padding:26px; text-align:center;
+          color:var(--dim); cursor:pointer; margin:14px 0; transition:.15s; }
+  .zone.hot { border-color:var(--accent); color:var(--ink); background:#161b27; }
+  .bar { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center; background:var(--panel);
+         border-radius:8px; padding:10px 14px; margin:10px 0; }
+  select, input[type=text] { background:#0d1018; color:var(--ink); border:1px solid #34405a;
+         border-radius:5px; padding:4px 6px; font:inherit; }
+  input[type=text]{ width:9ch; }
+  button { background:#2a3550; color:var(--ink); border:1px solid #3c4a68; border-radius:6px;
+           padding:5px 11px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled){ border-color:var(--accent2); }
+  button.primary { background:var(--accent); color:#1a1400; border-color:var(--accent); font-weight:bold; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .slot { background:var(--panel); border:1px solid #2a3346; border-radius:8px; padding:8px 12px;
+          margin:7px 0; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .slot .n { color:var(--accent); width:3ch; }
+  .slot .ttl { flex:1; min-width:12ch; }
+  .slot .st { font-size:12px; }
+  .ok{ color:var(--good); } .bad{ color:var(--bad); }
+  .viewer { background:#0c0f16; border:1px solid #2a3346; border-radius:8px; padding:4px 14px 14px;
+            margin-top:12px; display:none; }
+  .viewer.show { display:block; }
+  table { border-collapse:collapse; font-size:12px; margin:4px 0; }
+  td,th { border:1px solid #232b3c; padding:1px 6px; text-align:center; }
+  th { color:var(--dim); font-weight:normal; }
+  .note { color:var(--accent2); } .cmd { color:var(--accent); } .mt{ color:var(--empty); }
+  .closev { float:right; margin-top:8px; }
+  .tag { font-size:11px; color:var(--dim); border:1px solid #34405a; border-radius:4px; padding:0 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span>genmddj</span> SAVE TOOL</h1>
+  <p class="dim">Extract <code>.gmdj</code> songs from a cart save, edit persistent settings, and build a
+  new <code>.sav</code>/<code>.srm</code>. Drop a de-interleaved SRAM or <code>.gmdj</code> files
+  (odd-byte SRAM is auto-detected; if not, run it through the de-/re-interleaver first).</p>
+
+  <div class="zone" id="zone">drop a <b>.sav / .srm / .gmdj</b> file here &nbsp;·&nbsp; or click to choose</div>
+  <input type="file" id="file" multiple hidden accept=".sav,.srm,.gmdj,.bin">
+
+  <div class="bar">
+    <label>cart size
+      <select id="size">
+        <option value="32">32 KB · 1 song</option>
+        <option value="64" selected>64 KB · 3 songs</option>
+      </select>
+    </label>
+    <span class="tag" id="layoutTag">no file</span>
+    <label class="dim"><input type="checkbox" id="deint"> force de-interleave (odd-byte)</label>
+  </div>
+
+  <div class="bar" id="cfgBar">
+    <b class="dim">CONFIG</b>
+    <label>palette <select id="cPal"></select></label>
+    <label>video <select id="cVid">
+      <option value="0">AUTO</option><option value="1">PAL</option><option value="2">NTSC</option></select></label>
+    <label>sync <select id="cSync">
+      <option value="0">OFF</option><option value="1">OUT</option><option value="2">PULSE</option><option value="3">IN</option></select></label>
+    <span class="tag" id="bankTag">bank: –</span>
+  </div>
+
+  <div id="slots"></div>
+
+  <div class="bar">
+    <button class="primary" id="dlSav" disabled>download .sav</button>
+    <button id="dlAll" disabled>download all .gmdj</button>
+    <span class="dim" id="note"></span>
+  </div>
+
+  <div class="viewer" id="viewer"></div>
+</div>
+
+<script>
+"use strict";
+// ---- genmddj save format (authoritative, from src/main.asm) ----
+const SLOT_MAGIC = "GMDDJ", SAVE_VER = 1;
+const DATA_SIZE = 20832;            // SAVE_DATA $5160
+const SLOT_HDR  = 16;               // magic5+ver1+csum2+title8
+const SLOT_SIZE = DATA_SIZE+SLOT_HDR;   // $5170 = 20848
+const CONFIG_SZ = 256;
+const NUBANK = 32, BANK_REC = 64;
+const BANK_BASE = CONFIG_SZ;            // 256
+const BANK_SIZE = NUBANK*BANK_REC;      // 2048
+const SLOT0 = BANK_BASE+BANK_SIZE;      // 2304
+// data-block pools (offset,len) within the 20832 block:
+const POOL = {
+  globals:[0,256], song:[256,2400], phrases:[2656,10240], chains:[12896,3072],
+  instruments:[15968,2048], tables:[18016,2048], grooves:[20064,256], waves:[20320,512] };
+const NSONGROWS=240, NCH=10, NPHRASES=160, PH_ROWS=16, PH_BYTES=4, PHRASE_SZ=64;
+const NCHAINS=96, CH_STEPS=16, CHAIN_SZ=32, NINSTR=32, INSTR_SZ=64;
+const NTABLE=32, TBL_ROWS=16, TROW=4, NGROOVE=16, GR_LEN=16, NWAVE=16, WAVE_STEPS=32;
+const ITYPE=["FM","KIT","WAVE","TONE","NOISE","PERC"];
+const GMDJ_MAGIC = "GMDJSONG";          // .gmdj file magic (this tool's song container)
+const sizeBytes = kb => kb*1024;
+const slotsFor  = kb => Math.floor((sizeBytes(kb)-SLOT0)/SLOT_SIZE);
+
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder("latin1");
+let sram = null;        // de-interleaved logical bytes (Uint8Array) or null
+let songs = [];         // [{title, data:Uint8Array(20832)|null, valid, src}]
+let config = {pal:0, vid:0, sync:0};
+let bank = null;        // Uint8Array(2048) preserved instrument bank
+let usedDeint = false;
+
+// palette dropdown 0..7
+for (let i=0;i<8;i++){ const o=document.createElement("option"); o.value=i; o.textContent="COLR "+i; $("cPal").appendChild(o); }
+
+function ascii(u8,o,n){ let s=""; for(let i=0;i<n;i++){ const c=u8[o+i]; if(c===0)break; s+=String.fromCharCode(c);} return s.trim(); }
+function findStr(u8, str, from=0){ const m=enc.encode(str); outer:for(let i=from;i<=u8.length-m.length;i++){ for(let j=0;j<m.length;j++) if(u8[i+j]!==m[j]) continue outer; return i; } return -1; }
+function deinterleave(u8){ const o=new Uint8Array(u8.length>>1); for(let i=0;i<o.length;i++) o[i]=u8[i*2+1]; return o; }   // odd bytes
+function dataChecksum(d){ let s=0; for(let i=0;i<DATA_SIZE;i++) s=(s+d[i])&0xFFFF; return s; }
+
+// ---------- load ----------
+function looksLikeSram(u8){
+  if (u8.length < SLOT0+SLOT_HDR) return false;
+  if (u8[0]===0xA5) return true;                       // config magic
+  return findStr(u8, SLOT_MAGIC, SLOT0-4) >= 0;        // any slot
+}
+function loadSram(raw, forceDeint){
+  let u8 = raw;
+  usedDeint = false;
+  if (forceDeint || (!looksLikeSram(raw) && looksLikeSram(deinterleave(raw)))){ u8 = deinterleave(raw); usedDeint = true; }
+  sram = u8;
+  // config
+  if (u8[0]===0xA5){ config = {pal:u8[1], vid:u8[2], sync:u8[3]}; }
+  // instrument bank
+  bank = u8.slice(BANK_BASE, BANK_BASE+BANK_SIZE);
+  // song slots (by fixed offset; verify magic+checksum)
+  const kb = +$("size").value, ns = slotsFor(kb);
+  songs = [];
+  for (let n=0;n<ns;n++){
+    const base = SLOT0 + n*SLOT_SIZE;
+    if (base+SLOT_SIZE > u8.length){ songs.push(null); continue; }
+    if (ascii(u8,base,5)!==SLOT_MAGIC){ songs.push(null); continue; }
+    const csum = (u8[base+6]<<8)|u8[base+7];
+    const title = ascii(u8, base+8, 8);
+    const data = u8.slice(base+SLOT_HDR, base+SLOT_HDR+DATA_SIZE);
+    const valid = dataChecksum(data)===csum;
+    songs.push({title, data, valid, src:"slot"});
+  }
+  syncCfgUI(); render();
+  note(`${usedDeint?"de-interleaved · ":""}${songs.filter(Boolean).filter(s=>s).length} slot(s) read`, false);
+}
+function addGmdj(raw, name){
+  if (ascii(raw,0,8)!==GMDJ_MAGIC){ note(`${name}: not a .gmdj file`, true); return; }
+  const dsz = (raw[10]<<8)|raw[11];
+  if (dsz!==DATA_SIZE){ note(`${name}: data size ${dsz} != ${DATA_SIZE} (different build?)`, true); return; }
+  const title = ascii(raw, 12, 8) || name.replace(/\.gmdj$/i,"").slice(0,8);
+  const data = raw.slice(32, 32+DATA_SIZE);
+  // place into the first empty slot
+  const kb=+$("size").value, ns=slotsFor(kb);
+  let i = songs.findIndex(s=>!s);
+  if (i<0 && songs.length<ns) i = songs.push(null)-1;
+  if (i<0){ note(`all ${ns} slots full at ${kb}KB`, true); return; }
+  songs[i] = {title, data, valid:true, src:"gmdj"};
+  render(); note(`added ${title} -> slot ${i}`, false);
+}
+
+// ---------- build ----------
+function buildSav(){
+  const kb=+$("size").value, ns=slotsFor(kb), out=new Uint8Array(sizeBytes(kb)).fill(0);
+  out[0]=0xA5; out[1]=config.pal&7; out[2]=config.vid; out[3]=config.sync;     // config
+  if (bank) out.set(bank.subarray(0,BANK_SIZE), BANK_BASE);                     // preserve bank
+  for (let n=0;n<ns;n++){
+    const s=songs[n]; if(!s||!s.data) continue;
+    const base=SLOT0+n*SLOT_SIZE;
+    enc.encodeInto(SLOT_MAGIC, out.subarray(base,base+5)); out[base+5]=SAVE_VER;
+    const cs=dataChecksum(s.data); out[base+6]=(cs>>8)&255; out[base+7]=cs&255;
+    const t=(s.title||"SONG").padEnd(8," ").slice(0,8); enc.encodeInto(t, out.subarray(base+8,base+16));
+    out.set(s.data, base+SLOT_HDR);
+  }
+  return out;
+}
+function makeGmdj(s){
+  const out=new Uint8Array(32+DATA_SIZE);
+  enc.encodeInto(GMDJ_MAGIC, out); out[8]=1; out[10]=(DATA_SIZE>>8)&255; out[11]=DATA_SIZE&255;
+  enc.encodeInto((s.title||"SONG").padEnd(8," ").slice(0,8), out.subarray(12,20));
+  out.set(s.data, 32); return out;
+}
+function download(u8, name){ const b=new Blob([u8],{type:"application/octet-stream"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(b); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),500); }
+
+// ---------- UI ----------
+function syncCfgUI(){ $("cPal").value=config.pal&7; $("cVid").value=config.vid; $("cSync").value=config.sync;
+  $("bankTag").textContent = bank? `bank: ${[...Array(NUBANK).keys()].filter(i=>bank[i*64]!==0xFF&&bank[i*64]!==0).length}/${NUBANK} filled` : "bank: –";
+  $("layoutTag").textContent = sram? (usedDeint?"odd-byte → de-interleaved":"linear") : "no file"; }
+$("cPal").onchange =()=>config.pal=+$("cPal").value;
+$("cVid").onchange =()=>config.vid=+$("cVid").value;
+$("cSync").onchange=()=>config.sync=+$("cSync").value;
+
+function render(){
+  const kb=+$("size").value, ns=slotsFor(kb), box=$("slots"); box.innerHTML="";
+  let any=false;
+  for (let n=0;n<ns;n++){
+    const s=songs[n], d=document.createElement("div"); d.className="slot";
+    if (s){ any=true;
+      d.innerHTML=`<span class="n">${n}</span><span class="ttl">${s.title||"(untitled)"}</span>
+        <span class="st ${s.valid?'ok':'bad'}">${s.src==='gmdj'?'.gmdj':(s.valid?'checksum ok':'CHECKSUM BAD')}</span>`;
+      const mk=(t,f)=>{ const b=document.createElement("button"); b.textContent=t; b.onclick=f; d.appendChild(b); };
+      mk("view", ()=>viewSong(n));
+      mk("download .gmdj", ()=>download(makeGmdj(s), (s.title||"song").replace(/\s+/g,"_")+".gmdj"));
+      mk("clear", ()=>{ songs[n]=null; render(); });
+    } else {
+      d.innerHTML=`<span class="n">${n}</span><span class="ttl mt">— empty —</span>`;
+    }
+    box.appendChild(d);
+  }
+  $("dlSav").disabled = !any && !bank;
+  $("dlAll").disabled = !songs.some(Boolean);
+}
+function note(m,bad){ const e=$("note"); e.textContent=m; e.className=bad?"bad":"dim"; }
+
+// ---------- viewer ----------
+const noteName = v => v===0xFF?"···":(["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"][v%12]+Math.floor(v/12));
+const hx = (v,n=2)=> v.toString(16).toUpperCase().padStart(n,"0");
+function viewSong(n){
+  const s=songs[n], d=s.data, V=$("viewer"); const P=[];
+  P.push(`<button class="closev" onclick="document.getElementById('viewer').classList.remove('show')">close</button>`);
+  P.push(`<h3>Slot ${n} — “${s.title||"untitled"}” ${s.valid?'':'<span class=bad>(bad checksum)</span>'}</h3>`);
+  // globals
+  const g=POOL.globals[0];
+  P.push(`<p class="dim">tsp ${(d[g]<<24>>24)} · mode ${["SONG","CHAIN","PHRASE"][d[g+1]]||d[g+1]} · groove ${d[g+2]} · LFO ${d[g+3]} · echo ${d[g+4]}</p>`);
+  // song grid (non-empty rows)
+  const so=POOL.song[0]; let rows="";
+  for (let r=0;r<NSONGROWS;r++){ let cells="",used=false;
+    for (let c=0;c<NCH;c++){ const v=d[so+r*NCH+c]; if(v!==0xFF)used=true; cells+=`<td class="${v===0xFF?'mt':''}">${v===0xFF?'··':hx(v)}</td>`; }
+    if(used) rows+=`<tr><th>${hx(r)}</th>${cells}</tr>`; }
+  P.push(`<h3>Song</h3>`+(rows?`<table><tr><th></th>${["F1","F2","F3","F4","F5","F6","S1","S2","S3","NO"].map(t=>`<th>${t}</th>`).join("")}</tr>${rows}</table>`:`<span class="dim">empty</span>`));
+  // chains used (referenced by song)
+  const usedCh=new Set(); for(let i=0;i<NSONGROWS*NCH;i++){const v=d[so+i]; if(v!==0xFF)usedCh.add(v);}
+  const co=POOL.chains[0]; let ch="";
+  [...usedCh].sort((a,b)=>a-b).forEach(c=>{ let steps="";
+    for(let st=0;st<CH_STEPS;st++){ const ph=d[co+c*CHAIN_SZ+st*2], tr=d[co+c*CHAIN_SZ+st*2+1];
+      if(ph!==0xFF) steps+=`<td>${hx(ph)}${tr?`<span class=dim>${(tr<<24>>24>0?'+':'')}${tr<<24>>24}</span>`:''}</td>`; }
+    if(steps) ch+=`<tr><th>${hx(c)}</th>${steps}</tr>`; });
+  if(ch) P.push(`<h3>Chains <span class=dim>(phrase + transpose)</span></h3><table>${ch}</table>`);
+  // phrases used (referenced by chains)
+  const usedPh=new Set(); usedCh.forEach(c=>{ for(let st=0;st<CH_STEPS;st++){const ph=d[co+c*CHAIN_SZ+st*2]; if(ph!==0xFF)usedPh.add(ph);} });
+  const po=POOL.phrases[0]; let phr="";
+  [...usedPh].sort((a,b)=>a-b).slice(0,24).forEach(p=>{ let body="";
+    for(let r=0;r<PH_ROWS;r++){ const o=po+p*PHRASE_SZ+r*PH_BYTES, nt=d[o], ins=d[o+1], cmd=d[o+2], prm=d[o+3];
+      const blank = nt===0xFF && ins===0xFF && cmd===0;
+      body+=`<tr><th>${hx(r)}</th><td class="note">${nt===0xFF?'···':noteName(nt)}</td><td>${ins===0xFF?'··':hx(ins)}</td><td class="cmd">${cmd?String.fromCharCode(64+cmd):'·'}</td><td>${cmd?hx(prm):'··'}</td></tr>`; }
+    phr+=`<div style="display:inline-block;vertical-align:top;margin:0 10px 8px 0"><b class=dim>phrase ${hx(p)}</b><table><tr><th></th><th>note</th><th>in</th><th>c</th><th>p</th></tr>${body}</table></div>`; });
+  if(phr) P.push(`<h3>Phrases</h3>${phr}`);
+  // instruments (non-default type)
+  const io=POOL.instruments[0]; let ins="";
+  for(let i=0;i<NINSTR;i++){ const t=d[io+i*INSTR_SZ]; if(t>5)continue;
+    ins+=`<tr><th>${hx(i)}</th><td>${ITYPE[t]||t}</td><td class=dim>${t===0?`alg ${d[io+i*INSTR_SZ+1]} fb ${d[io+i*INSTR_SZ+2]}`:''}</td></tr>`; }
+  P.push(`<h3>Instruments</h3><table><tr><th>#</th><th>type</th><th></th></tr>${ins}</table>`);
+  V.innerHTML=P.join(""); V.classList.add("show"); V.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+// ---------- file intake ----------
+async function addFiles(list){
+  for (const f of list){
+    const raw = new Uint8Array(await f.arrayBuffer());
+    if (/\.gmdj$/i.test(f.name) || ascii(raw,0,8)===GMDJ_MAGIC) addGmdj(raw, f.name);
+    else loadSram(raw, $("deint").checked);
+  }
+}
+const zone=$("zone"), inp=$("file");
+zone.onclick=()=>inp.click();
+inp.onchange=()=>{ if(inp.files.length) addFiles([...inp.files]); inp.value=""; };
+["dragenter","dragover"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.add("hot");}));
+["dragleave","drop"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.remove("hot");}));
+zone.addEventListener("drop",ev=>{ if(ev.dataTransfer.files.length) addFiles([...ev.dataTransfer.files]); });
+$("size").onchange=()=>{ if(sram) loadSram(usedDeint?sram:sram, false); render(); };  // re-window slots
+$("deint").onchange=()=>{ /* applies on next load */ };
+$("dlSav").onclick=()=>{ const kb=+$("size").value; download(buildSav(), `genmddj-${kb}k.sav`); note(`built ${kb}KB .sav`,false); };
+$("dlAll").onclick=()=>{ songs.forEach((s,n)=>{ if(s) download(makeGmdj(s), (s.title||("song"+n)).replace(/\s+/g,"_")+".gmdj"); }); };
+render();
+</script>
+</body>
+</html>
