@@ -68,6 +68,18 @@ save-file tool, and **`als2genmddj`** — convert Ableton Live `.als`, Standard 
 | [COMMANDS.md](COMMANDS.md) · [CONTROLS.md](CONTROLS.md) · [MANUAL.md](MANUAL.md) | The command set, the controller map, and the manual. |
 | [MEGADRIVE.md](MEGADRIVE.md) · [PALETTE.md](PALETTE.md) · [PRESETS.md](PRESETS.md) · [ALS.md](ALS.md) | Hardware notes, the palette set, factory presets, and the Ableton path. |
 
+## Related projects
+
+- **[SMSGGDJ](https://github.com/little-scale/smsggdj)** — the sibling tracker for the
+  SEGA Master System / Game Gear that genmddj grew out of (shared data model, the entire
+  PSG layer, grooves, the command set, and the native DE-9 sync).
+- **[smsggdj-link-esp32](https://github.com/little-scale/smsggdj-link-esp32)** — ESP32
+  firmware bridging **Ableton Link** to the trackers' DE-9 hardware sync (a XIAO ESP32-C3
+  driving the `SYNC IN` line). genmddj's SYNC IN was hardware-verified against this.
+- **[ares-link-sync](https://github.com/little-scale/ares-link-sync)** — an **ares**
+  emulator fork that follows an Ableton Link clock in-emulator (frame-PLL'd, bar-quantized
+  launch) — for testing Link sync without hardware.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). © 2026 Sebastian Tomczak (little-scale).
