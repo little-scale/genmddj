@@ -7187,6 +7187,8 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_t
     cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (global)
     beq     .cmd_w
+    cmpi.b  #26, d2                        ; Z xx = random note-gate (play with probability xx/256)
+    beq     .cmd_z
     bsr     exec_cmd                       ; Q/X/O/U/F/C/P/R/Y/K voice commands (or none) -- shared
     bra     .cmddone                       ; then resolve this row's note
 .cmd_i:
@@ -7267,6 +7269,25 @@ advance_ch:                               ; a6 = channel
 .cj_set:
     move.b  d2, cmd_tsp                    ; applied in .cmddone alongside chain/instrument transpose
     bra     .cmddone
+.cmd_z:                                   ; Z xx = random note-gate: play this note with probability xx/256
+    moveq   #0, d2
+    move.b  (3,a1,d1.w), d2               ; xx = play probability (0 = never, $FF ~ always)
+    move.l  wave_rng, d3                   ; xorshift32 (shared with the random wave preset)
+    move.l  d3, d4
+    lsl.l   #7, d4
+    eor.l   d4, d3
+    move.l  d3, d4
+    lsr.l   #5, d4
+    eor.l   d4, d3
+    move.l  d3, d4
+    lsl.l   #3, d4
+    eor.l   d4, d3
+    move.l  d3, wave_rng
+    swap    d3                             ; take a byte of the result (bits 16-23)
+    andi.w  #$FF, d3
+    cmp.b   d2, d3                          ; random < xx -> play; else suppress (rest)
+    blo     .cmddone
+    bra     .ret
 .cmddone:                                 ; phrase path only now (the table never reaches here)
     lsl.w   #2, d0
     moveq   #0, d2
