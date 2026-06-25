@@ -216,6 +216,7 @@ live_on    equ $00FFD3C1           ; LIVE: per-track sounding flag (NCH bytes; 1
 live_bar   equ $00FFD3CB           ; LIVE: master 16-row bar counter (row-advances & 15) for quantize
 live_q     equ $00FFD3CC           ; LIVE: per-track queued launch songpos (read only when live_when!=0)
 live_when  equ $00FFD3D6           ; LIVE: per-track queue (0 none, 1 at next master bar, 2 at chain end)
+c_wbank    equ $00FFD3E0           ; B command: per-channel wave# override (0-15; $FF = use instrument iw_wave)
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -6283,6 +6284,11 @@ live_setup_chan:                          ; d1 = track, d2 = songpos; arm that c
 ; reset every channel for playback per play_mode (kshadow=$FF forces a key-off,
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
+    lea     c_wbank, a0                   ; B command: clear per-channel wave-bank overrides ($FF = use iw_wave)
+    moveq   #NCH-1, d0
+.epr_wb:
+    move.b  #$FF, (a0)+
+    dbra    d0, .epr_wb
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
@@ -7693,6 +7699,8 @@ exec_cmd:
     beq     .cmd_y
     cmpi.b  #14, d2                        ; N xy = noise mode/rate (NO channel)
     beq     .cmd_n
+    cmpi.b  #2, d2                          ; B xy = wave bank (select wave 0-15 for the channel)
+    beq     .cmd_b
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7855,6 +7863,14 @@ exec_cmd:
     ori.b   #4, d2
 .cn_per:
     move.w  d2, c_period(a6)              ; override the 3-bit SN76489 noise control
+    bra     .cmddone
+.cmd_b:                                   ; B xy = wave bank: select wave 0-15 for the channel (the WAVE bake reads it)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    move.b  (3,a1,d1.w), d2               ; param low nibble = wave# 0-15
+    andi.b  #15, d2
+    lea     c_wbank, a4
+    move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
@@ -9366,8 +9382,15 @@ wave_play:
     muls.w  d1, d0
     asr.l   #7, d0
     adda.w  d0, a4
-    moveq   #0, d0                         ; base wave = wave_ram + WAVE# * 32
+    moveq   #0, d2                         ; base wave: B override (c_wbank) or instrument iw_wave
+    move.b  c_track(a6), d2
+    lea     c_wbank, a2
+    moveq   #0, d0
+    move.b  (a2,d2.w), d0
+    cmpi.b  #$FF, d0
+    bne.s   .wp_wb
     move.b  (iw_wave,a1), d0
+.wp_wb:
     andi.w  #15, d0
     lsl.w   #5, d0
     lea     wave_ram, a5
