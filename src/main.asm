@@ -9802,6 +9802,42 @@ render_groove:                            ; GRV selector (cur_row 0) + 16 tick v
     rts
 
 render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SAVE LOAD
+    moveq   #3, d3                           ; song NAME at row 3 -- drawn FIRST (ample VBlank budget for the cursor highlight)
+    moveq   #1, d4
+    lea     str_pname, a1
+    bsr     print_at
+    lea     VDP_CTRL, a0                    ; (print_at may leave a0 off the control port)
+    moveq   #3, d0                           ; chars at row 3, col 6 (computed like print_at)
+    lsl.w   #6, d0
+    addq.w  #6, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     song_title, a2
+    moveq   #0, d5
+.ppn_m:
+    moveq   #0, d3
+    move.b  (a2,d5.w), d3
+    cmpi.b  #$FF, d3
+    beq.s   .ppn_b
+    tst.b   d3
+    bne.s   .ppn_w
+.ppn_b:
+    moveq   #' ', d3
+.ppn_w:
+    move.w  d3, VDP_DATA
+    addq.w  #1, d5
+    cmpi.w  #8, d5
+    bne.s   .ppn_m
+    cmpi.b  #9, cur_row                      ; cursor marker (up-triangle) on row 4, below the cur_col char
+    bne.s   .ppn_nocurs
+    moveq   #4, d3
+    moveq   #6, d4
+    add.b   cur_col, d4
+    lea     str_curs, a1
+    bsr     print_at
+.ppn_nocurs:
     moveq   #5, d3
     moveq   #1, d4
     lea     str_p_tmpo, a1
@@ -9925,34 +9961,6 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     moveq   #$60, d4
 .plf:
     bsr     draw_hex1
-    moveq   #3, d3                           ; song NAME (song_title, 8 chars) at row 3 (content zone)
-    moveq   #1, d4
-    lea     str_pname, a1
-    bsr     print_at
-    lea     VDP_CTRL, a0
-    moveq   #3, d0                          ; name chars at row 3, col 6 (computed like print_at)
-    lsl.w   #6, d0
-    addq.w  #6, d0
-    add.w   d0, d0
-    swap    d0
-    ori.l   #$40000003, d0
-    move.l  d0, (a0)
-    lea     song_title, a2
-    moveq   #0, d5
-.ppn_m:
-    moveq   #0, d3
-    move.b  (a2,d5.w), d3
-    cmpi.b  #$FF, d3
-    beq.s   .ppn_b
-    tst.b   d3
-    bne.s   .ppn_w
-.ppn_b:
-    moveq   #' ', d3
-.ppn_w:
-    move.w  d3, VDP_DATA
-    addq.w  #1, d5
-    cmpi.w  #8, d5
-    bne.s   .ppn_m
     moveq   #19, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
     moveq   #1, d4
     lea     str_saved, a1
@@ -10120,6 +10128,7 @@ glob_tab:                                  ; song-level globals, in head-slot or
 save_magic: dc.b "GMDDJ", 1                ; 5-char magic + version 1
 def_title:  dc.b "SONG    "                ; 8-char default song name
 str_pname:  dc.b "NAME",0
+str_curs:   dc.b "~",0
     even
 
 gather_globals:                            ; scattered globals -> head slot, then clear the reserved tail
