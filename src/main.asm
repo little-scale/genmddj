@@ -5283,16 +5283,26 @@ render_fm:                                ; a0 = VDP_CTRL
     bsr     render_inst_hdr               ; INST + TYPE; a3 = instrum[cur_instr]
     moveq   #0, d6                         ; voice param: HLD VOL PAN TSP | ALGO FB AMS FMS
 .vrow:
-    moveq   #FM_VTOP, d3                     ; display row = FM_VTOP + idx, +1 gap after TBS (idx 5)
+    moveq   #FM_VTOP, d3                     ; display row = FM_VTOP + idx
     add.w   d6, d3
+    cmpi.w  #3, d6                           ; TSP (idx 3) moved to the right -> close its left-column gap (idx>3 up 1)
+    bls.s   .vr_g1
+    subq.w  #1, d3
+.vr_g1:
     cmpi.w  #6, d6                           ; ALGO/FB/AMS/FMS (idx>=6) drop one row (FM-param separator)
     blo.s   .vr_pos
     addq.w  #1, d3
 .vr_pos:
     moveq   #1, d4                           ; label col 1
-    cmpi.w  #10, d6                          ; SWEEP (idx 10) -> below ROM: row 6, col 14
+    cmpi.w  #3, d6                           ; TSP (idx 3) -> below SWEEP: row 8, col 14
+    bne.s   .vr_nts
+    moveq   #8, d3
+    moveq   #14, d4
+    bra.s   .vr_lbl
+.vr_nts:
+    cmpi.w  #10, d6                          ; SWEEP (idx 10) -> below ROM with a gap: row 7, col 14
     bne.s   .vr_lbl
-    moveq   #6, d3
+    moveq   #7, d3
     moveq   #14, d4
 .vr_lbl:
     move.w  d6, d0
