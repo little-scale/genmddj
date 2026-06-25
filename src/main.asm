@@ -1599,7 +1599,13 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     beq.s   .mc_ndis
     clr.b   proj_armed
 .mc_ndis:
-    cmpi.b  #SCR_INSTR, cur_screen          ; INSTR upper half: 2D grid (bank + HLD/VOL/PAN/TBL.../SWEEP/TSP)
+    cmpi.b  #SCR_INSTR, cur_screen          ; INSTR FM editor: the 2D grid is FM-only
+    bne     .mc_move
+    moveq   #0, d0                          ; non-FM (TONE/NOISE/KIT/WAVE/PERC) -> plain linear nav
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    tst.b   (a1,d0.w)                       ; i_type (offset 0): 0 = FM, else generic up/down
     bne     .mc_move
     cmpi.b  #1, cur_row
     beq     .mc_bank                         ; row 1 = bank panel
@@ -3818,7 +3824,15 @@ render_inst_hdr:
     moveq   #$60, d4
 .inh:
     bsr     draw_hex2
-    move.l  #$419C0003, (a0)              ; instrument name (i_name, 8 chars) at row 3, col 14 (aligned with SRAM)
+    move.l  #$419C0003, (a0)              ; name field at row 3, col 14 -- FM only; blank for other types
+    tst.b   (a3)                           ; i_type 0 = FM
+    beq.s   .inh_nm0
+    moveq   #8-1, d5                       ; non-FM: blank the 8-char name area
+.inh_blk:
+    move.w  #' ', VDP_DATA
+    dbra    d5, .inh_blk
+    bra     .inh_type
+.inh_nm0:
     lea     (i_name,a3), a2
     moveq   #0, d5
 .inh_nm:
@@ -3844,6 +3858,7 @@ render_inst_hdr:
     addq.w  #1, d5
     cmpi.w  #8, d5
     bne.s   .inh_nm
+.inh_type:
     moveq   #4, d3                         ; TYPE field (cur_row 1)
     moveq   #1, d4
     lea     str_type, a1
