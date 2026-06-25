@@ -219,6 +219,7 @@ live_when  equ $00FFD3D6           ; LIVE: per-track queue (0 none, 1 at next ma
 c_wbank    equ $00FFD3E0           ; B command: per-channel wave# override (0-15; $FF = use instrument iw_wave)
 c_delay    equ $00FFD3EA           ; D command: per-channel note-on delay countdown (ticks; 0 = none)
 d_set      equ $00FFD3F4           ; D command: 1 if D delayed the note this row (skip the immediate trigger)
+c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override (0-3; $FF = use instrument i_rate)
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -6296,6 +6297,11 @@ engine_play_reset:
 .epr_dl:
     clr.b   (a0)+
     dbra    d0, .epr_dl
+    lea     c_srate, a0                   ; S command: clear per-channel sample-rate overrides ($FF = use i_rate)
+    moveq   #NCH-1, d0
+.epr_sr:
+    move.b  #$FF, (a0)+
+    dbra    d0, .epr_sr
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
@@ -7729,6 +7735,8 @@ exec_cmd:
     beq     .cmd_b
     cmpi.b  #4, d2                          ; D xx = delay the note-on by xx ticks
     beq     .cmd_d
+    cmpi.b  #19, d2                         ; S xx = sample speed (DAC walk rate; KIT voice)
+    beq     .cmd_s
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7908,6 +7916,14 @@ exec_cmd:
     lea     c_delay, a4
     move.b  d2, (a4,d3.w)                  ; arm the per-channel countdown
     move.b  #1, d_set                      ; -> .notbset skips the immediate trigger
+    bra     .cmddone
+.cmd_s:                                   ; S xx = sample speed: override the DAC walk rate 0-3 for the channel
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    move.b  (3,a1,d1.w), d2               ; param low 2 bits = rate 0-3 (1x/2x/4x/0.5x, matches i_rate)
+    andi.b  #3, d2
+    lea     c_srate, a4
+    move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
@@ -9136,8 +9152,15 @@ dac_play:
     move.w  d4, d5
     lsr.w   #8, d5
     move.b  d5, Z80_RAM+$1FB6
-    moveq   #0, d5                        ; rate -> window step + half-rate flag
+    moveq   #0, d5                        ; rate: S override (c_srate) or instrument i_rate -> window step + half
+    moveq   #0, d6
+    move.b  c_track(a6), d6
+    lea     c_srate, a0
+    move.b  (a0,d6.w), d5
+    cmpi.b  #$FF, d5
+    bne.s   .dp_sr
     move.b  (i_rate,a1), d5
+.dp_sr:
     andi.w  #3, d5
     lea     rate_step, a0
     move.b  (a0,d5.w), Z80_RAM+$1FB8
