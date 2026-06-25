@@ -217,6 +217,8 @@ live_bar   equ $00FFD3CB           ; LIVE: master 16-row bar counter (row-advanc
 live_q     equ $00FFD3CC           ; LIVE: per-track queued launch songpos (read only when live_when!=0)
 live_when  equ $00FFD3D6           ; LIVE: per-track queue (0 none, 1 at next master bar, 2 at chain end)
 c_wbank    equ $00FFD3E0           ; B command: per-channel wave# override (0-15; $FF = use instrument iw_wave)
+c_delay    equ $00FFD3EA           ; D command: per-channel note-on delay countdown (ticks; 0 = none)
+d_set      equ $00FFD3F4           ; D command: 1 if D delayed the note this row (skip the immediate trigger)
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -6289,6 +6291,11 @@ engine_play_reset:
 .epr_wb:
     move.b  #$FF, (a0)+
     dbra    d0, .epr_wb
+    lea     c_delay, a0                   ; D command: clear pending note-on delays
+    moveq   #NCH-1, d0
+.epr_dl:
+    clr.b   (a0)+
+    dbra    d0, .epr_dl
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
@@ -7111,6 +7118,16 @@ hold_tick:                                ; a6 = channel
     move.b  #$FF, c_hold(a6)
     bsr     cut_dac_if_sample              ; ...and a KIT/WAVE instrument -> stop the DAC playback
 .hret:
+    moveq   #0, d0                          ; D command: pending note-on delay countdown
+    move.b  c_track(a6), d0
+    lea     c_delay, a1
+    move.b  (a1,d0.w), d1
+    beq.s   .hret2                          ; 0 = no delay pending
+    subq.b  #1, d1
+    move.b  d1, (a1,d0.w)
+    bne.s   .hret2                          ; not expired yet
+    bsr     note_trigger                    ; delay expired -> fire the held note (a6 = channel)
+.hret2:
     rts
 
 cut_dac_if_sample:                         ; a6=ch: if c_instr is KIT/WAVE, tell the Z80 to stop the DAC
@@ -7136,7 +7153,7 @@ cut_dac_if_sample:                         ; a6=ch: if c_instr is KIT/WAVE, tell
 advance_ch:                               ; a6 = channel
     move.b  #0, hop_ctr                    ; H command: reset the per-advance hop guard
     cmpi.b  #$FF, c_chain(a6)             ; inactive (muted/empty) -> stay silent
-    beq     .ret
+    beq     nt_done
     move.b  c_row(a6), d0
     addq.b  #1, d0
     cmpi.b  #16, d0
@@ -7154,7 +7171,7 @@ advance_ch:                               ; a6 = channel
 .nextchain:
     bsr     advance_chain                 ; phrase ended -> next chain step
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
-    beq     .ret
+    beq     nt_done
     moveq   #0, d0
 .gotrow:
     move.b  d0, c_row(a6)
@@ -7190,6 +7207,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
+    move.b  #0, d_set                      ; D command: clear this row's delay flag
     move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
     moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
     move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
@@ -7225,7 +7243,7 @@ advance_ch:                               ; a6 = channel
     andi.w  #7, d1                         ; mod 8 -> bit
     btst    d1, d2
     bne     .cmddone                       ; bit set -> play the note this repeat
-    bra     .ret                           ; bit clear -> suppress (rest)
+    bra     nt_done                           ; bit clear -> suppress (rest)
 .cmd_hop:
     addq.b  #1, hop_ctr                    ; runaway guard: H->H->... can't hang the tick
     cmpi.b  #32, hop_ctr
@@ -7308,13 +7326,13 @@ advance_ch:                               ; a6 = channel
     andi.w  #$FF, d3
     cmp.b   d2, d3                          ; random < xx -> play; else suppress (rest)
     blo     .cmddone
-    bra     .ret
+    bra     nt_done
 .cmddone:                                 ; phrase path only now (the table never reaches here)
     lsl.w   #2, d0
     moveq   #0, d2
     move.b  (a1,d0.w), d2                 ; note (0-95) or $FF
     cmpi.w  #$FF, d2
-    beq     .ret
+    beq     nt_done
     move.b  c_transp(a6), d3              ; + chain transpose (signed)
     ext.w   d3
     add.w   d3, d2
@@ -7339,9 +7357,9 @@ advance_ch:                               ; a6 = channel
     ext.w   d3
     add.w   d3, d2
     tst.w   d2                             ; test the NOTE (the gate above may have left
-    bmi     .ret                           ; cmpi flags -> would wrongly drop FM/KIT/WAVE)
+    bmi     nt_done                           ; cmpi flags -> would wrongly drop FM/KIT/WAVE)
     cmpi.w  #96, d2
-    bhs     .ret
+    bhs     nt_done
     move.b  d2, c_note(a6)
     movem.l d0/a0, -(sp)                    ; per-note state resets (d2 still holds the note this path needs):
     move.b  c_track(a6), d0                 ;   a new note clears C/F/P state unless that command is on its row,
@@ -7390,6 +7408,14 @@ advance_ch:                               ; a6 = channel
 .notabl:
     move.b  #$FF, c_tbl(a6)              ; KIT/WAVE: no macro table
 .notbset:
+    tst.b   d_set                        ; D command: a delayed note-on -> skip; hold_tick fires it later
+    beq.s   note_trigger
+    rts
+note_trigger:                             ; trigger the note-on (a6 = channel); also entered from hold_tick after a delay
+    moveq   #0, d0                          ; an immediate (re)trigger clears any pending delay
+    move.b  c_track(a6), d0
+    lea     c_delay, a1
+    clr.b   (a1,d0.w)
     move.b  c_type(a6), d3
     beq     .square
     cmpi.b  #2, d3
@@ -7541,7 +7567,7 @@ advance_ch:                               ; a6 = channel
     move.b  #1, c_estate(a6)
     move.b  #0, c_ectr(a6)
     move.b  #0, c_vol(a6)
-.ret:
+nt_done:
     rts
 
 ; next chain step; on chain end ($FF), advance the song row instead of looping
@@ -7701,6 +7727,8 @@ exec_cmd:
     beq     .cmd_n
     cmpi.b  #2, d2                          ; B xy = wave bank (select wave 0-15 for the channel)
     beq     .cmd_b
+    cmpi.b  #4, d2                          ; D xx = delay the note-on by xx ticks
+    beq     .cmd_d
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7871,6 +7899,15 @@ exec_cmd:
     andi.b  #15, d2
     lea     c_wbank, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_d:                                   ; D xx = delay this row's note-on by xx ticks (all voices)
+    move.b  (3,a1,d1.w), d2               ; xx = delay in ticks
+    beq.s   .cmddone                        ; D00 = no delay (trigger now)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_delay, a4
+    move.b  d2, (a4,d3.w)                  ; arm the per-channel countdown
+    move.b  #1, d_set                      ; -> .notbset skips the immediate trigger
     bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
