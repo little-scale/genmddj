@@ -24,7 +24,9 @@ current goal.txt
 tools/*_custom.bin
 
 # local-only docs (kept on disk, not in the public repo; re-add later with `git add -f`)
-#   TESTING.md — internal QA checklist (references private dev ROMs)
-#   CLAUDE.md  — AI-assistant project context
+#   TESTING.md  — internal QA checklist (references private dev ROMs)
+#   CLAUDE.md   — AI-assistant project context
+#   COMMANDS.md — internal command-set reconciliation / decision log (stale; not a user reference)
 TESTING.md
 CLAUDE.md
+COMMANDS.md
