@@ -7676,6 +7676,8 @@ exec_cmd:
     beq     .cmd_r
     cmpi.b  #25, d2                        ; Y xy = FM LFO depth (AMS/FMS)
     beq     .cmd_y
+    cmpi.b  #14, d2                        ; N xy = noise mode/rate (NO channel)
+    beq     .cmd_n
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7824,6 +7826,20 @@ exec_cmd:
     move.b  d3, (a4,d2.w)
     lea     lo_dirty, a4
     move.b  #1, (a4,d2.w)
+    bra     .cmddone
+.cmd_n:                                   ; N xy = noise control: x = mode (0 white / 1 periodic), y = rate (0-3)
+    cmpi.b  #2, c_type(a6)                ; PSG noise channel only (c_type 2)
+    bne     .cmddone
+    moveq   #0, d2
+    move.b  (3,a1,d1.w), d2               ; param = xy
+    move.b  d2, d3
+    lsr.b   #4, d3                         ; x = mode nibble
+    andi.b  #3, d2                        ; y = rate (bits 0-1: clk/512/1024/2048, 3 = pitched/T3)
+    tst.b   d3                             ; mode 0 = white (RANDOM) -> FB feedback bit (matches .noise)
+    bne.s   .cn_per
+    ori.b   #4, d2
+.cn_per:
+    move.w  d2, c_period(a6)              ; override the 3-bit SN76489 noise control
     bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
