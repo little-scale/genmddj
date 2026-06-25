@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>genmddj wave ROM patcher</title>
+<title>genmddj wave editor</title>
 <style>
   :root { --bg:#10131a; --panel:#1b2030; --ink:#e7ecf5; --dim:#8b96ab;
           --accent:#ffd23f; --accent2:#46c0ff; --empty:#2a3140; --good:#5ad17a; --bad:#ff6b6b; }
@@ -22,21 +22,22 @@
   .wv.sel{border-color:var(--accent);color:var(--accent);}
   .wv canvas{position:absolute;inset:0;} .wv span{position:relative;}
   canvas#ed{background:#0c0f16;border:1px solid #2a3346;border-radius:8px;width:100%;height:240px;touch-action:none;cursor:crosshair;}
-  label{color:var(--dim);}
+  label{color:var(--dim);} input[type=text]{background:#0d1018;color:var(--ink);border:1px solid #34405a;border-radius:5px;padding:4px 6px;font:inherit;}
+  input#expr{width:24ch;color:var(--accent);} input#expr.err{border-color:var(--bad);}
+  .tiny{font-size:11px;color:var(--dim);}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1><span>genmddj</span> WAVE ROM PATCHER</h1>
-  <p class="dim">Edit the <b>16 factory wavetables</b> baked into a genmddj ROM &mdash; the defaults every
-  <b>NEW</b> song starts with (32 steps, 8-bit, <code>$80</code>=centre; each plays on the YM2612 DAC as a
-  <b>WAVE</b> instrument's shape). Drop a built <code>.bin</code> (located by the <code>GMDJWAV0</code>
-  marker), edit, then <code>Patch ROM .bin</code> &mdash; the MD checksum is re-fixed. Per-song waves are
-  unaffected; this only changes what a fresh project is seeded with.</p>
+  <h1><span>genmddj</span> WAVE EDITOR</h1>
+  <p class="dim">Edit genmddj <b>wavetables</b> (16 &times; 32 steps, 8-bit, <code>$80</code>=centre; each plays on the
+  YM2612 DAC as a <b>WAVE</b> instrument's shape). Drop a built <code>.bin</code> to edit the <b>factory defaults</b>
+  (the <code>GMDJWAV0</code> bank every <b>NEW</b> song is seeded with), or a <code>.gmdj</code> to edit <b>that
+  song's</b> 16 waves. Draw, pick a preset, or type an <b>expression</b>. ROM exports re-fix the MD checksum.</p>
 
-  <div class="zone" id="zone">drop a genmddj <b>.bin</b> here &middot; or click to choose</div>
-  <input type="file" id="file" accept=".bin,.md,.gen" hidden>
-  <div class="bar" id="status">Drop a ROM to begin.</div>
+  <div class="zone" id="zone">drop a genmddj <b>.bin</b> (ROM defaults) or <b>.gmdj</b> (one song) &middot; or click to choose</div>
+  <input type="file" id="file" accept=".bin,.md,.gen,.gmdj" hidden>
+  <div class="bar" id="status">Drop a ROM or a .gmdj to begin.</div>
 
   <div id="main" style="display:none">
     <div class="waves" id="waves"></div>
@@ -57,7 +58,13 @@
       <span class="dim" id="info"></span>
     </div>
     <div class="bar">
-      <button class="primary" id="patch">Patch ROM .bin</button>
+      <label>f(x)=&nbsp;<input type="text" id="expr" placeholder="sin(x) + sin(3*x)/3" spellcheck="false"></label>
+      <button id="exprgo">apply</button>
+      <label style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="exprall"> all 16</label>
+      <span class="tiny">x = phase 0&hellip;2&pi; &middot; s = step 0&hellip;31 &middot; returns &minus;1&hellip;1 &middot; <code>sin cos saw tri sq pulse(x,d) noise abs floor pow min max</code></span>
+    </div>
+    <div class="bar">
+      <button class="primary" id="save">Patch ROM .bin</button>
       <span class="dim" id="note"></span>
     </div>
   </div>
@@ -65,18 +72,20 @@
 
 <script>
 "use strict";
-const NWAVE=16, STEPS=32, BANK=NWAVE*STEPS;        // 512-byte factory wave bank
-const MAGIC="GMDJWAV0";
+const NWAVE=16, STEPS=32;
+const WAVEMAGIC="GMDJWAV0", SONGMAGIC="GMDJSONG", DATA_SIZE=20832, WAVE_OFF=20320;  // .gmdj: 32B header + data block; waves at WAVE_OFF
 const $=id=>document.getElementById(id);
-let rom=null, base=-1, romName="", sel=0, drawing=false, lastStep=-1;
+let buf=null, base=-1, mode="", fname="", sel=0, drawing=false, lastStep=-1;
 
-function findMagic(u8){ const m=[...MAGIC].map(c=>c.charCodeAt(0));
-  outer: for(let i=0;i+8<=u8.length;i++){ for(let j=0;j<8;j++) if(u8[i+j]!==m[j]) continue outer; return i+8; } return -1; }
+const A=(c)=>c.charCodeAt(0);
+function findMagic(u8,magic){ const m=[...magic].map(A);
+  outer: for(let i=0;i+8<=u8.length;i++){ for(let j=0;j<8;j++) if(u8[i+j]!==m[j]) continue outer; return i; } return -1; }
+function ascii(u8,o,n){ let s=""; for(let i=0;i<n;i++){ const c=u8[o+i]; if(!c)break; s+=String.fromCharCode(c);} return s; }
 const clamp=v=>Math.max(0,Math.min(255,Math.round(v)));
-const getStep=(w,s)=>rom[base+w*STEPS+s];
-const setStep=(w,s,v)=>{ rom[base+w*STEPS+s]=clamp(v); };
+const getStep=(w,s)=>buf[base+w*STEPS+s];
+const setStep=(w,s,v)=>{ buf[base+w*STEPS+s]=clamp(v); };
 
-// ---- presets ----
+// ---- presets (each is just a fixed expression, mapped -1..1 -> 0..255) ----
 const PRESETS={
   sine:s=>128+127*Math.sin(2*Math.PI*s/STEPS),
   saw:s=>s/(STEPS-1)*255,
@@ -92,7 +101,31 @@ const PRESETS={
 };
 function applyPreset(name){ const f=PRESETS[name]; if(!f)return; for(let s=0;s<STEPS;s++) setStep(sel,s,f(s)); render(); }
 
-// ---- canvas editor (same look as the .gmdj wave editor) ----
+// ---- expression: type a function of x (phase) / s (step), audio-domain -1..1 ----
+function exprFn(src){
+  const names=["sin","cos","tan","abs","sign","floor","ceil","round","sqrt","pow","exp","min","max","PI","E","saw","tri","sq","pulse","noise"];
+  const vals=[Math.sin,Math.cos,Math.tan,Math.abs,Math.sign,Math.floor,Math.ceil,Math.round,Math.sqrt,Math.pow,Math.exp,Math.min,Math.max,Math.PI,Math.E,
+    x=>((((x/Math.PI)%2)+2)%2)-1,                                            // saw  -1..1 over 0..2PI
+    x=>{const t=(((x/(2*Math.PI))%1)+1)%1; return t<0.5?t*4-1:3-t*4;},        // tri  -1..1
+    x=>Math.sin(x)>=0?1:-1,                                                   // square
+    (x,d)=>((((x/(2*Math.PI))%1)+1)%1)<(d===undefined?0.5:d)?1:-1,            // pulse(x, duty)
+    ()=>Math.random()*2-1];
+  const f=new Function(...names,"x","s","n","\"use strict\";return ("+src+");");
+  return (x,s,n)=>f(...vals,x,s,n);
+}
+function applyExpr(){
+  const src=$("expr").value.trim(); if(!src){ return; }
+  let f; try{ f=exprFn(src); const t=f(0,0,STEPS); if(typeof t!=="number") throw new Error("not a number"); }
+  catch(e){ $("expr").classList.add("err"); note("expression error: "+e.message,true); return; }
+  $("expr").classList.remove("err");
+  const all=$("exprall").checked, ws=all?[...Array(NWAVE).keys()]:[sel];
+  for(const w of ws) for(let s=0;s<STEPS;s++){ const x=2*Math.PI*s/STEPS;
+    let v=f(x,s,STEPS); if(!isFinite(v)) v=0;
+    setStep(w,s,128+127*v); }                                                // -1..1 -> 0..255 (128 centre)
+  render(); note("applied  f(x)="+src+(all?"  (all 16)":"  (wave "+sel.toString(16).toUpperCase()+")"));
+}
+
+// ---- canvas editor ----
 const cv=$("ed"), cx=cv.getContext("2d");
 function drawWaveOn(ctx,w,W,H,big){
   ctx.clearRect(0,0,W,H);
@@ -108,7 +141,7 @@ function render(){
   drawWaveOn(cx, sel, cv.width, cv.height, true);
   document.querySelectorAll(".wv").forEach((el,w)=>{ el.classList.toggle("sel",w===sel);
     const c=el.querySelector("canvas"); if(c) drawWaveOn(c.getContext("2d"),w,c.width,c.height,false); });
-  $("info").textContent=`wave ${sel.toString(16).toUpperCase()} · 32 steps · 8-bit · bank $${base.toString(16).toUpperCase()}`;
+  $("info").textContent=`wave ${sel.toString(16).toUpperCase()} · 32 steps · 8-bit · ${mode==="rom"?"ROM defaults":"this song"}`;
 }
 function evToStepVal(e){
   const r=cv.getBoundingClientRect(), x=(e.clientX-r.left)/r.width*cv.width, y=(e.clientY-r.top)/r.height*cv.height;
@@ -129,6 +162,8 @@ $("smooth").onclick=()=>{ const o=[...Array(STEPS)].map((_,s)=>getStep(sel,s));
 $("invert").onclick=()=>{ for(let s=0;s<STEPS;s++) setStep(sel,s,255-getStep(sel,s)); render(); };
 $("copyto").onclick=()=>{ const src=[...Array(STEPS)].map((_,s)=>getStep(sel,s)); for(let w=0;w<NWAVE;w++) src.forEach((v,s)=>setStep(w,s,v)); render(); };
 $("preset").onchange=()=>{ applyPreset($("preset").value); $("preset").value=""; };
+$("exprgo").onclick=applyExpr;
+$("expr").addEventListener("keydown",e=>{ if(e.key==="Enter") applyExpr(); });
 
 function buildWaves(){ const box=$("waves"); box.innerHTML="";
   for(let w=0;w<NWAVE;w++){ const el=document.createElement("div"); el.className="wv"; el.title="wave "+w.toString(16).toUpperCase();
@@ -142,23 +177,38 @@ function buildWaves(){ const box=$("waves"); box.innerHTML="";
 function note(m,bad){ const e=$("note"); e.textContent=m; e.style.color=bad?"#ff6b6b":""; }
 function dl(u8,name){const b=new Blob([u8],{type:"application/octet-stream"});const a=document.createElement("a");
   a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
-function loadRom(buf,name){
-  const mb=findMagic(buf);
-  if(mb<0){ $("status").innerHTML=`<b style="color:#ff6b6b">${name}: GMDJWAV0 marker not found</b> &mdash; not a genmddj ROM (or too old)?`; return; }
-  rom=buf; base=mb; romName=name; sel=0;
-  $("main").style.display="block"; buildWaves(); render();
-  $("status").innerHTML=`Loaded <b>${name}</b> (${buf.length>>10} KB) &mdash; wave bank at $${mb.toString(16).toUpperCase()}. Edit, then Patch ROM.`;
+function load(b,name){
+  fname=name; sel=0;
+  const wb=findMagic(b,WAVEMAGIC);
+  if(wb>=0){                                          // a built ROM: edit the factory wave bank
+    buf=b; mode="rom"; base=wb+8;                      // bank starts right after the 8-byte marker
+    $("save").textContent="Patch ROM .bin";
+    $("status").innerHTML=`Loaded ROM <b>${name}</b> (${b.length>>10} KB) &mdash; factory wave bank at $${base.toString(16).toUpperCase()}. Editing the <b>NEW-song defaults</b>.`;
+  } else if(ascii(b,0,8)===SONGMAGIC){                 // a .gmdj song: edit its own 16 waves
+    if(((b[10]<<8)|b[11])!==DATA_SIZE){ $("status").innerHTML=`<b style="color:#ff6b6b">${name}: data-size mismatch</b> &mdash; built for a different version.`; return; }
+    buf=b; mode="gmdj"; base=32+WAVE_OFF;              // 32-byte container header + WAVE_OFF into the data block
+    $("save").textContent="Save .gmdj";
+    $("status").innerHTML=`Loaded song <b>${ascii(b,12,8).trim()||name}</b> &mdash; editing <b>this song's</b> 16 waves.`;
+  } else {
+    $("status").innerHTML=`<b style="color:#ff6b6b">${name}: not a genmddj ROM (no GMDJWAV0) or .gmdj song</b>.`; return;
+  }
+  $("main").style.display="block"; buildWaves(); render(); note("");
 }
-$("patch").onclick=()=>{
-  if(!rom) return;                                  // waves are written in-place by setStep; just re-fix the checksum
-  let sum=0; for(let i=0x200;i+1<rom.length;i+=2) sum=(sum+((rom[i]<<8)|rom[i+1]))%0x10000;
-  rom[0x18E]=(sum>>8)&0xFF; rom[0x18F]=sum&0xFF;
-  dl(rom, romName.replace(/\.(bin|md|gen)$/i,"")+"-wave.bin");
-  note(`patched & downloaded (checksum $${sum.toString(16).toUpperCase().padStart(4,"0")}). Flash it.`);
+$("save").onclick=()=>{
+  if(!buf) return;                                     // waves are edited in-place by setStep
+  if(mode==="rom"){                                    // re-fix the MD checksum (sum of u16 from $200, stored at $18E)
+    let sum=0; for(let i=0x200;i+1<buf.length;i+=2) sum=(sum+((buf[i]<<8)|buf[i+1]))%0x10000;
+    buf[0x18E]=(sum>>8)&0xFF; buf[0x18F]=sum&0xFF;
+    dl(buf, fname.replace(/\.(bin|md|gen)$/i,"")+"-wave.bin");
+    note(`patched ROM (checksum $${sum.toString(16).toUpperCase().padStart(4,"0")}). Flash it.`);
+  } else {
+    dl(buf, fname.replace(/\.gmdj$/i,"")+".gmdj");
+    note("saved .gmdj.");
+  }
 };
 
 const zone=$("zone"), inp=$("file");
-async function take(f){ if(f) loadRom(new Uint8Array(await f.arrayBuffer()), f.name); }  // capture the File before any await (dataTransfer is cleared after)
+async function take(f){ if(f) load(new Uint8Array(await f.arrayBuffer()), f.name); }  // capture the File before any await
 zone.onclick=()=>inp.click();
 inp.onchange=()=>{ const f=inp.files[0]; inp.value=""; take(f); };
 let _dn=0;                                            // window-level drag so a drop anywhere on the page works
