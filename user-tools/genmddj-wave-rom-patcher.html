@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>genmddj wave ROM patcher</title>
+<style>
+  :root { --bg:#10131a; --panel:#1b2030; --ink:#e7ecf5; --dim:#8b96ab;
+          --accent:#ffd23f; --accent2:#46c0ff; --empty:#2a3140; --good:#5ad17a; --bad:#ff6b6b; }
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;}
+  .wrap{max-width:880px;margin:0 auto;padding:20px;}
+  h1{font-size:20px;letter-spacing:1px;margin:0 0 4px;} h1 span{color:var(--accent);}
+  p.dim,.dim{color:var(--dim);} code{color:var(--accent);}
+  .zone{border:2px dashed #3a4256;border-radius:10px;padding:18px;text-align:center;color:var(--dim);cursor:pointer;margin:12px 0;transition:.15s;}
+  .zone.hot{border-color:var(--accent);color:var(--ink);background:#161b27;}
+  .bar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;background:var(--panel);border-radius:8px;padding:10px 14px;margin:10px 0;}
+  button,select{background:#2a3550;color:var(--ink);border:1px solid #3c4a68;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer;}
+  button:hover:not(:disabled){border-color:var(--accent2);} button.primary{background:var(--accent);color:#1a1400;border-color:var(--accent);font-weight:bold;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  .waves{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0;}
+  .wv{width:30px;height:26px;border:1px solid #34405a;border-radius:4px;background:#0d1018;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--dim);position:relative;}
+  .wv.sel{border-color:var(--accent);color:var(--accent);}
+  .wv canvas{position:absolute;inset:0;} .wv span{position:relative;}
+  canvas#ed{background:#0c0f16;border:1px solid #2a3346;border-radius:8px;width:100%;height:240px;touch-action:none;cursor:crosshair;}
+  label{color:var(--dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span>genmddj</span> WAVE ROM PATCHER</h1>
+  <p class="dim">Edit the <b>16 factory wavetables</b> baked into a genmddj ROM &mdash; the defaults every
+  <b>NEW</b> song starts with (32 steps, 8-bit, <code>$80</code>=centre; each plays on the YM2612 DAC as a
+  <b>WAVE</b> instrument's shape). Drop a built <code>.bin</code> (located by the <code>GMDJWAV0</code>
+  marker), edit, then <code>Patch ROM .bin</code> &mdash; the MD checksum is re-fixed. Per-song waves are
+  unaffected; this only changes what a fresh project is seeded with.</p>
+
+  <div class="zone" id="zone">drop a genmddj <b>.bin</b> here &middot; or click to choose</div>
+  <input type="file" id="file" accept=".bin,.md,.gen" hidden>
+  <div class="bar" id="status">Drop a ROM to begin.</div>
+
+  <div id="main" style="display:none">
+    <div class="waves" id="waves"></div>
+    <canvas id="ed" width="512" height="240"></canvas>
+    <div class="bar">
+      <label>preset
+        <select id="preset">
+          <option value="">&mdash;</option>
+          <option value="sine">sine</option><option value="saw">saw &uarr;</option><option value="rsaw">saw &darr;</option>
+          <option value="square">square</option><option value="pulse25">pulse 25%</option><option value="pulse12">pulse 12%</option>
+          <option value="tri">triangle</option><option value="halfsine">half-sine</option>
+          <option value="organ">organ (2nd)</option><option value="noise">noise</option><option value="flat">flat (centre)</option>
+        </select>
+      </label>
+      <button id="smooth">smooth</button>
+      <button id="invert">invert</button>
+      <button id="copyto">copy &rarr; all</button>
+      <span class="dim" id="info"></span>
+    </div>
+    <div class="bar">
+      <button class="primary" id="patch">Patch ROM .bin</button>
+      <span class="dim" id="note"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const NWAVE=16, STEPS=32, BANK=NWAVE*STEPS;        // 512-byte factory wave bank
+const MAGIC="GMDJWAV0";
+const $=id=>document.getElementById(id);
+let rom=null, base=-1, romName="", sel=0, drawing=false, lastStep=-1;
+
+function findMagic(u8){ const m=[...MAGIC].map(c=>c.charCodeAt(0));
+  outer: for(let i=0;i+8<=u8.length;i++){ for(let j=0;j<8;j++) if(u8[i+j]!==m[j]) continue outer; return i+8; } return -1; }
+const clamp=v=>Math.max(0,Math.min(255,Math.round(v)));
+const getStep=(w,s)=>rom[base+w*STEPS+s];
+const setStep=(w,s,v)=>{ rom[base+w*STEPS+s]=clamp(v); };
+
+// ---- presets ----
+const PRESETS={
+  sine:s=>128+127*Math.sin(2*Math.PI*s/STEPS),
+  saw:s=>s/(STEPS-1)*255,
+  rsaw:s=>255-s/(STEPS-1)*255,
+  square:s=>s<STEPS/2?255:0,
+  pulse25:s=>s<STEPS/4?255:0,
+  pulse12:s=>s<STEPS/8?255:0,
+  tri:s=>{const t=s/STEPS;return (t<0.5?t*2:2-t*2)*255;},
+  halfsine:s=>Math.abs(Math.sin(Math.PI*s/STEPS))*255,
+  organ:s=>128+127*Math.sin(2*Math.PI*2*s/STEPS),
+  noise:()=>Math.random()*255,
+  flat:()=>128,
+};
+function applyPreset(name){ const f=PRESETS[name]; if(!f)return; for(let s=0;s<STEPS;s++) setStep(sel,s,f(s)); render(); }
+
+// ---- canvas editor (same look as the .gmdj wave editor) ----
+const cv=$("ed"), cx=cv.getContext("2d");
+function drawWaveOn(ctx,w,W,H,big){
+  ctx.clearRect(0,0,W,H);
+  if(big){ ctx.strokeStyle="#232b3c"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke(); }
+  const bw=W/STEPS;
+  for(let s=0;s<STEPS;s++){ const v=getStep(w,s), y=H-(v/255)*H;
+    ctx.fillStyle = big ? (v>=128?"#46c0ff":"#ffd23f") : "#46c0ff";
+    if(big){ ctx.fillRect(s*bw+1, Math.min(y,H/2), bw-2, Math.abs(H/2-y)||1); }
+    else { ctx.fillRect(s*bw, y, Math.max(1,bw), 2); }
+  }
+}
+function render(){
+  drawWaveOn(cx, sel, cv.width, cv.height, true);
+  document.querySelectorAll(".wv").forEach((el,w)=>{ el.classList.toggle("sel",w===sel);
+    const c=el.querySelector("canvas"); if(c) drawWaveOn(c.getContext("2d"),w,c.width,c.height,false); });
+  $("info").textContent=`wave ${sel.toString(16).toUpperCase()} · 32 steps · 8-bit · bank $${base.toString(16).toUpperCase()}`;
+}
+function evToStepVal(e){
+  const r=cv.getBoundingClientRect(), x=(e.clientX-r.left)/r.width*cv.width, y=(e.clientY-r.top)/r.height*cv.height;
+  const s=Math.max(0,Math.min(STEPS-1,Math.floor(x/(cv.width/STEPS)))), v=Math.max(0,Math.min(255,Math.round((1-y/cv.height)*255)));
+  return {s,v};
+}
+function paint(e){ const {s,v}=evToStepVal(e);
+  if(lastStep>=0 && Math.abs(s-lastStep)>1){ const a=Math.min(s,lastStep), b=Math.max(s,lastStep); for(let i=a;i<=b;i++) setStep(sel,i,v); }
+  else setStep(sel,s,v); lastStep=s; render(); }
+cv.addEventListener("pointerdown",e=>{drawing=true;lastStep=-1;cv.setPointerCapture(e.pointerId);paint(e);});
+cv.addEventListener("pointermove",e=>{if(drawing)paint(e);});
+cv.addEventListener("pointerup",()=>{drawing=false;lastStep=-1;});
+cv.addEventListener("pointerleave",()=>{lastStep=-1;});
+
+// ---- tools ----
+$("smooth").onclick=()=>{ const o=[...Array(STEPS)].map((_,s)=>getStep(sel,s));
+  for(let s=0;s<STEPS;s++) setStep(sel,s,(o[(s-1+STEPS)%STEPS]+o[s]*2+o[(s+1)%STEPS])/4); render(); };
+$("invert").onclick=()=>{ for(let s=0;s<STEPS;s++) setStep(sel,s,255-getStep(sel,s)); render(); };
+$("copyto").onclick=()=>{ const src=[...Array(STEPS)].map((_,s)=>getStep(sel,s)); for(let w=0;w<NWAVE;w++) src.forEach((v,s)=>setStep(w,s,v)); render(); };
+$("preset").onchange=()=>{ applyPreset($("preset").value); $("preset").value=""; };
+
+function buildWaves(){ const box=$("waves"); box.innerHTML="";
+  for(let w=0;w<NWAVE;w++){ const el=document.createElement("div"); el.className="wv"; el.title="wave "+w.toString(16).toUpperCase();
+    const c=document.createElement("canvas"); c.width=28; c.height=24; el.appendChild(c);
+    const sp=document.createElement("span"); sp.textContent=w.toString(16).toUpperCase(); el.appendChild(sp);
+    el.onclick=()=>{ sel=w; render(); };
+    box.appendChild(el); }
+}
+
+// ---- file io ----
+function note(m,bad){ const e=$("note"); e.textContent=m; e.style.color=bad?"#ff6b6b":""; }
+function dl(u8,name){const b=new Blob([u8],{type:"application/octet-stream"});const a=document.createElement("a");
+  a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
+function loadRom(buf,name){
+  const mb=findMagic(buf);
+  if(mb<0){ $("status").innerHTML=`<b style="color:#ff6b6b">${name}: GMDJWAV0 marker not found</b> &mdash; not a genmddj ROM (or too old)?`; return; }
+  rom=buf; base=mb; romName=name; sel=0;
+  $("main").style.display="block"; buildWaves(); render();
+  $("status").innerHTML=`Loaded <b>${name}</b> (${buf.length>>10} KB) &mdash; wave bank at $${mb.toString(16).toUpperCase()}. Edit, then Patch ROM.`;
+}
+$("patch").onclick=()=>{
+  if(!rom) return;                                  // waves are written in-place by setStep; just re-fix the checksum
+  let sum=0; for(let i=0x200;i+1<rom.length;i+=2) sum=(sum+((rom[i]<<8)|rom[i+1]))%0x10000;
+  rom[0x18E]=(sum>>8)&0xFF; rom[0x18F]=sum&0xFF;
+  dl(rom, romName.replace(/\.(bin|md|gen)$/i,"")+"-wave.bin");
+  note(`patched & downloaded (checksum $${sum.toString(16).toUpperCase().padStart(4,"0")}). Flash it.`);
+};
+
+const zone=$("zone"), inp=$("file");
+async function take(f){ if(f) loadRom(new Uint8Array(await f.arrayBuffer()), f.name); }  // capture the File before any await (dataTransfer is cleared after)
+zone.onclick=()=>inp.click();
+inp.onchange=()=>{ const f=inp.files[0]; inp.value=""; take(f); };
+let _dn=0;                                            // window-level drag so a drop anywhere on the page works
+window.addEventListener("dragenter",e=>{ e.preventDefault(); _dn++; zone.classList.add("hot"); });
+window.addEventListener("dragover", e=>{ e.preventDefault(); });
+window.addEventListener("dragleave",e=>{ if(--_dn<=0){ _dn=0; zone.classList.remove("hot"); } });
+window.addEventListener("drop",     e=>{ e.preventDefault(); _dn=0; zone.classList.remove("hot"); take(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>

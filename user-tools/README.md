@@ -27,6 +27,12 @@ The handoff is always a **documented format**, never a code dependency:
 | **instrument patcher** | `genmddj-instrument-patcher.html` | patcher + converter + ripper | 32 FM patches (name, algo/fb, 4 operators) with a piano **audition** (register-level OPN2 core); **standalone** (no ROM) or patches `GMINSTR0` in a `.bin`; imports/exports `.gmi` (native), `.tfi`/`.vgi`, **Ableton Operator `.adv`**; **rips patches from a `.vgm`/`.vgz` game log** (Import VGM — key-on register snapshots, deduped + ranked by play count) |
 | **kit/sample patcher** | `kit/kitpatch.html` | ROM-patcher | sample kits, per-pad fade/gain (`DESIGN.md` §10.3) |
 | **de-re-interleaver** | `de-re-interleaver.html` | `.srm` tool | EverDrive 64 KB odd-byte ⇄ 32 KB logical save |
+| **save tool** | `genmddj-savetool.html` | `.srm`/`.sav` tool | extract `.gmdj` songs from a cart save (checksum-validated), edit config (palette/video/sync), preserve the SRAM instrument bank, **build** a new 32 KB (1 song) or 64 KB (3 song) save; song/chains/phrases/instruments **viewer** |
+| **als ↔ genmddj** | `als2genmddj.html` | converter | Ableton `.als` **& Standard MIDI `.mid`** → `.gmdj` (and `.gmdj`→`.als`): 9 channels → F1–F6 (FM) + S1–S3 (TONE); clips → phrases → chains (contiguous runs fill chains, empty scene = new chain); 16th-grid quantise, octave-fold, highest-pitch-wins, optional velocity→`X`; **converts FM tracks' Ableton Operator devices ⇄ YM2612 patches** (+ `.gmi`); song **viewer** |
+| **wave editor** | `genmddj-wave-editor.html` | `.gmdj` tool | draw/import the **16 wavetables** (32 steps, 8-bit `$80`-centre) of a song — presets, smooth/invert, per-wave canvas; patches a `.gmdj` |
+| **wave ROM patcher** | `genmddj-wave-rom-patcher.html` | ROM-patcher | edit the **16 factory wavetables** (`GMDJWAV0`) — the defaults every **NEW** song is seeded with (`clear_song`); same canvas editor + presets as the `.gmdj` wave editor, re-checksums on export |
+| **font patcher** | `genmddj-font-patcher.html` | ROM-patcher + baker | edit the **8×8 UI font** (96 glyphs + auto-derived inverse) — pixel editor, system-font import, presets, locked UI symbols; **ROM-patches `GMDJFON0`** in a `.bin`, or saves `font.bin` for a build-time bake (`tools/font_custom.bin` + `make`) |
+| **bank editor** | `genmddj-bank-editor.html` | `.sav`/`.srm` tool | edit the **32-slot SRAM instrument bank** (the cross-song library) — load/save `.gmi` per slot, clear, bulk-fill; edits in place (config + songs untouched) |
 | **factory-bank author** | `../tools/gen_factory_bank.py` | baker (one-shot) | emits the inline `fm_factory` block — the canonical 32 patches |
 
 The palette + kit patchers (and the ROM side of the instrument patcher) share one shape: drop a `.bin`,
@@ -42,10 +48,8 @@ envelope-time→chip-rate curve, and back out as a valid Operator preset).
 | Dir | Tool | Emits | Spec |
 |---|---|---|---|
 | `instrument/` | the **CSV** authoring path for the baker (the instrument patcher already audits + edits patches) | instrument CSV | `PRESETS.md` §4 |
-| `font/`     | UI font patcher — edit/import the 8×8 glyph tiles | patched `.bin` | `PALETTE.md` §7 |
+| (als2genmddj) | **MML** text input — a third intake format alongside `.als`/`.mid` (classic MML: `cdefgab`, `o`/`<`/`>`, `l`, `t`, `r`, `&`, `v`→`X`) → `.gmdj` | `.gmdj` | — |
 | `extract/`  | game-patch extractors — **SMPS**, **GEMS** (native re-packs; **VGM now ships** in the instrument patcher's Import VGM) | instrument CSV | `PRESETS.md` §5 |
-| `ableton/`  | **`.als`** (song + per-track FM adaptation) — the `.adv` Operator↔instrument converter now ships in the instrument patcher | song | `ALS.md` |
-| `savetool/` | list/export/import/build `.srm`/`.gmdj`; config read/write | `.gmdj` / `.srm` | `SAVEFORMAT.md` |
 
 ## Baker vs patcher — and why instruments have both
 

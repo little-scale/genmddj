@@ -17,6 +17,7 @@ NOTES    := $(BUILD)/notes.bin
 Z80SRC   := src/z80/driver.asm
 Z80BIN   := $(BUILD)/driver.z80.bin
 SAMPLES  := $(BUILD)/samples.bin
+WAVES    := $(BUILD)/wave_bank.bin
 
 $(SAMPLES): tools/makesamples.py | $(BUILD)
 	python3 tools/makesamples.py samples $(SAMPLES)
@@ -24,6 +25,10 @@ $(SAMPLES): tools/makesamples.py | $(BUILD)
 # FORCE (like the factory bank): so adding/changing/removing tools/font_custom.bin always re-bakes the font.
 $(FONT): tools/makefont.py FORCE | $(BUILD)
 	python3 tools/makefont.py $(FONT)
+
+# FORCE so tools/wave_custom.bin (a bank from the browser tool) is picked up/dropped like the font.
+$(WAVES): tools/makewaves.py FORCE | $(BUILD)
+	python3 tools/makewaves.py $(WAVES)
 
 $(NOTES): tools/maketables.py | $(BUILD)
 	python3 tools/maketables.py $(NOTES)
@@ -58,7 +63,7 @@ $(GITVER): FORCE | $(BUILD)
 	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
 FORCE:
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(FACTORY) | $(BUILD)
+$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(FACTORY) $(WAVES) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py

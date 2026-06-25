@@ -563,19 +563,8 @@ Start:
     move.b  #0, proj_groove               ; default groove 0
     move.b  #0, cur_wave                  ; WAVE screen: wave 0, step 0
     move.b  #0, cur_wstep
-    lea     wave_ram, a2                  ; init waves: wave 0 = a sawtooth, 1-15 = flat centre
-    moveq   #0, d0
-.winit0:
-    move.b  d0, d1
-    lsl.b   #3, d1                        ; V = step*8 (0,8,..,248)
-    move.b  d1, (a2)+
-    addq.b  #1, d0
-    cmpi.b  #32, d0
-    bne.s   .winit0
-    move.w  #(15*32)-1, d0
-.winitf:
-    move.b  #$80, (a2)+                   ; flat at centre ($80)
-    dbra    d0, .winitf
+                                          ; waves: clear_song (called at boot) seeds wave_ram from the
+                                          ; factory wave bank (GMDJWAV0) -- no separate boot init needed
     move.b  #0, wave_pidx                 ; preset cycle starts at sine
     move.b  #0, wave_on                   ; no wave note sounding yet
     lea     lfo_cfg, a2                   ; clear the FM LFO bank (no stray LFOs at boot)
@@ -10866,6 +10855,12 @@ clear_song:                               ; blank project: phrases -> rests, cha
     move.b  #$FF, (a2)+
     dbra    d0, .cz_s
     bsr     copy_factory_bank             ; NEW: dump the ROM factory library into instrument memory (1->1)
+    lea     wave_factory, a1              ; NEW: seed the WAVE pool from the factory wave bank (GMDJWAV0)
+    lea     wave_ram, a2
+    move.w  #(16*32)-1, d0
+.cz_w:
+    move.b  (a1)+, (a2)+
+    dbra    d0, .cz_w
     rts
 
 Exception:
@@ -11246,6 +11241,10 @@ algo_maps:
 font_data:
     incbin "build/font.bin"
 font_end:
+    even
+    dc.b    "GMDJWAV0"              ; locator for the browser wave ROM-patcher (factory WAVE bank)
+wave_factory:
+    incbin "build/wave_bank.bin"   ; 16 default waves x 32 steps; clear_song seeds wave_ram from here (makewaves.py)
     even
 
 ; WAVE-screen tiles (MD 4bpp, colour 1) -> loaded at tile $E0. Lines sit near the inner
