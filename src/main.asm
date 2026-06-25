@@ -1610,34 +1610,96 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     beq.s   .mc_ndis
     clr.b   proj_armed
 .mc_ndis:
-    cmpi.b  #SCR_INSTR, cur_screen          ; bank panel: SRAM half (cols 1-3) over ROM half (cols 4-5);
-    bne.s   .mc_move                         ; Up/Down hops between the halves instead of the voice grid
+    cmpi.b  #SCR_INSTR, cur_screen          ; INSTR upper half: 2D grid (bank + HLD/VOL/PAN/TBL.../SWEEP/TSP)
+    bne     .mc_move
     cmpi.b  #1, cur_row
-    bne.s   .mc_move
-    move.b  cur_col, d0
-    btst    #1, d2                          ; Down: SRAM half -> ROM half
-    beq.s   .mc_pu
-    cmpi.b  #1, d0
-    blo.s   .mc_move                         ; col 0 (TYPE) -> normal
-    cmpi.b  #4, d0
-    bhs.s   .mc_move                         ; cols 4-5 (already ROM) -> down to the voice grid
-    cmpi.b  #1, d0                            ; SRAM slot (1) -> ROM slot (4); LOAD/SAVE (2/3) -> ROM LOAD (5)
-    bne.s   .mc_d_ld
-    move.b  #4, cur_col
+    beq     .mc_bank                         ; row 1 = bank panel
+    cmpi.b  #2, cur_row
+    blo     .mc_move                         ; row 0 (INST) -> generic
+    cmpi.b  #13, cur_row
+    blo.s   .vg_grid                         ; rows 2-12 = voice grid
+    bne     .mc_move                         ; rows 14+ = OP grid -> generic
+    btst    #0, d2                           ; row 13 (first OP row), Up -> FMS (skip SWEEP)
+    beq     .mc_move
+    move.b  #11, cur_row
+    move.b  #0, cur_col
     rts
-.mc_d_ld:
+.vg_grid:
+    move.b  cur_row, d0                      ; source row (for the bank-column choice)
+    moveq   #0, d1
+    move.b  cur_row, d1
+    subq.w  #2, d1
+    lsl.w   #2, d1
+    lea     nav_instr, a1
+    adda.w  d1, a1                           ; a1 -> [Up,Down,Left,Right]
+    btst    #0, d2
+    beq.s   .vg_d
+    move.b  (a1), cur_row
+    bra.s   .vg_col
+.vg_d:
+    btst    #1, d2
+    beq.s   .vg_l
+    move.b  (1,a1), cur_row
+    bra.s   .vg_col
+.vg_l:
+    btst    #2, d2
+    beq.s   .vg_r
+    move.b  (2,a1), cur_row
+    bra.s   .vg_col
+.vg_r:
+    btst    #3, d2
+    beq.s   .vg_x
+    move.b  (3,a1), cur_row
+.vg_col:
+    cmpi.b  #1, cur_row                      ; landed on the bank? pick the column by source
+    bne.s   .vg_c0
+    cmpi.b  #12, d0                          ; from SWEEP -> ROM LOAD (5); else (HLD) -> TYPE (0, straight up)
+    beq.s   .vg_crom
+    move.b  #0, cur_col
+    rts
+.vg_crom:
     move.b  #5, cur_col
     rts
-.mc_pu:
-    btst    #0, d2                          ; Up: ROM half -> SRAM half
-    beq.s   .mc_move
+.vg_c0:
+    move.b  #0, cur_col
+.vg_x:
+    rts
+.mc_bank:
+    move.b  cur_col, d0
+    btst    #1, d2                           ; Down
+    beq.s   .mb_up
+    cmpi.b  #1, d0
+    blo     .mc_move                         ; col 0 (TYPE) -> generic down (HLD)
     cmpi.b  #4, d0
-    blo.s   .mc_move                         ; cols 0-3 -> normal up
-    bne.s   .mc_u_ld                          ; ROM slot (4) -> SRAM slot (1); ROM LOAD (5) -> SRAM LOAD (2)
+    bhs.s   .mb_drom
+    cmpi.b  #1, d0                            ; SRAM slot (1) -> ROM slot (4); SRAM LOAD/SAVE (2/3) -> ROM LOAD (5)
+    bne.s   .mb_dld
+    move.b  #4, cur_col
+    rts
+.mb_dld:
+    move.b  #5, cur_col
+    rts
+.mb_drom:                                    ; ROM half (cols 4-5) down -> SWEEP (cr12)
+    move.b  #12, cur_row
+    move.b  #0, cur_col
+    rts
+.mb_up:
+    btst    #0, d2                           ; Up
+    beq.s   .mb_lr
+    cmpi.b  #4, d0
+    blo     .mc_move                         ; SRAM half up -> generic (INST row)
+    bne.s   .mb_uld                           ; ROM slot (4) -> SRAM slot (1); ROM LOAD (5) -> SRAM LOAD (2)
     move.b  #1, cur_col
     rts
-.mc_u_ld:
+.mb_uld:
     move.b  #2, cur_col
+    rts
+.mb_lr:
+    btst    #2, d2                           ; Left: ROM slot (4) -> TYPE (0); else generic
+    beq     .mc_move
+    cmpi.b  #4, d0
+    bne     .mc_move
+    move.b  #0, cur_col
     rts
 .mc_move:
     bsr     row_max                       ; d1 = highest row for this screen/type
@@ -10946,6 +11008,19 @@ voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_tbl, i_tbs, i_algo, i_fb, i_ams, 
 voice_max:  dc.b 15, 15, 3, 255, 31, 15, 7, 7, 3, 7, 255
 voice_step: dc.b 4, 4, 1, 12, 16, 4, 4, 4, 1, 4, 16      ; HLD VOL PAN TSP TBL TBS | ALGO FB AMS FMS | SWEEP
 voice_fmt:  dc.b 0, 0, 0, 1, 4, 0, 0, 0, 0, 0, 1         ; TSP=hex2 signed; TBL=4 (-- or hex2); SWEEP=hex2 (X=dep U/D, Y=rate L/R)
+            even
+nav_instr:  ; INSTR upper-half grid: [Up,Down,Left,Right] target cur_row, per voice cur_row 2-12
+    dc.b 1,  3,  2,  2        ; cr2  HLD   (U=bank)
+    dc.b 2,  4,  3,  12       ; cr3  VOL   (R=SWEEP)
+    dc.b 3,  6,  4,  5        ; cr4  PAN   (D=TBL skip TSP, R=TSP)
+    dc.b 12, 6,  4,  5        ; cr5  TSP   (U=SWEEP, D=TBL, L=PAN)
+    dc.b 4,  7,  6,  6        ; cr6  TBL   (U=PAN skip TSP)
+    dc.b 6,  8,  7,  7        ; cr7  TBS
+    dc.b 7,  9,  8,  8        ; cr8  ALGO
+    dc.b 8,  10, 9,  9        ; cr9  FB
+    dc.b 9,  11, 10, 10       ; cr10 AMS
+    dc.b 10, 13, 11, 11       ; cr11 FMS   (D=OP grid skip SWEEP)
+    dc.b 1,  5,  3,  12       ; cr12 SWEEP (U=bank/ROM LOAD, D=TSP, L=VOL)
             even
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
