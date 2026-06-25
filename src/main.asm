@@ -871,6 +871,7 @@ VBlankInt:
     moveq   #35, d4
     bsr     print_at
     bsr     draw_map                      ; map at row5 col35
+    bsr     draw_meters                   ; 10 channel activity meters below the map
     bsr     amp_refresh                   ; smooth per-frame AMP bars (LFO screen + playing)
     cmpi.b  #SCR_TABLE, cur_screen        ; animate the TABLE playhead each frame while playing
     bne.s   .ntblph
@@ -1051,6 +1052,55 @@ draw_map:                                 ; a0 = VDP_CTRL; 3x5 nav cross at rows
     addq.w  #1, d2
     cmpi.w  #15, d2
     bne.s   .dm_loop
+    rts
+
+; ---- 10 channel activity meters down the right margin (rows 8-17, cols 35-39). a0 = VDP_CTRL.
+; per channel: 2-char name + a gap + a 2-wide 8-level amp bar ($E9..$F0) from c_vol, gated by key/env state.
+draw_meters:
+    lea     ch_state, a1
+    lea     track_names, a2
+    moveq   #0, d2                          ; channel 0..9
+.met_loop:
+    moveq   #0, d0                          ; level = c_vol (0-15), gated by activity
+    move.b  c_vol(a1), d0
+    cmpi.b  #1, c_type(a1)                  ; FM gates on c_keyon, PSG on c_estate
+    bne.s   .met_psg
+    tst.b   c_keyon(a1)
+    bra.s   .met_gate
+.met_psg:
+    tst.b   c_estate(a1)
+.met_gate:
+    bne.s   .met_lvl
+    moveq   #0, d0                          ; idle channel -> empty bar
+.met_lvl:
+    lsr.w   #1, d0                          ; 0-15 -> 0-7
+    cmpi.w  #7, d0
+    bls.s   .met_addr
+    moveq   #7, d0
+.met_addr:
+    addi.w  #$E9, d0                        ; amp-bar tile $E9..$F0
+    move.w  d2, d3                          ; VDP addr for (row 8+ch, col 35)
+    addi.w  #8, d3
+    lsl.w   #6, d3                          ; row * 64 (plane-A stride)
+    addi.w  #35, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    move.w  d2, d1                          ; name = track_names[ch*2..+1]
+    add.w   d1, d1
+    moveq   #0, d3
+    move.b  (a2,d1.w), d3
+    move.w  d3, VDP_DATA
+    move.b  (1,a2,d1.w), d3
+    move.w  d3, VDP_DATA
+    move.w  #' ', VDP_DATA                  ; gap (col 37)
+    move.w  d0, VDP_DATA                    ; 2-wide bar (cols 38-39)
+    move.w  d0, VDP_DATA
+    lea     CHSIZE(a1), a1
+    addq.w  #1, d2
+    cmpi.w  #10, d2
+    bne.s   .met_loop
     rts
 
 ; a1 -> {header_str, name_str} pair for the current screen
@@ -1676,7 +1726,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #2, d1                          ; VID SYNC PAL
     rts
 .rmproj:
-    moveq   #8, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD LFO
+    moveq   #9, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD LFO NAME
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
@@ -1729,6 +1779,8 @@ col_max:                                  ; -> d1 = highest column index for cur
     move.b  cur_screen, d1
     cmpi.b  #SCR_LFO, d1
     beq.s   .clfo                            ; FM LFO bank: 6 columns ON/CH/PM/RT/DP/SY
+    cmpi.b  #SCR_PROJ, d1
+    beq.s   .cproj                           ; PROJECT: row 9 (song NAME) = 8 chars; else single col
     cmpi.b  #SCR_ECHO, d1
     bhs.s   .czero                           ; placeholder screens: cursor locked at col 0
     tst.b   d1
@@ -1748,6 +1800,11 @@ col_max:                                  ; -> d1 = highest column index for cur
     rts
 .clfo:
     moveq   #7, d1                        ; 8 LFO columns (ON CH PARAM RATE MOD SYNC PO DIR)
+    rts
+.cproj:
+    cmpi.b  #9, cur_row
+    bne.s   .czero
+    moveq   #7, d1
     rts
 .czero:
     moveq   #0, d1
@@ -1782,9 +1839,9 @@ col_max:                                  ; -> d1 = highest column index for cur
 .fm:
     cmpi.b  #NVOICE+2, cur_row            ; TYPE/voice/LFO rows have one value; ops have 10
     bhs.s   .fmop
-    tst.b   cur_row                       ; row 0 (INST): + LIBRARY slot (col 1)
+    tst.b   cur_row                       ; row 0 (INST): LIBRARY slot (col 1) + 4 name chars (cols 2-5)
     bne.s   .fmr1
-    moveq   #1, d1
+    moveq   #5, d1
     rts
 .fmr1:
     cmpi.b  #1, cur_row                   ; row 1 (TYPE): + SRAM LOAD/SAVE + ROM LOAD (cols 1,2,3)
@@ -2176,9 +2233,13 @@ edit_fm:
     tst.b   cur_col
     beq     edit_psg                       ; TYPE cycles + wraps both ways (shared with the PSG editor)
     rts
-.instedit:                                ; row 0: col 0 = instrument select; col 1 = ROM slot; col 2 = button
+.instedit:                                ; row 0: col 0 = INST select; col 1 = ROM slot; cols 2-9 = name chars
     tst.b   cur_col
-    bne.s   .ie_lib
+    beq.s   .ie_inst
+    cmpi.b  #2, cur_col
+    bhs     edit_iname
+    bra     .ie_lib
+.ie_inst:
     move.b  cur_instr, d0
     btst    #2, d2                          ; Left -> previous
     beq.s   .ie_r
@@ -3616,6 +3677,56 @@ ENV_AMAX equ ENV_BOT-ENV_TOP               ; max amplitude in px (curve clears t
 
 ; FM editor: VOICE section (one param per row) then the 4-operator grid
 ; shared INST + TYPE header for every instrument page; returns a3 = instrum[cur_instr]
+edit_iname:                               ; cur_col 2-9: cycle the name char at (cur_col-2). a3 = instrum[cur_instr]
+    moveq   #0, d0
+    move.b  cur_col, d0
+    subq.w  #2, d0
+    lea     (i_name,a3), a1
+    adda.w  d0, a1
+    move.b  (a1), d3                       ; current char
+    move.b  d2, d0                         ; B+Down / B+Left -> previous; else next
+    andi.b  #6, d0
+    bne.s   .ein_back
+    moveq   #1, d2
+    bra.s   .ein_go
+.ein_back:
+    moveq   #0, d2
+.ein_go:
+    bsr     name_step
+    move.b  d3, (a1)
+    move.b  #1, need_clear                 ; re-render the header (and base-derived fields)
+    rts
+
+name_step:                                ; d3 = char, d2 = dir (nonzero = next) -> d3 = next/prev in name_chars
+    movem.l d0-d1/a0, -(sp)
+    lea     name_chars, a0
+    moveq   #0, d0                          ; find d3's index (default 0 if not in the set)
+    moveq   #37-1, d1
+.nst_find:
+    cmp.b   (a0,d0.w), d3
+    beq.s   .nst_have
+    addq.w  #1, d0
+    dbra    d1, .nst_find
+    moveq   #0, d0
+.nst_have:
+    tst.b   d2
+    beq.s   .nst_back
+    addq.w  #1, d0
+    cmpi.w  #37, d0
+    blo.s   .nst_get
+    moveq   #0, d0
+    bra.s   .nst_get
+.nst_back:
+    subq.w  #1, d0
+    bpl.s   .nst_get
+    moveq   #37-1, d0
+.nst_get:
+    move.b  (a0,d0.w), d3
+    movem.l (sp)+, d0-d1/a0
+    rts
+name_chars: dc.b " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"   ; the 37-char name edit set
+    even
+
 render_inst_hdr:
     lea     instrum, a3
     moveq   #0, d0
@@ -3636,6 +3747,32 @@ render_inst_hdr:
     moveq   #$60, d4
 .inh:
     bsr     draw_hex2
+    move.l  #$41940003, (a0)              ; instrument name (i_name, 4 chars) at row 3, col 10 (before the LIBRARY panel)
+    lea     (i_name,a3), a2
+    moveq   #0, d5
+.inh_nm:
+    moveq   #0, d3
+    move.b  (a2,d5.w), d3                  ; $00/$FF -> blank
+    cmpi.b  #$FF, d3
+    beq.s   .inh_nb
+    tst.b   d3
+    bne.s   .inh_nmh
+.inh_nb:
+    moveq   #' ', d3
+.inh_nmh:
+    tst.b   cur_row                        ; on the INST row, highlight the char at (cur_col-2)
+    bne.s   .inh_nmw
+    moveq   #0, d4
+    move.b  cur_col, d4
+    subq.b  #2, d4
+    cmp.b   d5, d4
+    bne.s   .inh_nmw
+    addi.w  #$60, d3                        ; inverse tile = char + $60
+.inh_nmw:
+    move.w  d3, VDP_DATA
+    addq.w  #1, d5
+    cmpi.w  #4, d5
+    bne.s   .inh_nm
     moveq   #4, d3                         ; TYPE field (cur_row 1)
     moveq   #1, d4
     lea     str_type, a1
@@ -9788,6 +9925,34 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     moveq   #$60, d4
 .plf:
     bsr     draw_hex1
+    moveq   #3, d3                           ; song NAME (song_title, 8 chars) at row 3 (content zone)
+    moveq   #1, d4
+    lea     str_pname, a1
+    bsr     print_at
+    lea     VDP_CTRL, a0
+    moveq   #3, d0                          ; name chars at row 3, col 6 (computed like print_at)
+    lsl.w   #6, d0
+    addq.w  #6, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     song_title, a2
+    moveq   #0, d5
+.ppn_m:
+    moveq   #0, d3
+    move.b  (a2,d5.w), d3
+    cmpi.b  #$FF, d3
+    beq.s   .ppn_b
+    tst.b   d3
+    bne.s   .ppn_w
+.ppn_b:
+    moveq   #' ', d3
+.ppn_w:
+    move.w  d3, VDP_DATA
+    addq.w  #1, d5
+    cmpi.w  #8, d5
+    bne.s   .ppn_m
     moveq   #19, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
     moveq   #1, d4
     lea     str_saved, a1
@@ -9954,6 +10119,8 @@ glob_tab:                                  ; song-level globals, in head-slot or
     dc.l    echo_mode, echo_tap1, echo_tap2, echo_rd1, echo_rd2, echo_ster
 save_magic: dc.b "GMDDJ", 1                ; 5-char magic + version 1
 def_title:  dc.b "SONG    "                ; 8-char default song name
+str_pname:  dc.b "NAME",0
+    even
 
 gather_globals:                            ; scattered globals -> head slot, then clear the reserved tail
     movem.l d0/a0-a2, -(sp)
@@ -10324,7 +10491,7 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     move.b  #1, song_dirty                  ; TMPO/TSP/MODE/LFO are saved globals
 .ep_nodirty:
     move.b  cur_row, d0
-    beq.s   .ep_tmpo
+    beq     .ep_tmpo
     cmpi.b  #1, d0
     beq     .ep_tsp
     cmpi.b  #2, d0
@@ -10333,6 +10500,8 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     beq.s   .ep_slot
     cmpi.b  #8, d0
     beq.s   .ep_lfo
+    cmpi.b  #9, d0
+    beq     .ep_name
     rts                                     ; NEW/DEMO/SAVE/LOAD: no dpad value
 .ep_mode:
     lea     proj_mode, a1
@@ -10359,6 +10528,24 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     moveq   #1, d4
     bsr     adj_field
     move.b  #1, g_lfo_dirty                   ; re-emit $22 on the next push -> new rate heard at once
+    rts
+.ep_name:                                 ; cur_row 9: cycle the song-name char at cur_col (song_title)
+    moveq   #0, d0
+    move.b  cur_col, d0
+    lea     song_title, a1
+    adda.w  d0, a1
+    move.b  (a1), d3
+    move.b  d2, d0
+    andi.b  #6, d0
+    bne.s   .epn_back
+    moveq   #1, d2
+    bra.s   .epn_go
+.epn_back:
+    moveq   #0, d2
+.epn_go:
+    bsr     name_step
+    move.b  d3, (a1)
+    move.b  #1, need_clear
     rts
 .ep_tmpo:                                 ; TMPO = scale the active groove (every tick +-1): faster/slower, swing kept
     moveq   #0, d0                          ; d0 = delta added to every tick (+1 slower / -1 faster)
