@@ -10107,19 +10107,39 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     moveq   #16, d3
     moveq   #8, d4
     bsr     print_hl
-    moveq   #17, d3                          ; LFO: global FM LFO (0 = off, 1-8 = on at rate 0-7)
+    moveq   #20, d3                          ; LFO -- last item, below the unsaved flag; box toggle + rate
     moveq   #1, d4
     lea     str_p_lfo, a1
     bsr     print_at
-    move.l  #$48900003, (a0)
-    move.b  g_lfo, d3
-    moveq   #0, d4
+    moveq   #0, d2                            ; highlight when the LFO row is the cursor
     cmpi.b  #8, cur_row
     bne.s   .plf
-    moveq   #$60, d4
+    moveq   #$60, d2
 .plf:
-    bsr     draw_hex1
-    moveq   #19, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
+    move.l  #$4A100003, (a0)                ; row 20, col 8
+    moveq   #0, d3                            ; box: g_lfo 0 = off ($7B), 1-8 = on ($7D) -- same as the LFO screen
+    tst.b   g_lfo
+    beq.s   .plf_box
+    moveq   #1, d3
+.plf_box:
+    add.w   d3, d3
+    addi.w  #$7B, d3
+    add.w   d2, d3
+    move.w  d3, VDP_DATA                      ; the on/off box glyph
+    move.w  #' ', VDP_DATA                    ; gap
+    tst.b   g_lfo                            ; rate digit beside it: 0-7 when on, blank when off
+    bne.s   .plf_on
+    move.w  #' ', VDP_DATA
+    bra.s   .plf_d
+.plf_on:
+    moveq   #0, d3
+    move.b  g_lfo, d3
+    subq.b  #1, d3
+    addi.w  #'0', d3
+    add.w   d2, d3
+    move.w  d3, VDP_DATA
+.plf_d:
+    moveq   #18, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
     moveq   #1, d4
     lea     str_saved, a1
     tst.b   song_dirty
@@ -10127,7 +10147,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     lea     str_unsaved, a1
 .pp_cl:
     bsr     print_at
-    moveq   #20, d3                          ; confirm prompt when a destructive action is armed
+    moveq   #21, d3                          ; confirm prompt when a destructive action is armed
     moveq   #1, d4
     lea     str_blank15, a1
     tst.b   proj_armed
