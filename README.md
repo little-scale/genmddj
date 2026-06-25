@@ -4,8 +4,8 @@
 
 An **LSDJ-inspired music tracker for the Sega Mega Drive / Genesis**, driving the
 **YM2612** FM synthesiser (6 × 4-operator + an 8-bit PCM DAC) and the **SN76489**
-PSG (3 squares + noise), written in **68000 + Z80 assembly**. It's a port of
-**SMSGGDJ**, the author's shipped Master System / Game Gear tracker.
+PSG (3 squares + noise), written in **68000 + Z80 assembly**. It's a **sibling
+project** to **SMSGGDJ**, the author's shipped Master System / Game Gear tracker.
 
 Ten voices: 6 FM (`F1`–`F6`; `F6` doubles as the PCM / sample host) + 3 PSG square
 (`S1`–`S3`) + 1 PSG noise (`NO`).
@@ -72,4 +72,4 @@ save-file tool, and **`als2genmddj`** — convert Ableton Live `.als`, Standard 
 
 MIT — see [LICENSE](LICENSE). © 2026 Sebastian Tomczak (little-scale).
 
-Ported from SMSGGDJ, and built on the work of the Mega Drive / Genesis homebrew community.
+A sibling to SMSGGDJ, built on the work of the Mega Drive / Genesis homebrew community.
