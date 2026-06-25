@@ -7,6 +7,11 @@ An **LSDJ-inspired music tracker for the Sega Mega Drive / Genesis**, driving th
 PSG (3 squares + noise), written in **68000 + Z80 assembly**. It's a **sibling
 project** to **SMSGGDJ**, the author's shipped Master System / Game Gear tracker.
 
+> [!NOTE]
+> **Work in progress** — under active development, so expect rough edges and shifting
+> internals. It does run on real hardware, though: tested on the **Sega Genesis, Mega
+> Drive, and Nomad**, as well as in emulation.
+
 Ten voices: 6 FM (`F1`–`F6`; `F6` doubles as the PCM / sample host) + 3 PSG square
 (`S1`–`S3`) + 1 PSG noise (`NO`).
 
