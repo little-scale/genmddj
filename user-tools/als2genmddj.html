@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>als ↔ genmddj</title>
+<style>
+  :root { --bg:#10131a; --panel:#1b2030; --ink:#e7ecf5; --dim:#8b96ab;
+          --accent:#ffd23f; --accent2:#46c0ff; --empty:#2a3140; --good:#5ad17a; --bad:#ff6b6b; }
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;}
+  .wrap{max-width:980px;margin:0 auto;padding:20px;}
+  h1{font-size:20px;letter-spacing:1px;margin:0 0 4px;} h1 span{color:var(--accent);}
+  h3{color:var(--accent2);margin:16px 0 6px;font-size:14px;}
+  p.dim,.dim{color:var(--dim);} code{color:var(--accent);}
+  .zone{border:2px dashed #3a4256;border-radius:10px;padding:24px;text-align:center;color:var(--dim);cursor:pointer;margin:12px 0;transition:.15s;}
+  .zone.hot{border-color:var(--accent);color:var(--ink);background:#161b27;}
+  .bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;background:var(--panel);border-radius:8px;padding:10px 14px;margin:10px 0;}
+  button{background:#2a3550;color:var(--ink);border:1px solid #3c4a68;border-radius:6px;padding:5px 11px;font:inherit;cursor:pointer;}
+  button:hover:not(:disabled){border-color:var(--accent2);} button.primary{background:var(--accent);color:#1a1400;border-color:var(--accent);font-weight:bold;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  label.opt{color:var(--dim);} input[type=checkbox]{vertical-align:-1px;}
+  pre{background:#0c0f16;border:1px solid #2a3346;border-radius:8px;padding:10px 14px;white-space:pre-wrap;font-size:12.5px;color:var(--dim);}
+  .viewer{background:#0c0f16;border:1px solid #2a3346;border-radius:8px;padding:4px 14px 14px;margin-top:12px;display:none;}
+  .viewer.show{display:block;} table{border-collapse:collapse;font-size:12px;margin:4px 8px 8px 0;}
+  td,th{border:1px solid #232b3c;padding:1px 6px;text-align:center;} th{color:var(--dim);font-weight:normal;}
+  .note{color:var(--accent2);} .cmd{color:var(--accent);} .mt{color:var(--empty);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span>als</span> ↔ <span>genmddj</span></h1>
+  <p class="dim">Drop a Live Set (<code>.als</code>) or a Standard MIDI File (<code>.mid</code>) → a genmddj <code>.gmdj</code> song (+ <code>.gmi</code>
+  instruments), or a <code>.gmdj</code> → a <code>.als</code>. The first <b>9 MIDI tracks</b> map to genmddj
+  channels <b>F1–F6</b> (FM) then <b>S1–S3</b> (PSG/TONE) — each FM track's <b>Operator</b> device is
+  converted to a YM2612 patch (also exported as <code>.gmi</code>). Session clips become phrases; a clip &gt; 16 steps
+  spills into more phrases. <b>Contiguous</b> vertical clip runs fill chains; an empty scene starts a new chain.
+  Notes quantise to the 16th grid, octave-fold into range, highest pitch wins on polyphony.</p>
+
+  <div class="bar">
+    <label class="opt"><input type="checkbox" id="vel"> map velocity → <code>X</code> (volume) command</label>
+    <label class="opt"><input type="checkbox" id="fmi" checked> export <code>.gmi</code> for FM tracks</label>
+  </div>
+  <div class="zone" id="zone">drop a <b>.als</b>, <b>.mid</b>, <b>.gmdj</b> or <b>.mml</b> here · or click</div>
+  <input type="file" id="file" accept=".als,.gmdj,.mid,.mml,.txt" hidden>
+
+  <div class="bar">
+    <button class="primary" id="dl" disabled>download</button>
+    <button id="view" disabled>view song</button>
+    <span class="dim" id="note"></span>
+  </div>
+  <div class="bar" style="flex-direction:column;align-items:stretch;gap:8px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <b>MML</b>
+      <button id="mmlgo" class="primary">MML &rarr; .gmdj</button>
+      <button id="mmlout">song &rarr; MML</button>
+      <span class="dim" style="font-size:12px">one line per channel &middot; F1&ndash;F6 / S1&ndash;S3 &middot; <code>cdefgab</code> +/# - &middot; <code>o</code>&lt; &gt; &middot; <code>l4</code> &middot; <code>r</code> &middot; <code>&amp;</code> &middot; <code>@</code>inst &middot; <code>v</code> &middot; <code>;</code>comment</span>
+    </div>
+    <textarea id="mml" spellcheck="false" placeholder="; type MML, then MML &rarr; .gmdj&#10;F1 @0 o4 l8 c d e f g a b &gt;c&#10;S1 o5 l16 c+ e c- r" style="width:100%;height:130px;background:#0d1018;color:#e7ecf5;border:1px solid #34405a;border-radius:6px;padding:8px;font:13px ui-monospace,Menlo,monospace;resize:vertical"></textarea>
+  </div>
+  <pre id="report" hidden></pre>
+  <div class="viewer" id="viewer"></div>
+</div>
+
+<script>
+"use strict";
+// ---- genmddj song model (from src/main.asm) ----
+const DATA_SIZE=20832, GMDJ_MAGIC="GMDJSONG", GMI_MAGIC="GMDJINS1";
+const POOL={globals:[0,256],song:[256,2400],phrases:[2656,10240],chains:[12896,3072],
+  instruments:[15968,2048],tables:[18016,2048],grooves:[20064,256],waves:[20320,512]};
+const NSONGROWS=240, NCH=10, NPHRASES=160, PH_ROWS=16, PH_BYTES=4, PHRASE_SZ=64;
+const NCHAINS=96, CH_STEPS=16, CHAIN_SZ=32, NINSTR=32, INSTR_SZ=64;
+const CMD_X=24;                              // command byte = letter position (A=1 .. X=24)
+const FM_CH=6;                               // channels 0-5 are FM, 6-8 PSG
+// MIDI<->genmddj note: genmddj note (0-95) = MIDI - 12 (C4 MIDI60 = genmddj48). Range MIDI 12..107.
+const NOTE_LO=12, NOTE_HI=107;
+const $=id=>document.getElementById(id);
+const enc=new TextEncoder(), dec=new TextDecoder("latin1");
+let outBytes=null, outName="", lastBlock=null;
+
+// ---------- shared ----------
+function ascii(u8,o,n){let s="";for(let i=0;i<n;i++){const c=u8[o+i];if(c===0)break;s+=String.fromCharCode(c);}return s.trim();}
+function dataChecksum(d){let s=0;for(let i=0;i<DATA_SIZE;i++)s=(s+d[i])&0xFFFF;return s;}
+function dl(bytes,name){const b=new Blob([bytes],{type:"application/octet-stream"});const a=document.createElement("a");
+  a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
+async function gunzip(buf){const s=new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(s).arrayBuffer());}
+async function gzip(u8){const s=new Blob([u8]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(s).arrayBuffer());}
+const num=(el,d)=>el?parseFloat(el.getAttribute("Value")):d;
+
+// default FM patch (algo 7 additive: sine carrier + quiet octave) -- a valid, audible starting point.
+function defaultFM(name){
+  const r=new Uint8Array(INSTR_SZ).fill(0);
+  r[0]=0; r[1]=7; r[2]=0; r[3]=3; r[6]=15; r[7]=15;        // FM, algo7, fb0, pan L+R, hld hold, vol full
+  const op=(i,mul,tl)=>{const b=8+i*10; r[b]=mul; r[b+1]=0; r[b+2]=tl; r[b+4]=31; r[b+8]=15;}; // MUL,DT,TL,..AR,..RR
+  op(0,1,0); op(1,2,28); op(2,1,127); op(3,1,127);
+  r[48]=0xFF;                                              // tbl none
+  const nm=(name||"FM").toUpperCase().replace(/[^A-Z0-9 ]/g,"").padEnd(8," ").slice(0,8);
+  for(let i=0;i<8;i++) r[54+i]=nm.charCodeAt(i);
+  return r;
+}
+function toneInst(name){
+  const r=new Uint8Array(INSTR_SZ).fill(0);
+  r[0]=3; r[7]=15; r[6]=15; r[48]=0xFF;                    // type 3 = TONE, full vol, hold
+  const nm=(name||"TONE").toUpperCase().replace(/[^A-Z0-9 ]/g,"").padEnd(8," ").slice(0,8);
+  for(let i=0;i<8;i++) r[54+i]=nm.charCodeAt(i);
+  return r;
+}
+
+// ---- Ableton Operator device -> YM2612 FM record (ported from genmddj-instrument-patcher.html) ----
+const CHIPRATE=53267, SLOTOF=[0,2,1,3], DECF=1.5;
+const EG_INC=[
+ 0,1,0,1,0,1,0,1, 0,1,0,1,1,1,0,1, 0,1,1,1,0,1,1,1, 0,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1,1, 1,1,1,2,1,1,1,2, 1,2,1,2,1,2,1,2, 1,2,2,2,1,2,2,2,
+ 2,2,2,2,2,2,2,2, 2,2,2,4,2,2,2,4, 2,4,2,4,2,4,2,4, 2,4,4,4,2,4,4,4,
+ 4,4,4,4,4,4,4,4, 4,4,4,8,4,4,4,8, 4,8,4,8,4,8,4,8, 4,8,8,8,4,8,8,8,
+ 8,8,8,8,8,8,8,8, 16,16,16,16,16,16,16,16, 0,0,0,0,0,0,0,0];
+function egRS(reg,att){ if(reg===0)return[18,0]; const R=Math.min(63,2*reg),g=R>>2,l=R&3; if(g<=11)return[l,11-g]; if(g===12)return[4+l,0]; if(g===13)return[8+l,0]; if(g===14)return[12+l,0]; return[att?17:16,0]; }
+function calAtk(AR){ if(AR===0)return 1e9; let v=1023,c=0,s=0,n=0;const[row,sh]=egRS(AR,true); while(v>0&&n<CHIPRATE*15){n++;if(++s>=3){s=0;c++;if((c&((1<<sh)-1))===0)v+=(~v*EG_INC[row*8+((c>>sh)&7)])>>4;}} return n/CHIPRATE; }
+function calDec(reg){ if(reg===0)return 1e9; let v=0,c=0,s=0,n=0;const[row,sh]=egRS(reg,false); while(v<1020&&n<CHIPRATE*60){n++;if(++s>=3){s=0;c++;if((c&((1<<sh)-1))===0)v+=EG_INC[row*8+((c>>sh)&7)];}} return n/CHIPRATE; }
+const ATKTAB=[...Array(32)].map((_,r)=>calAtk(r)), DECTAB=[...Array(32)].map((_,r)=>calDec(r));
+const t2r=(sec,tab)=>{let b=1,bd=1e9;for(let r=1;r<32;r++){if(!isFinite(tab[r]))continue;const d=Math.abs(Math.log(tab[r]+1e-5)-Math.log(sec+1e-5));if(d<bd){bd=d;b=r;}}return b;};
+const ampDb=v=>{v=parseFloat(v); return (!v||v<=0.0004)?-999:20*Math.log10(v);};
+const dbTL=db=>Math.max(0,Math.min(127,Math.round(-db/0.75)));
+const dbSL=db=>db<=-90?15:Math.max(0,Math.min(15,Math.round(-db/3)));
+const OPALG={0:{ym:0,perm:[3,2,1,0]},1:{ym:1,perm:[3,2,1,0]},2:{ym:2,perm:[3,2,1,0]},3:{ym:3,perm:[3,1,0,2]},
+  7:{ym:4,perm:[1,0,3,2]},8:{ym:5,perm:[1,2,3,0]},9:{ym:6,perm:[2,3,1,0]},10:{ym:7,perm:[0,1,2,3]}};
+function mval(el,tag){ if(!el)return null; const t=el.getElementsByTagName(tag)[0]; if(!t)return null; const m=t.getElementsByTagName('Manual')[0]; return (m||t).getAttribute('Value'); }
+// opEl = an <Operator> device element from a track's DeviceChain -> 64-byte FM record (throws if not Operator)
+function operatorToRecord(opEl, name){
+  if(!opEl) throw new Error('no Operator device');
+  const osc=[]; for(let n=0;n<4;n++){ const o=opEl.getElementsByTagName('Operator.'+n)[0]; if(!o){osc.push(null);continue;}
+    const tune=o.getElementsByTagName('Tune')[0], env=o.getElementsByTagName('Envelope')[0];
+    osc.push({ on:(mval(o,'IsOn')||'true')!=='false', fb:parseFloat(mval(o,'Feedback')||'0'),
+      coarse:Math.round(parseFloat(mval(tune,'Coarse')||'1')), volDb:ampDb(mval(o,'Volume')||'1'),
+      atk:parseFloat(mval(env,'AttackTime')||'0.1')/1000, dec:parseFloat(mval(env,'DecayTime')||'1')/1000,
+      sus:ampDb(mval(env,'SustainLevel')||'1'), rel:parseFloat(mval(env,'ReleaseTime')||'400')/1000 }); }
+  const g=opEl.getElementsByTagName('Globals')[0];
+  const alg=OPALG[Math.round(parseFloat((g&&mval(g,'Algorithm'))||'0'))]||OPALG[0];
+  const rec=new Uint8Array(INSTR_SZ); rec[1]=alg.ym; rec[3]=3; rec[6]=15; rec[7]=15; rec[48]=0xFF; rec[49]=1;
+  let fb=0; for(let a=0;a<4;a++) if(osc[a]&&alg.perm[a]===0) fb=osc[a].fb;
+  rec[2]=Math.max(0,Math.min(7,Math.round(fb/100*7)));
+  for(let a=0;a<4;a++){ const o=osc[a]; if(!o) continue;
+    const slot=SLOTOF[alg.perm[a]], b=8+slot*10;
+    const SL=dbSL(o.sus), slatt=(SL>=15?1020:SL*32), D1=(!o.on||slatt<16)?31:t2r(o.dec*DECF*1020/slatt,DECTAB);
+    rec[b]=Math.max(0,Math.min(15,o.coarse)); rec[b+2]=o.on?dbTL(o.volDb):127; rec[b+4]=o.on?t2r(o.atk,ATKTAB):0;
+    rec[b+6]=D1; rec[b+8]=Math.max(0,Math.min(15,Math.round((t2r(o.rel*DECF,DECTAB)-1)/2))); rec[b+9]=SL; }
+  const nm=(name||"FM").toUpperCase().replace(/[^A-Z0-9 ]/g,"").padEnd(8," ").slice(0,8);
+  for(let i=0;i<8;i++) rec[54+i]=nm.charCodeAt(i);
+  return rec;
+}
+
+// ====================================================================
+//  .als  ->  .gmdj
+// ====================================================================
+function parseClip(clip){
+  let lStart=0, lenBeats=0;
+  const loop=clip.getElementsByTagName("Loop")[0];
+  if(loop){ lStart=num(loop.getElementsByTagName("LoopStart")[0],0);
+    const lEnd=num(loop.getElementsByTagName("LoopEnd")[0],NaN);
+    lenBeats=isNaN(lEnd)?0:lEnd-lStart; }
+  if(!lenBeats) lenBeats=num(clip.getElementsByTagName("CurrentEnd")[0],0)-num(clip.getElementsByTagName("CurrentStart")[0],0);
+  const notes=[];
+  for(const kt of clip.getElementsByTagName("KeyTrack")){
+    const pitch=parseInt((kt.getElementsByTagName("MidiKey")[0]||{}).getAttribute?.("Value"));
+    for(const ev of kt.getElementsByTagName("MidiNoteEvent"))
+      notes.push({pitch, t:parseFloat(ev.getAttribute("Time")), v:parseFloat(ev.getAttribute("Velocity"))});
+  }
+  return {lStart, lenBeats, notes};
+}
+// a parsed clip -> array of 16-row phrases ([note,instr,cmd,prm]); rest = [0xFF,0xFF,0,0]
+function clipToPhrases(clip, instr, velToV, st){
+  const steps=Math.max(1, Math.ceil(clip.lenBeats*4));
+  const grid=new Array(steps).fill(null);
+  for(const n of clip.notes){
+    if(!(n.v>0)) continue;
+    const step=Math.round((n.t-clip.lStart)*4);
+    if(step<0||step>=steps){ continue; }
+    let m=n.pitch;
+    if(m<NOTE_LO||m>NOTE_HI){ st.folded++; while(m<NOTE_LO)m+=12; while(m>NOTE_HI)m-=12; }
+    if(!grid[step]) grid[step]={m,v:n.v};
+    else { st.poly++; if(m>grid[step].m) grid[step]={m,v:n.v}; }
+  }
+  const phrases=[];
+  for(let base=0;base<steps;base+=16){
+    const rows=[];
+    for(let r=0;r<16;r++){
+      const g=grid[base+r];
+      if(!g){ rows.push([0xFF,0xFF,0,0]); continue; }
+      let cmd=0,prm=0;
+      if(velToV){ cmd=CMD_X; prm=Math.min(15,Math.round(g.v/127*15)); }
+      rows.push([g.m-NOTE_LO, instr, cmd, prm]);            // genmddj note = MIDI-12
+    }
+    phrases.push(rows);
+  }
+  return phrases;
+}
+function convertAls(xml, velToV){
+  const st={folded:0,poly:0,clips:0,truncated:false,tracks:0};
+  const tracks=[...xml.getElementsByTagName("MidiTrack")];
+  st.tracks=tracks.length; st.skipped=Math.max(0,tracks.length-9);
+  const phraseList=[], phraseMap=new Map();                 // de-dup identical phrases
+  const trackChains=Array.from({length:9},()=>[]);
+  const instNames=Array(9).fill(""), instOps=Array(9).fill(null);
+  tracks.slice(0,9).forEach((track,ti)=>{
+    instNames[ti]=ascii(enc.encode((track.getElementsByTagName("EffectiveName")[0]||track.getElementsByTagName("UserName")[0]||{}).getAttribute?.("Value")||("TRK"+(ti+1))),0,8);
+    if(ti<FM_CH) instOps[ti]=track.getElementsByTagName("Operator")[0]||null;   // FM track's Operator device, if any
+    const seq=track.getElementsByTagName("MainSequencer")[0];
+    const csl=seq&&seq.getElementsByTagName("ClipSlotList")[0];
+    if(!csl) return;
+    const slots=[...csl.children].filter(e=>e.tagName==="ClipSlot");
+    // build runs of contiguous non-empty scenes
+    let run=[];
+    const flushRun=()=>{
+      if(!run.length){ return; }
+      // run's phrases -> one or more chains (16 steps each); a run never merges with the next
+      let chainSteps=[];
+      const closeChain=()=>{ if(chainSteps.length){ if(window.__chainList.length<NCHAINS){ trackChains[ti].push(window.__chainList.length); window.__chainList.push(chainSteps);} else st.truncated=true; chainSteps=[]; } };
+      for(const clip of run){
+        st.clips++;
+        for(const rows of clipToPhrases(clip, ti, velToV, st)){
+          const key=rows.flat().join(",");
+          let idx=phraseMap.get(key);
+          if(idx===undefined){ if(phraseList.length>=NPHRASES){ st.truncated=true; continue; }
+            idx=phraseList.length; phraseList.push(rows); phraseMap.set(key,idx); }
+          chainSteps.push(idx);
+          if(chainSteps.length===CH_STEPS) closeChain();
+        }
+      }
+      closeChain();
+      run=[];
+    };
+    for(const slot of slots){
+      const clipEl=slot.getElementsByTagName("MidiClip")[0];
+      if(clipEl) run.push(parseClip(clipEl));
+      else flushRun();                                       // empty scene -> chain boundary
+    }
+    flushRun();
+  });
+  return {phraseList, chainList:window.__chainList, trackChains, instNames, instOps, st};
+}
+function buildBlock(conv, velToV){
+  const d=new Uint8Array(DATA_SIZE).fill(0);
+  // globals defaults
+  d[POOL.globals[0]+2]=6;                                   // default groove 6
+  // song matrix: $FF empties, each track's chains down its column
+  d.fill(0xFF, POOL.song[0], POOL.song[0]+POOL.song[1]);
+  let songRows=0;
+  for(let ti=0;ti<9;ti++){ conv.trackChains[ti].forEach((cn,row)=>{ if(row<NSONGROWS){ d[POOL.song[0]+row*NCH+ti]=cn; songRows=Math.max(songRows,row+1);} }); }
+  // chains: 16 steps x [phrase#, transpose]; $FF phrase = empty step
+  const co=POOL.chains[0];
+  for(let c=0;c<NCHAINS;c++){ for(let s=0;s<CH_STEPS;s++){ d[co+c*CHAIN_SZ+s*2]=0xFF; d[co+c*CHAIN_SZ+s*2+1]=0; } }
+  conv.chainList.forEach((steps,c)=>{ if(c<NCHAINS) steps.forEach((ph,s)=>{ if(s<CH_STEPS) d[co+c*CHAIN_SZ+s*2]=ph; }); });
+  // phrases
+  const po=POOL.phrases[0];
+  for(let p=0;p<NPHRASES;p++) for(let r=0;r<PH_ROWS;r++){ const o=po+p*PHRASE_SZ+r*PH_BYTES; d[o]=0xFF; d[o+1]=0xFF; }
+  conv.phraseList.forEach((rows,p)=>{ if(p<NPHRASES) rows.forEach((row,r)=>{ const o=po+p*PHRASE_SZ+r*PH_BYTES; d[o]=row[0];d[o+1]=row[1];d[o+2]=row[2];d[o+3]=row[3]; }); });
+  // instruments: FM (0-5) / TONE (6-8); index = track
+  const io=POOL.instruments[0], gmis=[];
+  for(let ti=0;ti<NINSTR;ti++) d[io+ti*INSTR_SZ]=0xFF;      // $FF type = unused slot
+  let fmConv=0;
+  for(let ti=0;ti<9;ti++){
+    let rec;
+    if(ti<FM_CH){ const nm=conv.instNames[ti]||("FM"+(ti+1)), op=conv.instOps&&conv.instOps[ti];
+      try{ rec=op?operatorToRecord(op,nm):defaultFM(nm); if(op)fmConv++; }
+      catch(e){ rec=defaultFM(nm); }                        // not an Operator we can read -> default patch
+    } else rec=toneInst(conv.instNames[ti]||("PSG"+(ti-5)));
+    d.set(rec, io+ti*INSTR_SZ);
+    if(ti<FM_CH) gmis.push({name:conv.instNames[ti]||("fm"+(ti+1)), rec});
+  }
+  conv.st.fmConv=fmConv;
+  // tables/grooves/waves left zero (defaults); groove pool: fill with 6
+  d.fill(6, POOL.grooves[0], POOL.grooves[0]+POOL.grooves[1]);
+  return {d, gmis};
+}
+function makeGmdj(d, title){
+  const out=new Uint8Array(32+DATA_SIZE);
+  enc.encodeInto(GMDJ_MAGIC,out); out[8]=1; out[10]=(DATA_SIZE>>8)&255; out[11]=DATA_SIZE&255;
+  enc.encodeInto((title||"SONG").toUpperCase().padEnd(8," ").slice(0,8), out.subarray(12,20));
+  out.set(d,32); return out;
+}
+function makeGmi(rec){ const out=new Uint8Array(8+INSTR_SZ); enc.encodeInto(GMI_MAGIC,out); out.set(rec,8); return out; }
+
+async function fromAls(buf, name){
+  window.__chainList=[];
+  let xmlText;
+  try{ xmlText=dec.decode(await gunzip(buf)); }
+  catch(e){ xmlText=dec.decode(buf); }                       // some .als are plain XML
+  const xml=new DOMParser().parseFromString(xmlText,"text/xml");
+  if(xml.getElementsByTagName("parsererror").length){ note("could not parse .als XML",true); return; }
+  const velToV=$("vel").checked;
+  const conv=convertAls(xml, velToV);
+  const {d,gmis}=buildBlock(conv, velToV);
+  lastBlock=d;
+  const title=name.replace(/\.als$/i,"").slice(0,8);
+  outBytes=makeGmdj(d,title); outName=(title||"song")+".gmdj";
+  const exportGmi=$("fmi").checked;
+  const s=conv.st;
+  report(`Live Set: ${s.tracks} MIDI track(s)${s.skipped?` (${s.skipped} beyond 9 skipped)`:""}
+mapped 9 channels -> F1..F6 (FM) + S1..S3 (TONE)
+FM patches: ${s.fmConv||0} converted from Operator devices, ${FM_CH-(s.fmConv||0)} default
+clips: ${s.clips} · phrases: ${conv.phraseList.length}/${NPHRASES} · chains: ${conv.chainList.length}/${NCHAINS}
+notes octave-folded: ${s.folded} · polyphony reduced: ${s.poly}${s.truncated?"\n⚠ song exceeded pool limits — truncated":""}
+velocity->X: ${velToV?"on":"off"} · FM .gmi export: ${exportGmi?"on":"off"}`);
+  $("dl").disabled=false; $("view").disabled=false;
+  $("dl").onclick=()=>{ dl(outBytes,outName); if(exportGmi) gmis.forEach((g,i)=>dl(makeGmi(g.rec), (g.name||("fm"+(i+1))).toLowerCase().replace(/[^a-z0-9]/g,"")+".gmi")); };
+  note("converted — ready to download",false);
+}
+
+const ADVTMPL="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";
+const REVALG={0:{op:0,perm:[3,2,1,0]},1:{op:1,perm:[3,2,1,0]},2:{op:2,perm:[3,2,1,0]},3:{op:3,perm:[3,1,0,2]},
+  4:{op:7,perm:[1,0,3,2]},5:{op:8,perm:[1,2,3,0]},6:{op:9,perm:[2,3,1,0]},7:{op:10,perm:[0,1,2,3]}};
+function setM(el,tag,val){ const t=el&&el.getElementsByTagName(tag)[0]; if(t){ (t.getElementsByTagName('Manual')[0]||t).setAttribute('Value', String(val)); } }
+// fill a parsed Operator-template doc from a 64-byte FM record (reverse of operatorToRecord)
+function fillOperatorDoc(doc, rec){
+  const filt=doc.getElementsByTagName('Filter')[0]; if(filt) setM(filt,'OnOff','false');
+  const ra=REVALG[rec[1]&7]||REVALG[0];
+  setM(doc.getElementsByTagName('Globals')[0],'Algorithm', ra.op);
+  const fbReg=rec[2]&7;
+  for(let a=0;a<4;a++){ const o=doc.getElementsByTagName('Operator.'+a)[0]; if(!o) continue;
+    const ymOp=ra.perm[a], rb=8+SLOTOF[ymOp]*10;
+    const MUL=rec[rb],TL=rec[rb+2],AR=rec[rb+4],D1=rec[rb+6],RR=rec[rb+8],SL=rec[rb+9];
+    const on=TL<127, tune=o.getElementsByTagName('Tune')[0], env=o.getElementsByTagName('Envelope')[0], slatt=(SL>=15?1020:SL*32);
+    setM(o,'IsOn', on?'true':'false'); setM(o,'WaveForm',0); setM(o,'LfoOn','false');
+    setM(o,'Feedback', ymOp===0?Math.round(fbReg/7*100):0);
+    setM(tune,'Coarse', MUL||1); setM(tune,'Fine',0);
+    setM(o,'Volume', Math.max(0.0003162277571,Math.pow(10,-(TL*0.75)/20)).toPrecision(7));
+    setM(env,'AttackTime', Math.max(0.1,(ATKTAB[AR]||0)*1000).toPrecision(7));
+    setM(env,'AttackLevel','0.0003162277571');
+    setM(env,'DecayTime', Math.max(1,(DECTAB[D1]||0)*1000*slatt/1020*(SL>=15?1/DECF:1)).toPrecision(7));
+    setM(env,'DecayLevel','1');
+    setM(env,'SustainLevel', SL>=15?'0.0003162277571':Math.pow(10,-(SL*3)/20).toPrecision(7));
+    setM(env,'ReleaseTime', Math.max(0.1,(DECTAB[2*RR+1]||0)*1000/DECF).toPrecision(7));
+    setM(env,'ReleaseLevel','0.0003162277571');
+  }
+}
+
+// ====================================================================
+//  .gmdj  ->  .als   (reverse: phrases/chains/song -> Session clips)
+// ====================================================================
+function blockFromGmdj(buf){
+  if(ascii(buf,0,8)!==GMDJ_MAGIC) return null;
+  return buf.slice(32,32+DATA_SIZE);
+}
+function xmlEsc(s){return s.replace(/[<&>"]/g,c=>({"<":"&lt;","&":"&amp;",">":"&gt;",'"':"&quot;"}[c]));}
+async function alsFromBlock(d){
+  const io=POOL.instruments[0];
+  let tmpl=null; try{ tmpl=dec.decode(await gunzip(Uint8Array.from(atob(ADVTMPL),c=>c.charCodeAt(0)))); }catch(e){}
+  // reconstruct each channel's clip stream: walk its song column -> chains -> phrase steps -> 16-step clips
+  const so=POOL.song[0], co=POOL.chains[0], po=POOL.phrases[0];
+  const tracksXml=[];
+  for(let ti=0;ti<9;ti++){
+    const clips=[];
+    for(let row=0;row<NSONGROWS;row++){
+      const cn=d[so+row*NCH+ti]; if(cn===0xFF) continue;
+      for(let st=0;st<CH_STEPS;st++){
+        const ph=d[co+cn*CHAIN_SZ+st*2]; if(ph===0xFF) continue;
+        const tr=d[co+cn*CHAIN_SZ+st*2+1]<<24>>24;
+        const notesByPitch={};
+        for(let r=0;r<PH_ROWS;r++){ const o=po+ph*PHRASE_SZ+r*PH_BYTES, nt=d[o];
+          if(nt===0xFF) continue;
+          const midi=nt+NOTE_LO+tr;
+          const cmd=d[o+2], prm=d[o+3], vel=(cmd===CMD_X)?Math.round(prm/15*127):100;
+          (notesByPitch[midi]=notesByPitch[midi]||[]).push({t:r*0.25, v:vel});
+        }
+        const kts=Object.entries(notesByPitch).map(([pitch,evs])=>
+          `<KeyTrack><Notes>${evs.map(e=>`<MidiNoteEvent Time="${e.t}" Duration="0.25" Velocity="${e.v}" IsEnabled="true"/>`).join("")}</Notes><MidiKey Value="${pitch}"/></KeyTrack>`).join("");
+        clips.push(`<ClipSlot><Value><MidiClip Time="0"><CurrentStart Value="0"/><CurrentEnd Value="4"/><Loop><LoopStart Value="0"/><LoopEnd Value="4"/><StartRelative Value="0"/><LoopOn Value="true"/></Loop><Name Value="ch${ti+1}"/><Notes><KeyTracks>${kts}</KeyTracks></Notes></MidiClip></Value></ClipSlot>`);
+      }
+    }
+    while(clips.length<8) clips.push("<ClipSlot><Value/></ClipSlot>");
+    let instXml="";
+    if(ti<FM_CH && tmpl){ try{ const doc=new DOMParser().parseFromString(tmpl,"text/xml");
+      fillOperatorDoc(doc, d.slice(io+ti*INSTR_SZ, io+ti*INSTR_SZ+INSTR_SZ));
+      const opEl=doc.getElementsByTagName("Operator")[0];
+      if(opEl) instXml=`<DeviceChain><Devices>${new XMLSerializer().serializeToString(opEl)}</Devices></DeviceChain>`;
+    }catch(e){} }
+    tracksXml.push(`<MidiTrack><Name><EffectiveName Value="CH${ti+1}"/></Name><DeviceChain>${instXml}<MainSequencer><ClipSlotList>${clips.join("")}</ClipSlotList></MainSequencer></DeviceChain></MidiTrack>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<Ableton MajorVersion="5" MinorVersion="11.0_11300" Creator="als2genmddj">\n<LiveSet><Tracks>${tracksXml.join("")}</Tracks></LiveSet></Ableton>`;
+}
+async function fromGmdj(buf, name){
+  const d=blockFromGmdj(buf);
+  if(!d){ note("not a .gmdj file",true); return; }
+  lastBlock=d;
+  const xml=await alsFromBlock(d);
+  outBytes=await gzip(enc.encode(xml)); outName=name.replace(/\.gmdj$/i,"")+".als";
+  report(`.gmdj decoded -> Live Set XML (${(outBytes.length/1024).toFixed(1)} KB gzipped .als)
+FM channels (F1-F6) carry an Operator device built from the YM2612 patch. Minimal Session set; open in Live.`);
+  $("dl").disabled=false; $("view").disabled=false;
+  $("dl").onclick=()=>dl(outBytes,outName);
+  note("converted — ready to download",false);
+}
+
+// ---------- viewer (shared) ----------
+const noteName=v=>v===0xFF?"···":(["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"][v%12]+Math.floor(v/12));
+const hx=(v,n=2)=>v.toString(16).toUpperCase().padStart(n,"0");
+function showViewer(){
+  const d=lastBlock; if(!d) return; const V=$("viewer"), P=[];
+  const so=POOL.song[0], co=POOL.chains[0], po=POOL.phrases[0];
+  const usedCh=new Set(); let rows="";
+  for(let r=0;r<NSONGROWS;r++){ let cells="",u=false;
+    for(let c=0;c<NCH;c++){ const v=d[so+r*NCH+c]; if(v!==0xFF){u=true;usedCh.add(v);} cells+=`<td class="${v===0xFF?'mt':''}">${v===0xFF?'··':hx(v)}</td>`; }
+    if(u) rows+=`<tr><th>${hx(r)}</th>${cells}</tr>`; }
+  P.push(`<h3>Song</h3><table><tr><th></th>${["F1","F2","F3","F4","F5","F6","S1","S2","S3","NO"].map(t=>`<th>${t}</th>`).join("")}</tr>${rows||'<tr><td colspan=11 class=dim>empty</td></tr>'}</table>`);
+  const usedPh=new Set(); let ch="";
+  [...usedCh].sort((a,b)=>a-b).forEach(c=>{ let steps="";
+    for(let s=0;s<CH_STEPS;s++){ const ph=d[co+c*CHAIN_SZ+s*2]; if(ph!==0xFF){usedPh.add(ph);steps+=`<td>${hx(ph)}</td>`;} }
+    if(steps) ch+=`<tr><th>${hx(c)}</th>${steps}</tr>`; });
+  if(ch) P.push(`<h3>Chains</h3><table>${ch}</table>`);
+  let phr="";
+  [...usedPh].sort((a,b)=>a-b).slice(0,32).forEach(p=>{ let body="";
+    for(let r=0;r<PH_ROWS;r++){ const o=po+p*PHRASE_SZ+r*PH_BYTES, nt=d[o], ins=d[o+1], cmd=d[o+2], prm=d[o+3];
+      body+=`<tr><th>${hx(r)}</th><td class="note">${nt===0xFF?'···':noteName(nt)}</td><td>${ins===0xFF?'··':hx(ins)}</td><td class="cmd">${cmd?String.fromCharCode(64+cmd):'·'}</td><td>${cmd?hx(prm):'··'}</td></tr>`; }
+    phr+=`<div style="display:inline-block;vertical-align:top"><b class=dim>ph ${hx(p)}</b><table><tr><th></th><th>nt</th><th>in</th><th>c</th><th>p</th></tr>${body}</table></div>`; });
+  if(phr) P.push(`<h3>Phrases</h3>${phr}`);
+  V.innerHTML=`<button style="float:right" onclick="document.getElementById('viewer').classList.remove('show')">close</button>`+P.join("");
+  V.classList.add("show"); V.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+// ---------- intake ----------
+function report(t){const e=$("report");e.textContent=t;e.hidden=false;}
+function note(m,bad){const e=$("note");e.textContent=m;e.className=bad?"":"dim";e.style.color=bad?"#ff6b6b":"";}
+// ====================================================================
+//  .mid (Standard MIDI File)  ->  .gmdj   (each MIDI channel = a continuous clip)
+// ====================================================================
+function parseMidiNotes(u8){
+  let p=0;
+  const rd32=()=>{const v=((u8[p]<<24)|(u8[p+1]<<16)|(u8[p+2]<<8)|u8[p+3])>>>0;p+=4;return v;};
+  const rd16=()=>{const v=(u8[p]<<8)|u8[p+1];p+=2;return v;};
+  if(String.fromCharCode(u8[0],u8[1],u8[2],u8[3])!=="MThd") throw new Error("not a MIDI file");
+  p=4; const hlen=rd32(); rd16(); const ntrk=rd16(); const div=rd16(); p=8+hlen;
+  if((div&0x8000)||!div) throw new Error("unsupported MIDI timing (SMPTE)");
+  const byCh={};
+  for(let t=0;t<ntrk && p<u8.length;t++){
+    if(String.fromCharCode(u8[p],u8[p+1],u8[p+2],u8[p+3])!=="MTrk") break;
+    p+=4; const len=rd32(), end=p+len; let tick=0, status=0;
+    while(p<end){
+      let dt=0,b; do{b=u8[p++];dt=(dt<<7)|(b&0x7F);}while(b&0x80); tick+=dt;
+      let ev=u8[p];
+      if(ev<0x80){ ev=status; } else { p++; if(ev<0xF0) status=ev; }   // running status (channel msgs only)
+      const type=ev&0xF0;
+      if(type===0x90){ const pitch=u8[p++], vel=u8[p++]; if(vel>0)(byCh[ev&15]=byCh[ev&15]||[]).push({pitch,t:tick/div,v:vel}); }
+      else if(type===0x80||type===0xA0||type===0xB0||type===0xE0){ p+=2; }
+      else if(type===0xC0||type===0xD0){ p+=1; }
+      else if(ev===0xFF){ p++; let l=0,bb; do{bb=u8[p++];l=(l<<7)|(bb&0x7F);}while(bb&0x80); p+=l; }
+      else if(ev===0xF0||ev===0xF7){ let l=0,bb; do{bb=u8[p++];l=(l<<7)|(bb&0x7F);}while(bb&0x80); p+=l; }
+      else { p++; }
+    }
+    p=end;
+  }
+  return byCh;
+}
+function convertMidi(u8, velToV){
+  const byCh=parseMidiNotes(u8);
+  const chans=Object.keys(byCh).map(Number).filter(c=>byCh[c].length).sort((a,b)=>a-b);
+  const st={folded:0,poly:0,clips:0,truncated:false,tracks:chans.length,skipped:Math.max(0,chans.length-9)};
+  window.__chainList=[];
+  const phraseList=[], phraseMap=new Map(), trackChains=Array.from({length:9},()=>[]);
+  chans.slice(0,9).forEach((ch,ti)=>{
+    const notes=byCh[ch]; st.clips++;
+    const lenBeats=Math.max(...notes.map(n=>n.t))+0.25;
+    let chainSteps=[];
+    const closeChain=()=>{ if(chainSteps.length){ if(window.__chainList.length<NCHAINS){ trackChains[ti].push(window.__chainList.length); window.__chainList.push(chainSteps);} else st.truncated=true; chainSteps=[]; } };
+    for(const rows of clipToPhrases({lStart:0,lenBeats,notes}, ti, velToV, st)){
+      const key=rows.flat().join(","); let idx=phraseMap.get(key);
+      if(idx===undefined){ if(phraseList.length>=NPHRASES){ st.truncated=true; continue; } idx=phraseList.length; phraseList.push(rows); phraseMap.set(key,idx); }
+      chainSteps.push(idx); if(chainSteps.length===CH_STEPS) closeChain();
+    }
+    closeChain();
+  });
+  return {phraseList, chainList:window.__chainList, trackChains, instNames:chans.slice(0,9).map(c=>"CH"+(c+1)), instOps:Array(9).fill(null), st};
+}
+async function fromMidi(buf, name){
+  let conv; try{ conv=convertMidi(buf, $("vel").checked); }catch(e){ note(e.message||"bad MIDI file",true); return; }
+  const {d,gmis}=buildBlock(conv, $("vel").checked);
+  lastBlock=d;
+  const title=name.replace(/\.midi?$/i,"").slice(0,8);
+  outBytes=makeGmdj(d,title); outName=(title||"song")+".gmdj";
+  const exportGmi=$("fmi").checked, s=conv.st;
+  report(`MIDI file: ${s.tracks} channel(s) with notes${s.skipped?` (${s.skipped} beyond 9 skipped)`:""}
+mapped to F1..F6 (FM) + S1..S3 (TONE); FM tracks get default patches (.mid carries no FM data)
+clips: ${s.clips} \u00b7 phrases: ${conv.phraseList.length}/${NPHRASES} \u00b7 chains: ${conv.chainList.length}/${NCHAINS}
+notes octave-folded: ${s.folded} \u00b7 polyphony reduced: ${s.poly}${s.truncated?"\n\u26a0 song exceeded pool limits \u2014 truncated":""}
+velocity->X: ${$("vel").checked?"on":"off"}`);
+  $("dl").disabled=false; $("view").disabled=false;
+  $("dl").onclick=()=>{ dl(outBytes,outName); if(exportGmi) gmis.forEach((g,i)=>dl(makeGmi(g.rec),(g.name||("fm"+(i+1))).toLowerCase().replace(/[^a-z0-9]/g,"")+".gmi")); };
+  note("converted \u2014 ready to download",false);
+}
+
+// ====================================================================
+//  MML (Music Macro Language)  <->  .gmdj
+//  one line per channel: F1-F6 (FM) / S1-S3 (PSG).
+//  notes cdefgab + accidental (+ # -), o<n> < > octave, l<n> default length,
+//  <n> per-note length, . dotted, & tie, r rest, v<n> velocity->X, @<n> instrument,
+//  t<n> tempo (annotation only), ; comment.  o4 / l4 defaults; C4 = MIDI 60.
+// ====================================================================
+const CH_NAMES=["F1","F2","F3","F4","F5","F6","S1","S2","S3"];
+const MML_SEMI={c:0,d:2,e:4,f:5,g:7,a:9,b:11};
+const MML_NOTE=["c","c+","d","d+","e","f","f+","g","g+","a","a+","b"];
+function mmlLenBeats(n,dots){ let b=4/n, add=b; for(let i=0;i<dots;i++){ add/=2; b+=add; } return b; }  // whole note = 4 beats
+
+function mmlParseInto(src, S, st){          // parse one channel body into persistent state S
+  let i=0; const s=src;
+  const numAt=()=>{ let v=""; while(i<s.length&&s[i]>="0"&&s[i]<="9") v+=s[i++]; return v===""?null:parseInt(v); };
+  const dotsAt=()=>{ let d=0; while(i<s.length&&s[i]===".") { d++; i++; } return d; };
+  const durTok=()=>{ const n=numAt(), d=dotsAt(); return mmlLenBeats(n||S.defLen, d); };
+  while(i<s.length){
+    const c=s[i]; if(c<=" "){ i++; continue; }
+    const lc=c.toLowerCase();
+    if(lc in MML_SEMI){
+      i++; let semi=MML_SEMI[lc];
+      while(i<s.length&&(s[i]==="+"||s[i]==="#"||s[i]==="-")){ semi+=(s[i]==="-")?-1:1; i++; }
+      let dur=durTok();
+      while(i<s.length&&s[i]==="&"){ i++; while(i<s.length&&s[i]<=" ")i++;      // tie: add next note/rest duration, no new event
+        const t2=(i<s.length)?s[i].toLowerCase():"";
+        if((t2 in MML_SEMI)||t2==="r"){ i++; while(i<s.length&&(s[i]==="+"||s[i]==="#"||s[i]==="-"))i++; dur+=durTok(); } }
+      S.notes.push({pitch:(S.oct+1)*12+semi, t:S.t, v:S.vel}); S.t+=dur;
+    }
+    else if(lc==="r"){ i++; S.t+=durTok(); }
+    else if(lc==="o"){ i++; const n=numAt(); if(n!==null) S.oct=n; }
+    else if(c===">"){ i++; S.oct++; }
+    else if(c==="<"){ i++; S.oct--; }
+    else if(lc==="l"){ i++; const n=numAt(); if(n) S.defLen=n; }
+    else if(lc==="v"){ i++; const n=numAt(); if(n!==null) S.vel=Math.max(0,Math.min(15,n)); }
+    else if(lc==="@"){ i++; const n=numAt(); if(n!==null) S.inst=n; }
+    else if(lc==="t"){ i++; numAt(); }                                          // tempo: annotation only
+    else { st.errors.push(c); i++; }
+  }
+}
+function parseMml(text){
+  const st={folded:0,poly:0,truncated:false,errors:[],clips:0}, chs={}; let tempo=null;
+  const get=ti=>chs[ti]||(chs[ti]={oct:4,defLen:4,vel:15,inst:ti,t:0,notes:[]});
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.replace(/;.*$/,"").trim(); if(!line) continue;
+    const m=line.match(/^([A-Za-z][1-9])\b\s*(.*)$/);
+    if(!m){ const tm=line.match(/^t(\d+)/i); if(tm){ if(tempo===null) tempo=+tm[1]; } else st.errors.push(line.slice(0,12)); continue; }
+    const ti=CH_NAMES.indexOf(m[1].toUpperCase()); if(ti<0){ st.errors.push(m[1]); continue; }
+    const tm=m[2].match(/(^|\s)t(\d+)/i); if(tm&&tempo===null) tempo=+tm[2];
+    mmlParseInto(m[2], get(ti), st);
+  }
+  return {chs, tempo, st};
+}
+function convertMml(text, velToV){
+  const {chs, tempo, st}=parseMml(text);
+  window.__chainList=[];
+  const phraseList=[], phraseMap=new Map(), trackChains=Array.from({length:9},()=>[]); let tracks=0;
+  for(let ti=0;ti<9;ti++){ const ch=chs[ti]; if(!ch||!ch.notes.length) continue; tracks++; st.clips++;
+    const notes=ch.notes, lenBeats=Math.max(...notes.map(n=>n.t))+0.25;
+    let chainSteps=[];
+    const closeChain=()=>{ if(chainSteps.length){ if(window.__chainList.length<NCHAINS){ trackChains[ti].push(window.__chainList.length); window.__chainList.push(chainSteps);} else st.truncated=true; chainSteps=[]; } };
+    for(const rows of clipToPhrases({lStart:0,lenBeats,notes}, ch.inst, velToV, st)){
+      const key=rows.flat().join(","); let idx=phraseMap.get(key);
+      if(idx===undefined){ if(phraseList.length>=NPHRASES){ st.truncated=true; continue; } idx=phraseList.length; phraseList.push(rows); phraseMap.set(key,idx); }
+      chainSteps.push(idx); if(chainSteps.length===CH_STEPS) closeChain();
+    }
+    closeChain();
+  }
+  st.tracks=tracks; st.tempo=tempo;
+  return {phraseList, chainList:window.__chainList, trackChains, instNames:CH_NAMES.map((n,i)=>chs[i]?n:null), instOps:Array(9).fill(null), st};
+}
+async function fromMml(text, name){
+  let conv; try{ conv=convertMml(text, $("vel").checked); }catch(e){ note(e.message||"bad MML",true); return; }
+  if(!conv.st.tracks){ note("no notes — each line starts with a channel (F1…F6, S1…S3)",true); return; }
+  const {d,gmis}=buildBlock(conv, $("vel").checked); lastBlock=d;
+  const title=(name||"mml").replace(/\.(mml|txt)$/i,"").slice(0,8);
+  outBytes=makeGmdj(d,title); outName=(title||"song")+".gmdj";
+  const s=conv.st, exportGmi=$("fmi").checked;
+  report(`MML: ${s.tracks} channel(s)${s.tempo?` · tempo annotation t${s.tempo} (not written — genmddj tempo = grooves)`:""}
+mapped to F1..F6 (FM) + S1..S3 (TONE); FM channels get default patches
+clips: ${s.clips} · phrases: ${conv.phraseList.length}/${NPHRASES} · chains: ${conv.chainList.length}/${NCHAINS}
+notes octave-folded: ${s.folded} · polyphony reduced: ${s.poly}${s.errors.length?`\n⚠ ${s.errors.length} token(s) skipped: ${[...new Set(s.errors)].slice(0,8).join(" ")}`:""}${s.truncated?"\n⚠ exceeded pool limits — truncated":""}`);
+  $("dl").disabled=false; $("view").disabled=false;
+  $("dl").onclick=()=>{ dl(outBytes,outName); if(exportGmi) gmis.forEach((g,i)=>dl(makeGmi(g.rec),(g.name||("fm"+(i+1))).toLowerCase().replace(/[^a-z0-9]/g,"")+".gmi")); };
+  note("converted — ready to download",false);
+}
+// ---- export: .gmdj block -> MML ----
+function mmlStepsLen(steps){
+  const one={16:"1",12:"2.",8:"2",6:"4.",4:"4",3:"8.",2:"8",1:"16"};
+  if(one[steps]) return one[steps];
+  const units=[[16,"1"],[8,"2"],[4,"4"],[2,"8"],[1,"16"]]; let out=[],rem=steps;
+  for(const u of units) while(rem>=u[0]){ out.push(u[1]); rem-=u[0]; }
+  return out.join("&")||"16";
+}
+function mmlFromBlock(d){
+  const so=POOL.song[0], co=POOL.chains[0], po=POOL.phrases[0], lines=[];
+  for(let ti=0;ti<9;ti++){
+    const arr=[];                                            // linear 16th steps: {midi,inst,vel} or null
+    for(let row=0;row<NSONGROWS;row++){ const cn=d[so+row*NCH+ti]; if(cn===0xFF) continue;
+      for(let cs=0;cs<CH_STEPS;cs++){ const ph=d[co+cn*CHAIN_SZ+cs*2]; if(ph===0xFF) continue;
+        const tr=d[co+cn*CHAIN_SZ+cs*2+1]<<24>>24;
+        for(let r=0;r<PH_ROWS;r++){ const o=po+ph*PHRASE_SZ+r*PH_BYTES, nt=d[o];
+          if(nt===0xFF) arr.push(null);
+          else arr.push({midi:nt+NOTE_LO+tr, inst:d[o+1], vel:(d[o+2]===CMD_X)?d[o+3]:null}); }
+      }
+    }
+    while(arr.length&&arr[arr.length-1]===null) arr.pop();
+    if(!arr.length) continue;
+    const toks=[CH_NAMES[ti]]; let oct=null, inst=null, vel=null, i=0, lead=0;
+    while(i<arr.length&&arr[i]===null){ lead++; i++; }
+    if(lead) toks.push("r"+mmlStepsLen(lead));
+    while(i<arr.length){
+      const g=arr[i]; if(g===null){ i++; continue; }
+      let j=i+1; while(j<arr.length&&arr[j]===null) j++;     // length = steps to the next note
+      if(inst!==g.inst){ toks.push("@"+g.inst); inst=g.inst; }
+      if($("vel").checked && g.vel!==null && g.vel!==vel){ toks.push("v"+g.vel); vel=g.vel; }
+      const no=Math.floor(g.midi/12)-1, sem=((g.midi%12)+12)%12;
+      if(no!==oct){ toks.push("o"+no); oct=no; }
+      toks.push(MML_NOTE[sem]+mmlStepsLen(j-i));
+      i=j;
+    }
+    lines.push(toks.join(" "));
+  }
+  return lines.length ? lines.join("\n")+"\n" : "; (song has no notes)\n";
+}
+function toMml(){
+  if(!lastBlock){ note("convert or drop a song first, then song → MML",true); return; }
+  $("mml").value=mmlFromBlock(lastBlock);
+  note("song → MML — edit, then MML → .gmdj",false);
+}
+
+async function take(f){ const buf=new Uint8Array(await f.arrayBuffer());
+  $("dl").disabled=true;$("view").disabled=true;
+  if(/\.gmdj$/i.test(f.name)||ascii(buf,0,8)===GMDJ_MAGIC) await fromGmdj(buf,f.name);
+  else if(/\.midi?$/i.test(f.name)||ascii(buf,0,4)==="MThd") await fromMidi(buf,f.name);
+  else if(/\.(mml|txt)$/i.test(f.name)){ const t=dec.decode(buf); $("mml").value=t; await fromMml(t,f.name); }
+  else await fromAls(buf,f.name); }
+const zone=$("zone"),inp=$("file");
+zone.onclick=()=>inp.click();
+inp.onchange=()=>{ if(inp.files[0]) take(inp.files[0]); inp.value=""; };
+["dragenter","dragover"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.add("hot");}));
+["dragleave","drop"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.remove("hot");}));
+zone.addEventListener("drop",ev=>{if(ev.dataTransfer.files[0])take(ev.dataTransfer.files[0]);});
+$("view").onclick=showViewer;
+$("mmlgo").onclick=()=>fromMml($("mml").value,"mml");
+$("mmlout").onclick=toMml;
+</script>
+</body>
+</html>
