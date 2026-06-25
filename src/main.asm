@@ -7744,6 +7744,10 @@ exec_cmd:
     beq     .cmd_s
     cmpi.b  #1, d2                          ; A xx = switch/restart the macro table
     beq     .cmd_a
+    cmpi.b  #13, d2                         ; M xx = amp mod / tremolo (FM AMS depth)
+    beq     .cmd_m
+    cmpi.b  #22, d2                         ; V xx = vibrato (FM FMS depth)
+    beq     .cmd_v
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7886,6 +7890,35 @@ exec_cmd:
     move.b  d2, d1                         ; FMS = low nibble -> bits 2-0
     andi.b  #7, d1
     or.b    d1, d3
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    lea     lo_b4, a4
+    move.b  d3, (a4,d2.w)
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d2.w)
+    bra     .cmddone
+.cmd_m:                                   ; M xx = amp mod / tremolo: FM chip-LFO AMS depth 0-3 (PSG uses instrument TRM)
+    cmpi.b  #1, c_type(a6)                ; FM channels only
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2
+    andi.b  #3, d2                         ; AMS 0-3 -> $B4 bits 5-4
+    lsl.b   #4, d2
+    bra.s   .mv_b4
+.cmd_v:                                   ; V xx = vibrato: FM chip-LFO FMS depth 0-7 (PSG uses instrument VIB)
+    cmpi.b  #1, c_type(a6)                ; FM channels only
+    bne     .cmddone
+    move.b  (3,a1,d1.w), d2
+    andi.b  #7, d2                         ; FMS 0-7 -> $B4 bits 2-0
+.mv_b4:                                   ; d2 = this axis' $B4 bits; build (instrument pan)<<6 | axis, ride O/Y's shadow
+    moveq   #0, d3
+    move.b  c_instr(a6), d3
+    mulu.w  #INSTR_SIZE, d3
+    lea     instrum, a4
+    adda.w  d3, a4
+    moveq   #0, d3
+    move.b  (i_pan,a4), d3
+    lsl.b   #6, d3
+    or.b    d2, d3
     moveq   #0, d2
     move.b  c_track(a6), d2
     lea     lo_b4, a4
