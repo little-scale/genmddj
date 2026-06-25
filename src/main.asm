@@ -220,6 +220,7 @@ c_wbank    equ $00FFD3E0           ; B command: per-channel wave# override (0-15
 c_delay    equ $00FFD3EA           ; D command: per-channel note-on delay countdown (ticks; 0 = none)
 d_set      equ $00FFD3F4           ; D command: 1 if D delayed the note this row (skip the immediate trigger)
 c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override (0-3; $FF = use instrument i_rate)
+a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -7214,6 +7215,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
     move.b  #0, d_set                      ; D command: clear this row's delay flag
+    move.b  #0, a_set                      ; A command: clear this row's table-switch flag
     move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
     moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
     move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
@@ -7396,7 +7398,10 @@ advance_ch:                               ; a6 = channel
     move.b  (i_type,a4,d3.w), d1          ; KIT (1) is a drum/sample DAC voice -> no macro table;
     cmpi.b  #1, d1                         ;   FM/WAVE/TONE/NOISE all get one (WAVE = TSP+VOL only)
     beq.s   .notabl
+    tst.b   a_set                        ; A command: a table-switch this row -> keep c_tbl, don't reload i_tbl
+    bne.s   .a_keep
     move.b  (i_tbl,a4,d3.w), c_tbl(a6)
+.a_keep:
     move.b  #$FF, c_tcrow(a6)             ; note-on: re-arm so the (re)started row's CMD column fires
     tst.b   (i_tbs,a4,d3.w)               ; TBS 0 = per-note: step the playhead (don't restart)
     bne.s   .tbreset
@@ -7737,6 +7742,8 @@ exec_cmd:
     beq     .cmd_d
     cmpi.b  #19, d2                         ; S xx = sample speed (DAC walk rate; KIT voice)
     beq     .cmd_s
+    cmpi.b  #1, d2                          ; A xx = switch/restart the macro table
+    beq     .cmd_a
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7924,6 +7931,13 @@ exec_cmd:
     andi.b  #3, d2
     lea     c_srate, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_a:                                   ; A xx = switch/restart the channel's macro table to table 0-31
+    move.b  (3,a1,d1.w), d2               ; table #
+    andi.b  #$1F, d2                       ; clamp 0..NTABLE-1 (32 tables)
+    move.b  d2, c_tbl(a6)
+    move.b  #$FF, c_trow(a6)             ; restart: the note-on step / next tick lands on row 0
+    move.b  #1, a_set                      ; note-on must not reload the instrument's i_tbl over it
     bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
