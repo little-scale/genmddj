@@ -10068,7 +10068,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     vid_lbl, a1
     move.l  (a1,d1.w), a1
     moveq   #5, d3
-    moveq   #8, d4
+    moveq   #9, d4
     bsr     print_hl
     moveq   #6, d3
     moveq   #1, d4
@@ -10089,13 +10089,13 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     sync_lbl, a1
     move.l  (a1,d1.w), a1
     moveq   #6, d3
-    moveq   #8, d4
+    moveq   #9, d4
     bsr     print_hl
     moveq   #7, d3
     moveq   #1, d4
     lea     str_o_pal, a1
     bsr     print_at
-    move.l  #$43900003, (a0)
+    move.l  #$43920003, (a0)
     move.b  opt_pal, d3
     moveq   #0, d4
     cmpi.b  #2, cur_row
@@ -10110,11 +10110,11 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     tst.b   sram_layout
     bne.s   .os_have
     moveq   #3, d3                          ; no SRAM -> "NONE"
-    moveq   #8, d4
+    moveq   #9, d4
     lea     str_sram_no, a1
     bra     print_at
 .os_have:
-    move.l  #$41900003, (a0)               ; size (3 digits) at row 3, col 8
+    move.l  #$41920003, (a0)               ; size (3 digits) at row 3, col 9
     move.b  sram_size, d3
     moveq   #0, d4
     bsr     draw_dec3
@@ -10124,7 +10124,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     str_sram_li, a1
 .os_lay:
     moveq   #3, d3
-    moveq   #11, d4
+    moveq   #12, d4
     bra     print_at
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
@@ -11280,7 +11280,7 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     moveq   #1, d4
     lea     str_o_free, a1
     bsr     print_at
-    move.l  #$42100003, (a0)               ; free KB at row 4, col 8 (aligned under the SRAM size)
+    move.l  #$42120003, (a0)               ; free KB at row 4, col 9 (aligned under the SRAM size)
     moveq   #0, d0
     move.b  sram_size, d0
     lsl.l   #8, d0
@@ -11300,7 +11300,7 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     tst.b   save_full                       ; "FULL" warning when the last save was refused
     beq.s   .rsl_nofull
     moveq   #4, d3
-    moveq   #13, d4
+    moveq   #14, d4
     lea     str_o_full, a1
     bsr     print_at
 .rsl_nofull:
@@ -11350,27 +11350,44 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     moveq   #18, d4
     lea     str_sure, a1
     bsr     print_at
-.rsl_hdr:
-    moveq   #9, d3                          ; SONGS header + count (row 9)
-    moveq   #1, d4
-    lea     str_o_songs, a1
-    bsr     print_at
-    move.l  #$44900003, (a0)               ; count at row 9, col 8
+.rsl_hdr:                                   ; --- divider across row 9: dashes with " SONGS NN " centred ---
+    move.l  #$44800003, (a0)               ; row 9, col 0
+    moveq   #40-1, d3
+.rsl_dash:
+    move.w  #'-', VDP_DATA
+    dbra    d3, .rsl_dash
+    move.l  #$449E0003, (a0)               ; centred text at row 9, col 15
+    move.w  #' ', VDP_DATA
+    move.w  #'S', VDP_DATA
+    move.w  #'O', VDP_DATA
+    move.w  #'N', VDP_DATA
+    move.w  #'G', VDP_DATA
+    move.w  #'S', VDP_DATA
+    move.w  #' ', VDP_DATA
+    moveq   #0, d3                          ; 2-digit count
     move.b  d5, d3
-    moveq   #0, d4
-    bsr     draw_dec3
-    cmpi.w  #16, d5                          ; "Pn/m" page indicator only when it spans >1 page
+    divu.w  #10, d3                          ; d3 = [ones:tens]
+    move.l  d3, d4
+    andi.l  #$FFFF, d3
+    add.w   #'0', d3
+    move.w  d3, VDP_DATA                     ; tens
+    swap    d4
+    andi.l  #$FFFF, d4
+    add.w   #'0', d4
+    move.w  d4, VDP_DATA                     ; ones
+    move.w  #' ', VDP_DATA
+    cmpi.w  #16, d5                          ; "Pn/m" near the right edge when >1 page
     bls.s   .rsl_pgd
-    move.l  #$449E0003, (a0)               ; row 9, col 15
+    move.l  #$44C20003, (a0)               ; row 9, col 33
     move.w  #'P', VDP_DATA
     moveq   #0, d3
     move.b  opt_song, d3
-    lsr.w   #4, d3                           ; current page (0-based)
+    lsr.w   #4, d3
     addq.w  #1, d3
     add.w   #'0', d3
     move.w  d3, VDP_DATA
     move.w  #'/', VDP_DATA
-    move.w  d5, d3                           ; total pages = (count + 15) / 16
+    move.w  d5, d3
     addi.w  #15, d3
     lsr.w   #4, d3
     add.w   #'0', d3
@@ -12100,7 +12117,7 @@ krn_4:      dc.b "4X ",0
 ; OPTIONS / PROJECT page labels + enum tables (TSP/MODE reuse the FM/PSG strings)
 str_o_vid:  dc.b "VID",0
 str_o_sync: dc.b "SYNC",0
-str_o_pal:  dc.b "PAL",0
+str_o_pal:  dc.b "PALETTE",0
 str_o_sram: dc.b "SRAM",0
 str_sram_no: dc.b "NONE",0
 str_sram_od: dc.b "K ODD",0
