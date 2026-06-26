@@ -11285,6 +11285,23 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     move.b  d5, d3
     moveq   #0, d4
     bsr     draw_dec3
+    cmpi.w  #16, d5                          ; "Pn/m" page indicator only when it spans >1 page
+    bls.s   .rsl_pgd
+    move.l  #$449E0003, (a0)               ; row 9, col 15
+    move.w  #'P', VDP_DATA
+    moveq   #0, d3
+    move.b  opt_song, d3
+    lsr.w   #4, d3                           ; current page (0-based)
+    addq.w  #1, d3
+    add.w   #'0', d3
+    move.w  d3, VDP_DATA
+    move.w  #'/', VDP_DATA
+    move.w  d5, d3                           ; total pages = (count + 15) / 16
+    addi.w  #15, d3
+    lsr.w   #4, d3
+    add.w   #'0', d3
+    move.w  d3, VDP_DATA
+.rsl_pgd:
     tst.w   d5
     bne.s   .rsl_list
     moveq   #10, d3                         ; (EMPTY) at row 10
@@ -11292,33 +11309,34 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     lea     str_o_empty, a1
     bsr     print_at
     bra     .rsl_done
-.rsl_list:                                   ; two columns x 16 rows (rows 10..25) -> all 32 visible, no scroll
+.rsl_list:                                   ; single column, 16 per page (rows 10..25); the page follows opt_song
     moveq   #0, d2                           ; target list pos = opt_song (highlight)
     move.b  cur_row, d2
     subi.w  #8, d2
+    moveq   #0, d4                           ; page base = opt_song & ~15 (first song shown on this page)
+    move.b  opt_song, d4
+    andi.w  #$FFF0, d4
     lea     dir_cache, a2
-    moveq   #0, d7                           ; list position P (0..31)
+    moveq   #0, d7                           ; list position P
     moveq   #DIR_N-1, d3
 .rsl_ll:
     cmpi.b  #$A5, (a2)
     bne.s   .rsl_ln                          ; invalid entry -> not a list position
-    move.w  d7, d6                           ; screen row = 10 + (P & 15)
-    andi.w  #15, d6
-    addi.w  #10, d6
-    moveq   #3, d4                           ; name col: left (P<16) at 3, right (P>=16) at 22
-    cmpi.w  #16, d7
-    blo.s   .rsl_cl
-    moveq   #22, d4
-.rsl_cl:
+    move.w  d7, d6                           ; row-on-page = P - page_base
+    sub.w   d4, d6
+    bmi.s   .rsl_ln2                          ; before this page
+    cmpi.w  #16, d6
+    bcc.s   .rsl_ln2                          ; past this page
+    addi.w  #10, d6                          ; -> screen row 10..25
     moveq   #0, d1                           ; highlight when this is the selected song
     cmp.w   d2, d7
     bne.s   .rsl_h0
     moveq   #$60, d1
 .rsl_h0:
-    moveq   #0, d0                           ; name at (row d6, col d4)
+    moveq   #0, d0                           ; name at (row d6, col 3)
     move.w  d6, d0
     lsl.w   #6, d0
-    add.w   d4, d0
+    addq.w  #3, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
@@ -11331,11 +11349,10 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     add.w   d1, d5
     move.w  d5, VDP_DATA
     dbra    d0, .rsl_nm
-    moveq   #0, d0                            ; --- stored size (X.YKB) at col d4+9 ---
+    moveq   #0, d0                            ; --- stored size (X.YKB) at col 12 ---
     move.w  d6, d0
     lsl.w   #6, d0
-    add.w   d4, d0
-    addi.w  #9, d0
+    addi.w  #12, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
