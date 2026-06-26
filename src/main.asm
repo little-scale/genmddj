@@ -223,6 +223,9 @@ c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override
 a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
 c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override (ticks/step; $FF = use instrument)
 c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
+c_slide    equ $00FFD414           ; L command: per-channel portamento offset, word array (period units, ramps to 0)
+c_lrate    equ $00FFD428           ; L command: per-channel slide rate (period units/tick; 0 = no glide)
+l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -6310,6 +6313,11 @@ engine_play_reset:
 .epr_e:
     move.b  #$FF, (a0)+
     dbra    d0, .epr_e
+    lea     c_slide, a0                   ; L command: clear portamento offsets + rates
+    moveq   #(NCH*3)-1, d0
+.epr_l:
+    clr.b   (a0)+
+    dbra    d0, .epr_l
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
@@ -7132,6 +7140,28 @@ hold_tick:                                ; a6 = channel
     move.b  #$FF, c_hold(a6)
     bsr     cut_dac_if_sample              ; ...and a KIT/WAVE instrument -> stop the DAC playback
 .hret:
+    moveq   #0, d0                          ; L: ramp the portamento offset toward 0 by c_lrate
+    move.b  c_track(a6), d0
+    lea     c_lrate, a1
+    move.b  (a1,d0.w), d1
+    beq.s   .hr_nosl                         ; rate 0 = no glide
+    ext.w   d1
+    add.w   d0, d0
+    lea     c_slide, a1
+    move.w  (a1,d0.w), d2
+    beq.s   .hr_nosl                         ; already at target
+    bmi.s   .hr_neg
+    sub.w   d1, d2                          ; positive offset -> decrease toward 0 (clamp)
+    bpl.s   .hr_put
+    moveq   #0, d2
+    bra.s   .hr_put
+.hr_neg:
+    add.w   d1, d2                          ; negative offset -> increase toward 0 (clamp)
+    bmi.s   .hr_put
+    moveq   #0, d2
+.hr_put:
+    move.w  d2, (a1,d0.w)
+.hr_nosl:
     moveq   #0, d0                          ; D command: pending note-on delay countdown
     move.b  c_track(a6), d0
     lea     c_delay, a1
@@ -7223,6 +7253,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
     move.b  #0, d_set                      ; D command: clear this row's delay flag
     move.b  #0, a_set                      ; A command: clear this row's table-switch flag
+    move.b  #0, l_set                      ; L command: clear this row's slide flag
     move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
     moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
     move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
@@ -7581,7 +7612,9 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
 .square:
     add.w   d2, d2
     lea     notetable, a2
-    move.w  (a2,d2.w), c_period(a6)
+    move.w  (a2,d2.w), d2                 ; d2 = new period
+    bsr     slide_arm                      ; L: arm portamento from the old c_period to d2 (preserves d2)
+    move.w  d2, c_period(a6)
     move.b  #1, c_estate(a6)
     move.b  #0, c_ectr(a6)
     move.b  #0, c_vol(a6)
@@ -7757,6 +7790,8 @@ exec_cmd:
     beq     .cmd_v
     cmpi.b  #5, d2                          ; E xy = envelope re-slope (x=attack, y=decay; PSG/WAVE AHD)
     beq     .cmd_e
+    cmpi.b  #12, d2                         ; L xx = slide / portamento (PSG tone glide rate)
+    beq     .cmd_l
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7959,7 +7994,7 @@ exec_cmd:
     bra     .cmddone
 .cmd_d:                                   ; D xx = delay this row's note-on by xx ticks (all voices)
     move.b  (3,a1,d1.w), d2               ; xx = delay in ticks
-    beq.s   .cmddone                        ; D00 = no delay (trigger now)
+    beq     .cmddone                        ; D00 = no delay (trigger now)
     moveq   #0, d3
     move.b  c_track(a6), d3
     lea     c_delay, a4
@@ -7992,6 +8027,15 @@ exec_cmd:
     move.b  d0, (a4,d3.w)
     lea     c_edcy, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cmd_l:                                   ; L xx = slide/portamento: glide rate (period units/tick); slide_arm sets the offset at note-on
+    move.b  (3,a1,d1.w), d2               ; xx = glide rate
+    beq     .cmddone                        ; L00 = no slide (instant)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_lrate, a4
+    move.b  d2, (a4,d3.w)
+    move.b  #1, l_set                      ; -> note-on slide_arm arms the glide from the previous pitch
     bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
@@ -8278,6 +8322,11 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     move.b  (a1,d0.w), d0
     ext.w   d0
     sub.w   d0, d2
+    moveq   #0, d0                          ; L: portamento glide offset (period units, ramps to 0)
+    move.b  c_track(a6), d0
+    add.w   d0, d0
+    lea     c_slide, a1
+    sub.w   (a1,d0.w), d2
     cmpi.b  #$FF, c_tbl(a6)                 ; C command (PSG): plain note only -- env_ch already
     bne.s   .fp_clamp                       ;   applies the chord on table notes (avoid double)
     moveq   #0, d0
@@ -9267,6 +9316,24 @@ env_dcy:
     bne.s   .ed_x
     move.b  (ip_dcy,a4), d1
 .ed_x:
+    rts
+slide_arm:                                ; L command: arm portamento. In: a6=ch, d2.w = new period. If l_set,
+    moveq   #0, d0                          ; c_slide = new - old c_period (effective starts at old, glides to new);
+    move.b  c_track(a6), d0                 ; else clear the glide. Preserves d2; clobbers d0/d3/a1.
+    tst.b   l_set
+    bne.s   .sa_on
+    lea     c_lrate, a1
+    clr.b   (a1,d0.w)
+    add.w   d0, d0
+    lea     c_slide, a1
+    clr.w   (a1,d0.w)
+    rts
+.sa_on:
+    move.w  d2, d3
+    sub.w   c_period(a6), d3
+    add.w   d0, d0
+    lea     c_slide, a1
+    move.w  d3, (a1,d0.w)
     rts
 
 ; ---- advance the wave AHD envelope one frame (a6 = channel, a4 = WAVE instrument).
