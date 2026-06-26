@@ -1822,7 +1822,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     addi.w  #7, d1
     rts
 .rmproj:
-    moveq   #9, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD LFO NAME
+    moveq   #4, d1                          ; TMPO TSP MODE LFO NAME (save/load moved to OPTIONS)
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
@@ -2907,8 +2907,6 @@ edit_instr:
 do_insert:
     cmpi.b  #SCR_OPTS, cur_screen          ; OPTIONS: B-tap = SAVE/LOAD/DELETE/NEW/DEMO or load a song
     beq     opts_action
-    cmpi.b  #SCR_PROJ, cur_screen          ; PROJECT: B-tap triggers NEW/DEMO/SAVE/LOAD
-    beq     proj_action
     cmpi.b  #SCR_INSTR, cur_screen         ; INSTR/FM: B-tap on a library button = LOAD/SAVE
     beq.s   .di_bank
     cmpi.b  #SCR_FM, cur_screen
@@ -10257,7 +10255,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
 .ppn_mclr:
     move.w  #' ', VDP_DATA
     dbra    d5, .ppn_mclr
-    cmpi.b  #9, cur_row                      ; cursor marker (up-triangle) on row 4, below the cur_col char
+    cmpi.b  #4, cur_row                      ; cursor marker (up-triangle) on row 4, below the cur_col char
     bne.s   .ppn_nocurs
     moveq   #4, d3
     moveq   #6, d4
@@ -10312,80 +10310,16 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     moveq   #7, d3
     moveq   #8, d4
     bsr     print_hl
-    moveq   #9, d3
-    moveq   #1, d4
-    lea     str_p_new, a1
-    bsr     print_at
-    moveq   #0, d2
-    cmpi.b  #3, cur_row
-    bne.s   .pn
-    moveq   #$60, d2
-.pn:
-    lea     str_go, a1
-    moveq   #9, d3
-    moveq   #8, d4
-    bsr     print_hl
-    moveq   #11, d3
-    moveq   #1, d4
-    lea     str_p_demo, a1
-    bsr     print_at
-    moveq   #0, d2
-    cmpi.b  #4, cur_row
-    bne.s   .pd
-    moveq   #$60, d2
-.pd:
-    lea     str_go, a1
-    moveq   #11, d3
-    moveq   #8, d4
-    bsr     print_hl
-    moveq   #13, d3
-    moveq   #1, d4
-    lea     str_p_slot, a1
-    bsr     print_at
-    move.l  #$46900003, (a0)
-    move.b  proj_slot, d3
-    moveq   #0, d4
-    cmpi.b  #5, cur_row
-    bne.s   .psl
-    moveq   #$60, d4
-.psl:
-    bsr     draw_hex1
-    moveq   #15, d3
-    moveq   #1, d4
-    lea     str_p_save, a1
-    bsr     print_at
-    moveq   #0, d2
-    cmpi.b  #6, cur_row
-    bne.s   .pv
-    moveq   #$60, d2
-.pv:
-    lea     str_go, a1
-    moveq   #15, d3
-    moveq   #8, d4
-    bsr     print_hl
-    moveq   #16, d3
-    moveq   #1, d4
-    lea     str_p_load, a1
-    bsr     print_at
-    moveq   #0, d2
-    cmpi.b  #7, cur_row
-    bne.s   .pl
-    moveq   #$60, d2
-.pl:
-    lea     str_go, a1
-    moveq   #16, d3
-    moveq   #8, d4
-    bsr     print_hl
-    moveq   #20, d3                          ; LFO -- last item, below the unsaved flag; box toggle + rate
+    moveq   #9, d3                           ; LFO (PROJECT stripped of save/load -> OPTIONS; sits right after MODE)
     moveq   #1, d4
     lea     str_p_lfo, a1
     bsr     print_at
     moveq   #0, d2                            ; highlight when the LFO row is the cursor
-    cmpi.b  #8, cur_row
+    cmpi.b  #3, cur_row
     bne.s   .plf
     moveq   #$60, d2
 .plf:
-    move.l  #$4A100003, (a0)                ; row 20, col 8
+    move.l  #$44900003, (a0)                ; row 9, col 8
     moveq   #0, d3                            ; box: g_lfo 0 = off ($7B), 1-8 = on ($7D) -- same as the LFO screen
     tst.b   g_lfo
     beq.s   .plf_box
@@ -10408,7 +10342,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     add.w   d2, d3
     move.w  d3, VDP_DATA
 .plf_d:
-    moveq   #18, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
+    moveq   #11, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
     moveq   #1, d4
     lea     str_saved, a1
     tst.b   song_dirty
@@ -10416,7 +10350,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     lea     str_unsaved, a1
 .pp_cl:
     bsr     print_at
-    moveq   #21, d3                          ; confirm prompt when a destructive action is armed
+    moveq   #13, d3                          ; confirm prompt when a destructive action is armed
     moveq   #1, d4
     lea     str_blank15, a1
     tst.b   proj_armed
@@ -11604,24 +11538,19 @@ edit_groove:                              ; B+dpad: GRV selector (row 0) or a ti
     moveq   #4, d4
     bra     adj_field
 
-edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/MODE/SLOT
-    cmpi.b  #5, cur_row                     ; SLOT is transient -> editing it isn't a song change
-    beq.s   .ep_nodirty
+edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/MODE/LFO/NAME
     move.b  #1, song_dirty                  ; TMPO/TSP/MODE/LFO are saved globals
-.ep_nodirty:
     move.b  cur_row, d0
     beq     .ep_tmpo
     cmpi.b  #1, d0
     beq     .ep_tsp
     cmpi.b  #2, d0
     beq.s   .ep_mode
-    cmpi.b  #5, d0
-    beq.s   .ep_slot
-    cmpi.b  #8, d0
+    cmpi.b  #3, d0
     beq.s   .ep_lfo
-    cmpi.b  #9, d0
+    cmpi.b  #4, d0
     beq     .ep_name
-    rts                                     ; NEW/DEMO/SAVE/LOAD: no dpad value
+    rts
 .ep_mode:
     lea     proj_mode, a1
     moveq   #1, d3
