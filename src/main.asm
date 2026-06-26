@@ -10019,18 +10019,18 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #$60, d4
 .op:
     bsr     draw_hex1
-    moveq   #9, d3                          ; --- SRAM probe readout (read-only) at row 9 ---
+    moveq   #3, d3                          ; --- SRAM probe readout (read-only) at row 3, beside PLAY ---
     moveq   #1, d4
     lea     str_o_sram, a1
     bsr     print_at
     tst.b   sram_layout
     bne.s   .os_have
-    moveq   #9, d3                          ; no SRAM -> "NONE"
+    moveq   #3, d3                          ; no SRAM -> "NONE"
     moveq   #8, d4
     lea     str_sram_no, a1
     bra     print_at
 .os_have:
-    move.l  #$44900003, (a0)               ; size (3 digits) at row 9, col 8
+    move.l  #$41900003, (a0)               ; size (3 digits) at row 3, col 8
     move.b  sram_size, d3
     moveq   #0, d4
     bsr     draw_dec3
@@ -10039,7 +10039,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     bne.s   .os_lay
     lea     str_sram_li, a1
 .os_lay:
-    moveq   #9, d3
+    moveq   #3, d3
     moveq   #11, d4
     bra     print_at
 
