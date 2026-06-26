@@ -264,6 +264,7 @@ rle_buf    equ $00FF5160            ; RLE staging: the free gap above the data b
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
+SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
@@ -11224,16 +11225,27 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     bsr     print_at
     bra     .rsl_done
 .rsl_list:
-    moveq   #0, d2                           ; target list pos = cur_row - 8
+    moveq   #0, d2                           ; target list pos = cur_row - 8 (highlight)
     move.b  cur_row, d2
     subi.w  #8, d2
+    moveq   #0, d4                           ; scroll_offset = max(0, opt_song - (SONGVIS-1))
+    move.b  opt_song, d4                     ;   -> the selected song stays on screen (anchored to the bottom)
+    subi.w  #SONGVIS-1, d4
+    bpl.s   .rsl_so
+    moveq   #0, d4
+.rsl_so:
     lea     dir_cache, a2
-    moveq   #16, d6                          ; first list row
-    moveq   #0, d7                           ; list position
+    moveq   #0, d7                           ; list position P
     moveq   #DIR_N-1, d3
 .rsl_ll:
     cmpi.b  #$A5, (a2)
-    bne.s   .rsl_ln
+    bne.s   .rsl_ln                          ; invalid entry -> no list position
+    move.w  d7, d6                           ; row-in-window = P - scroll_offset
+    sub.w   d4, d6
+    bmi.s   .rsl_ln2                          ; above the window
+    cmpi.w  #SONGVIS, d6
+    bcc.s   .rsl_ln2                          ; below the window
+    addi.w  #16, d6                          ; -> screen row 16..27
     moveq   #0, d1                           ; highlight when this is the selected song
     cmp.w   d2, d7
     bne.s   .rsl_h0
@@ -11250,13 +11262,13 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     lea     6(a2), a3
     moveq   #8-1, d0
 .rsl_nm:
-    moveq   #0, d4
-    move.b  (a3)+, d4
-    add.w   d1, d4
-    move.w  d4, VDP_DATA
+    moveq   #0, d5
+    move.b  (a3)+, d5
+    add.w   d1, d5
+    move.w  d5, VDP_DATA
     dbra    d0, .rsl_nm
-    addq.w  #1, d6
-    addq.w  #1, d7
+.rsl_ln2:
+    addq.w  #1, d7                           ; advance the list position (valid entries only)
 .rsl_ln:
     lea     16(a2), a2
     dbra    d3, .rsl_ll
