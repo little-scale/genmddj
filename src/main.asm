@@ -10873,9 +10873,11 @@ dir_save:                                  ; compress the current song + store i
 .dsv_blob:
     bsr     data_checksum                   ; d2.w = checksum of the (decompressed) block
     move.w  d2, d4                          ; stash
-    bsr     dir_find                        ; reuse a same-named entry, else first free
-    tst.l   d0
-    bpl.s   .dsv_ent
+    bsr     dir_find                        ; same name already stored? delete it first (compacts) so a
+    tst.l   d0                              ;   re-save reuses the space instead of orphaning the old blob
+    bmi.s   .dsv_free
+    bsr     dir_delete                      ; (d4 checksum survives dir_delete's movem)
+.dsv_free:
     bsr     dir_findfree
     tst.l   d0
     bmi     .dsv_done                       ; directory full -> refuse
