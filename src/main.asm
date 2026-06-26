@@ -705,8 +705,10 @@ VBlankInt:
     beq     .gsg
     cmpi.b  #SCR_TABLE, d0
     beq.s   .gtbl
-    cmpi.b  #SCR_OPTS, d0                  ; OPTIONS / PROJECT / WAVEFORM placeholders have bodies
+    cmpi.b  #SCR_OPTS, d0                  ; OPTIONS / FILES / PROJECT / WAVEFORM have bodies
     beq     .gopts
+    cmpi.b  #SCR_FILES, d0
+    beq     .gfiles
     cmpi.b  #SCR_PROJ, d0
     beq     .gproj
     cmpi.b  #SCR_WAVE, d0
@@ -731,7 +733,9 @@ VBlankInt:
     bra     .gd
 .gopts:
     bsr     render_opts
-    bsr     render_songlist
+    bra     .gd
+.gfiles:
+    bsr     render_files
     bra     .gd
 .gproj:
     bsr     render_proj
@@ -1643,113 +1647,37 @@ dpad_fire:
     moveq   #0, d1
     rts
 
-opts_nav:                                  ; OPTIONS grid: settings col (0-2) | actions col (3-7) | songs (8+)
-    bsr     row_max                          ; d1 = max cur_row (2 = no SRAM; else 7 + song count)
+files_nav:                                 ; FILES single column: actions (0-4) then the song list (5+); clamped, no wrap
+    bsr     row_max                          ; d1 = max cur_row (4 = no songs; else 4 + song count)
     moveq   #0, d0
     move.b  cur_row, d0
-    cmp.b   d1, d0                            ; clamp a stale cur_row first (count may have shrunk)
-    bls.s   .onc_ok
+    cmp.b   d1, d0                            ; clamp a stale cur_row (count may have shrunk)
+    bls.s   .fn_ok
     move.b  d1, d0
     move.b  d1, cur_row
-.onc_ok:
-    cmpi.b  #3, d1
-    bhs.s   .ong_have                         ; SRAM present -> full grid
-    btst    #0, d2                            ; no SRAM: just VID/SYNC/PAL, plain up/down
-    beq.s   .onns_dn
+.fn_ok:
+    btst    #0, d2                            ; Up: previous item, stop at SAVE
+    beq.s   .fn_dn
     tst.b   d0
-    beq.s   .ong_x
+    beq.s   .fn_x
     subq.b  #1, cur_row
     rts
-.onns_dn:
-    btst    #1, d2
-    beq.s   .ong_x
+.fn_dn:
+    btst    #1, d2                            ; Down: next item (DEMO -> first song -> ...), stop at the last
+    beq.s   .fn_x
     cmp.b   d1, d0
-    bhs.s   .ong_x
+    bhs.s   .fn_x
     addq.b  #1, cur_row
-.ong_x:
+.fn_x:
     rts
-.ong_have:
-    cmpi.b  #8, d0
-    bhs     .ong_songs                        ; --- in the song list ---
-    btst    #0, d2                            ; Up: within the column, clamp at the top
-    beq.s   .ong_dn
-    cmpi.b  #3, d0
-    beq.s   .ong_x                             ; SAVE (actions top) -> stay
-    tst.b   d0
-    beq.s   .ong_x                             ; VID (settings top) -> stay
-    subq.b  #1, cur_row
-    rts
-.ong_dn:
-    btst    #1, d2                            ; Down: PAL/DEMO drop into the songs, else within the column
-    beq.s   .ong_lt
-    cmpi.b  #2, d0
-    beq.s   .ong_d0
-    cmpi.b  #7, d0
-    beq.s   .ong_d1
-    addq.b  #1, cur_row
-    rts
-.ong_d0:
-    moveq   #0, d3
-    bra.s   .ong_tosong
-.ong_d1:
-    moveq   #1, d3
-.ong_tosong:
-    cmpi.b  #8, d1                             ; any songs? (row_max >= 8)
-    blo.s   .ong_x
-    move.b  d3, opt_songcol
-    move.b  #8, cur_row
-    rts
-.ong_lt:
-    btst    #2, d2                            ; Left: actions -> settings (map row, clamp to PAL)
-    beq.s   .ong_rt
-    cmpi.b  #3, d0
-    blo.s   .ong_x
-    subi.w  #3, d0
-    cmpi.b  #2, d0
-    bls.s   .ong_lw
-    moveq   #2, d0
-.ong_lw:
-    move.b  d0, cur_row
-    rts
-.ong_rt:
-    btst    #3, d2                            ; Right: settings -> actions (same row + 3)
-    beq     .ong_x
-    cmpi.b  #3, d0
-    bhs     .ong_x
-    addi.w  #3, d0
-    move.b  d0, cur_row
-    rts
-.ong_songs:
-    btst    #0, d2                            ; Up: prev song, or off the top -> the entry column bottom
-    beq.s   .ongs_dn
-    cmpi.b  #8, d0
-    bne.s   .ongs_up1
-    moveq   #2, d3                             ; PAL (settings bottom)
-    tst.b   opt_songcol
-    beq.s   .ongs_setr
-    moveq   #7, d3                             ; DEMO (actions bottom)
-.ongs_setr:
-    move.b  d3, cur_row
-    rts
-.ongs_up1:
-    subq.b  #1, cur_row
-    rts
-.ongs_dn:
-    btst    #1, d2                            ; Down: next song, clamp to the last
-    beq     .ong_x
-    cmp.b   d1, d0
-    bhs     .ong_x
-    addq.b  #1, cur_row
-    rts
-
 move_cursor:                              ; d-pad moves the cursor; edges WRAP (all screens)
     move.b  d2, d0
     andi.b  #$0F, d0                         ; any d-pad press disarms a pending PROJECT confirm
     beq.s   .mc_ndis
     clr.b   proj_armed
 .mc_ndis:
-    cmpi.b  #SCR_OPTS, cur_screen           ; OPTIONS: 2D grid nav (settings | actions | songs)
-    beq     opts_nav
+    cmpi.b  #SCR_FILES, cur_screen          ; FILES: single-column nav (actions then songs)
+    beq     files_nav
     cmpi.b  #SCR_INSTR, cur_screen          ; INSTR FM editor: the 2D grid is FM-only
     bne     .mc_move
     moveq   #0, d0                          ; non-FM (TONE/NOISE/KIT/WAVE/PERC) -> plain linear nav
@@ -1918,6 +1846,8 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     move.b  cur_screen, d0
     cmpi.b  #SCR_OPTS, d0
     beq.s   .rmopts
+    cmpi.b  #SCR_FILES, d0
+    beq.s   .rmfiles
     cmpi.b  #SCR_PROJ, d0
     beq.s   .rmproj
     cmpi.b  #SCR_LFO, d0
@@ -1942,16 +1872,19 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1
     rts
 .rmopts:
-    tst.b   sram_layout
-    bne.s   .rmopts_sram
-    moveq   #2, d1                          ; no SRAM -> VID SYNC PAL only
+    moveq   #2, d1                          ; OPTIONS: VID SYNC PALETTE
     rts
-.rmopts_sram:
-    movem.l d0/d2-d3, -(sp)                 ; VID SYNC PAL SAVE LOAD DELETE NEW DEMO (0..7) + count songs
+.rmfiles:
+    tst.b   sram_layout
+    bne.s   .rmfiles_sram
+    moveq   #0, d1                          ; no SRAM -> nothing on FILES
+    rts
+.rmfiles_sram:
+    movem.l d0/d2-d3, -(sp)                 ; SAVE LOAD DELETE NEW DEMO (0..4) + count songs
     bsr     dir_count
     move.l  d0, d1
     movem.l (sp)+, d0/d2-d3
-    addi.w  #7, d1
+    addi.w  #4, d1
     rts
 .rmproj:
     moveq   #4, d1                          ; TMPO TSP MODE LFO NAME (save/load moved to OPTIONS)
@@ -3037,8 +2970,8 @@ edit_instr:
     rts
 
 do_insert:
-    cmpi.b  #SCR_OPTS, cur_screen          ; OPTIONS: B-tap = SAVE/LOAD/DELETE/NEW/DEMO or load a song
-    beq     opts_action
+    cmpi.b  #SCR_FILES, cur_screen         ; FILES: B-tap = SAVE/LOAD/DELETE/NEW/DEMO or load a song
+    beq     files_action
     cmpi.b  #SCR_INSTR, cur_screen         ; INSTR/FM: B-tap on a library button = LOAD/SAVE
     beq.s   .di_bank
     cmpi.b  #SCR_FM, cur_screen
@@ -10206,29 +10139,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #$60, d4
 .op:
     bsr     draw_hex1
-    moveq   #3, d3                          ; --- SRAM probe readout (read-only) at row 3, beside PLAY ---
-    moveq   #1, d4
-    lea     str_o_sram, a1
-    bsr     print_at
-    tst.b   sram_layout
-    bne.s   .os_have
-    moveq   #3, d3                          ; no SRAM -> "NONE"
-    moveq   #9, d4
-    lea     str_sram_no, a1
-    bra     print_at
-.os_have:
-    move.l  #$41920003, (a0)               ; size (3 digits) at row 3, col 9
-    move.b  sram_size, d3
-    moveq   #0, d4
-    bsr     draw_dec3
-    lea     str_sram_od, a1                ; then "K ODD" / "K LIN"
-    cmpi.b  #2, sram_layout
-    bne.s   .os_lay
-    lea     str_sram_li, a1
-.os_lay:
-    moveq   #3, d3
-    moveq   #12, d4
-    bra     print_at
+    rts                                     ; OPTIONS = VID / SYNC / PALETTE (SRAM/FREE + the song library moved to FILES)
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     moveq   #5, d3                          ; MODE (cur_row 0)
@@ -11338,7 +11249,7 @@ dir_readall:                               ; SRAM directory -> dir_cache (512 B)
     movem.l (sp)+, d0-d5/a0-a1
     rts
 
-render_songlist:                           ; OPTIONS: FREE meter + count + the song-name list (a0=VDP_CTRL here)
+render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/DELETE/NEW/DEMO + the song list (a0=VDP_CTRL)
     tst.b   sram_layout
     beq     .rsl_x
     movem.l d0-d7/a0-a3, -(sp)
@@ -11363,9 +11274,9 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
 .rsl_sn:
     lea     16(a2), a2
     dbra    d6, .rsl_scan
-    moveq   #0, d0                          ; track opt_song from the cursor (cur_row>=8 = a song row)
+    moveq   #0, d0                          ; track opt_song from the cursor (cur_row>=5 = a song row)
     move.b  cur_row, d0
-    subi.w  #8, d0
+    subi.w  #5, d0
     bmi.s   .rsl_oc
     move.b  d0, opt_song
 .rsl_oc:
@@ -11379,6 +11290,22 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     subq.w  #1, d0
     move.b  d0, opt_song
 .rsl_oc2:
+    moveq   #3, d3                          ; SRAM read-out at row 3
+    moveq   #1, d4
+    lea     str_o_sram, a1
+    bsr     print_at
+    move.l  #$41920003, (a0)               ; size (3 digits) at row 3, col 9
+    move.b  sram_size, d3
+    moveq   #0, d4
+    bsr     draw_dec3
+    lea     str_sram_od, a1                ; "K ODD" / "K LIN" at col 12
+    cmpi.b  #2, sram_layout
+    bne.s   .rf_lay
+    lea     str_sram_li, a1
+.rf_lay:
+    moveq   #3, d3
+    moveq   #12, d4
+    bsr     print_at
     moveq   #4, d3                          ; "FREE" label at row 4
     moveq   #1, d4
     lea     str_o_free, a1
@@ -11407,59 +11334,59 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     lea     str_o_full, a1
     bsr     print_at
 .rsl_nofull:
-    moveq   #3, d3                          ; SAVE (cur_row 3) -- actions sit right of the settings
-    moveq   #18, d4
+    moveq   #6, d3                          ; SAVE (cur_row 0) -- actions in a single left column
+    moveq   #1, d4
     lea     str_p_save, a1
     bsr     print_at
-    moveq   #3, d3
-    moveq   #25, d4
-    moveq   #3, d6
+    moveq   #6, d3
+    moveq   #8, d4
+    moveq   #0, d6
     bsr     draw_go_hl
-    moveq   #4, d3                          ; LOAD (cur_row 4)
-    moveq   #18, d4
+    moveq   #7, d3                          ; LOAD (cur_row 1)
+    moveq   #1, d4
     lea     str_p_load, a1
     bsr     print_at
-    moveq   #4, d3
-    moveq   #25, d4
-    moveq   #4, d6
+    moveq   #7, d3
+    moveq   #8, d4
+    moveq   #1, d6
     bsr     draw_go_hl
-    moveq   #5, d3                          ; DELETE (cur_row 5)
-    moveq   #18, d4
+    moveq   #8, d3                          ; DELETE (cur_row 2)
+    moveq   #1, d4
     lea     str_o_del, a1
     bsr     print_at
-    moveq   #5, d3
-    moveq   #25, d4
-    moveq   #5, d6
+    moveq   #8, d3
+    moveq   #8, d4
+    moveq   #2, d6
     bsr     draw_go_hl
-    moveq   #6, d3                          ; NEW (cur_row 6)
-    moveq   #18, d4
+    moveq   #9, d3                          ; NEW (cur_row 3)
+    moveq   #1, d4
     lea     str_p_new, a1
     bsr     print_at
-    moveq   #6, d3
-    moveq   #25, d4
-    moveq   #6, d6
+    moveq   #9, d3
+    moveq   #8, d4
+    moveq   #3, d6
     bsr     draw_go_hl
-    moveq   #7, d3                          ; DEMO (cur_row 7)
-    moveq   #18, d4
+    moveq   #10, d3                         ; DEMO (cur_row 4)
+    moveq   #1, d4
     lea     str_p_demo, a1
     bsr     print_at
-    moveq   #7, d3
-    moveq   #25, d4
-    moveq   #7, d6
+    moveq   #10, d3
+    moveq   #8, d4
+    moveq   #4, d6
     bsr     draw_go_hl
     tst.b   proj_armed                      ; SURE? when a destructive action is armed
     beq.s   .rsl_hdr
-    moveq   #8, d3
-    moveq   #18, d4
+    moveq   #5, d3
+    moveq   #1, d4
     lea     str_sure, a1
     bsr     print_at
-.rsl_hdr:                                   ; --- divider across row 9: dashes with " SONGS NN " centred ---
-    move.l  #$44800003, (a0)               ; row 9, col 0
+.rsl_hdr:                                   ; --- divider across row 11: dashes with " SONGS NN " centred ---
+    move.l  #$45800003, (a0)               ; row 11, col 0
     moveq   #40-1, d3
 .rsl_dash:
     move.w  #'-', VDP_DATA
     dbra    d3, .rsl_dash
-    move.l  #$449E0003, (a0)               ; centred text at row 9, col 15
+    move.l  #$459E0003, (a0)               ; centred text at row 11, col 15
     move.w  #' ', VDP_DATA
     move.w  #'S', VDP_DATA
     move.w  #'O', VDP_DATA
@@ -11481,7 +11408,7 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     move.w  #' ', VDP_DATA
     cmpi.w  #16, d5                          ; "Pn/m" near the right edge when >1 page
     bls.s   .rsl_pgd
-    move.l  #$44C20003, (a0)               ; row 9, col 33
+    move.l  #$45C20003, (a0)               ; row 11, col 33
     move.w  #'P', VDP_DATA
     moveq   #0, d3
     move.b  opt_song, d3
@@ -11498,15 +11425,15 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
 .rsl_pgd:
     tst.w   d5
     bne.s   .rsl_list
-    moveq   #10, d3                         ; (EMPTY) at row 10
+    moveq   #12, d3                         ; (EMPTY) at row 12
     moveq   #3, d4
     lea     str_o_empty, a1
     bsr     print_at
     bra     .rsl_done
-.rsl_list:                                   ; single column, 16 per page (rows 10..25); the page follows opt_song
+.rsl_list:                                   ; single column, 16 per page (rows 12..27); the page follows opt_song
     moveq   #0, d2                           ; target list pos = opt_song (highlight)
     move.b  cur_row, d2
-    subi.w  #8, d2
+    subi.w  #5, d2
     moveq   #0, d4                           ; page base = opt_song & ~15 (first song shown on this page)
     move.b  opt_song, d4
     andi.w  #$FFF0, d4
@@ -11521,7 +11448,7 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     bmi.s   .rsl_ln2                          ; before this page
     cmpi.w  #16, d6
     bcc.s   .rsl_ln2                          ; past this page
-    addi.w  #10, d6                          ; -> screen row 10..25
+    addi.w  #12, d6                          ; -> screen row 12..27
     moveq   #0, d1                           ; highlight when this is the selected song
     cmp.w   d2, d7
     bne.s   .rsl_h0
@@ -12007,20 +11934,20 @@ proj_confirm:                              ; d0 = this row; Z set = confirmed (p
     moveq   #1, d0
     rts
 
-opts_action:                              ; B-tap on OPTIONS: SAVE/LOAD/DELETE/NEW/DEMO, or LOAD a song row
+files_action:                             ; B-tap on FILES: SAVE/LOAD/DELETE/NEW/DEMO (cur_row 0-4), or LOAD a song row (5+)
     move.b  cur_row, d0
-    cmpi.b  #3, d0
+    tst.b   d0
     beq.s   .oa_save
-    cmpi.b  #4, d0
+    cmpi.b  #1, d0
     beq.s   .oa_load
-    cmpi.b  #5, d0
+    cmpi.b  #2, d0
     beq.s   .oa_del
-    cmpi.b  #6, d0
+    cmpi.b  #3, d0
     beq.s   .oa_new
-    cmpi.b  #7, d0
+    cmpi.b  #4, d0
     beq.s   .oa_demo
-    cmpi.b  #8, d0
-    bcc.s   .oa_load                         ; cur_row >= 8 (a song) -> LOAD it (opt_song = cur_row-8)
+    cmpi.b  #5, d0
+    bcc.s   .oa_load                         ; cur_row >= 5 (a song) -> LOAD it (opt_song = cur_row-5)
     rts
 .oa_save:
     clr.b   proj_armed                       ; saving is non-destructive
