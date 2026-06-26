@@ -262,6 +262,7 @@ NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
 rle_buf    equ $00FF5160            ; RLE staging: the free gap above the data block (~28 KB, to env_canvas $C000)
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
+dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
@@ -723,6 +724,7 @@ VBlankInt:
     bra     .gd
 .gopts:
     bsr     render_opts
+    bsr     render_songlist
     bra     .gd
 .gproj:
     bsr     render_proj
@@ -10944,7 +10946,21 @@ dir_save:                                  ; compress the current song + store i
     lsl.l   #2, d1
     cmp.l   d1, d0
     bhi     .dsv_done                       ; would overflow -> SRAM full
-    move.l  d2, d0                          ; --- write the blob to heap[d2] ---
+    lea     dir_ent, a0                     ; --- write the directory entry FIRST (d3=index; sram_at below clobbers d3) ---
+    move.b  #$A5, (a0)
+    move.b  d7, 1(a0)
+    move.w  d2, 2(a0)
+    move.w  d6, 4(a0)
+    lea     6(a0), a1
+    lea     song_title, a2
+    moveq   #8-1, d1
+.dsv_nm:
+    move.b  (a2)+, (a1)+
+    dbra    d1, .dsv_nm
+    move.w  d4, 14(a0)
+    move.l  d3, d0
+    bsr     dir_wr
+    move.l  d2, d0                          ; --- then write the blob to heap[d2] ---
     addi.l  #HEAP_BASE, d0
     bsr     sram_at
     beq     .dsv_done
@@ -10959,20 +10975,6 @@ dir_save:                                  ; compress the current song + store i
     move.b  (a0)+, (a1)
     adda.l  d5, a1
     dbra    d1, .dsv_wl
-    lea     dir_ent, a0                     ; --- fill + write the directory entry ---
-    move.b  #$A5, (a0)
-    move.b  d7, 1(a0)
-    move.w  d2, 2(a0)
-    move.w  d6, 4(a0)
-    lea     6(a0), a1
-    lea     song_title, a2
-    moveq   #8-1, d1
-.dsv_nm:
-    move.b  (a2)+, (a1)+
-    dbra    d1, .dsv_nm
-    move.w  d4, 14(a0)
-    move.l  d3, d0
-    bsr     dir_wr
     move.b  #0, $A130F1                     ; unmap
     bsr     data_longsum
     move.l  d0, saved_sum
@@ -11024,6 +11026,114 @@ dir_load:                                  ; load the song named song_title into
     move.b  #1, need_clear
 .dl_done:
     movem.l (sp)+, d0-d7/a0-a3
+    rts
+
+dir_readall:                               ; SRAM directory -> dir_cache (512 B), one mapped pass
+    movem.l d0-d5/a0-a1, -(sp)
+    move.l  #DIR_BASE, d0
+    bsr     sram_at
+    beq.s   .dra_x
+    lea     dir_cache, a0
+    move.w  #(DIR_N*DIR_ENT)-1, d1
+.dra_l:
+    move.b  (a1), (a0)+
+    adda.l  d5, a1
+    dbra    d1, .dra_l
+    move.b  #0, $A130F1
+.dra_x:
+    movem.l (sp)+, d0-d5/a0-a1
+    rts
+
+render_songlist:                           ; OPTIONS: FREE meter + count + the song-name list (a0=VDP_CTRL here)
+    tst.b   sram_layout
+    beq     .rsl_x
+    movem.l d0-d7/a0-a3, -(sp)
+    bsr     dir_readall
+    lea     VDP_CTRL, a0
+    moveq   #0, d7                          ; heap_used (max offset+len)
+    moveq   #0, d5                          ; valid-entry count
+    lea     dir_cache, a2
+    moveq   #DIR_N-1, d6
+.rsl_scan:
+    cmpi.b  #$A5, (a2)
+    bne.s   .rsl_sn
+    addq.w  #1, d5
+    moveq   #0, d0
+    move.w  2(a2), d0                        ; offset
+    moveq   #0, d1
+    move.w  4(a2), d1                        ; len
+    add.l   d1, d0
+    cmp.l   d7, d0
+    bls.s   .rsl_sn
+    move.l  d0, d7
+.rsl_sn:
+    lea     16(a2), a2
+    dbra    d6, .rsl_scan
+    moveq   #4, d3                          ; "FREE" label at row 4
+    moveq   #1, d4
+    lea     str_o_free, a1
+    bsr     print_at
+    move.l  #$420C0003, (a0)               ; free KB at row 4, col 6
+    moveq   #0, d0
+    move.b  sram_size, d0
+    lsl.l   #8, d0
+    lsl.l   #2, d0                          ; capacity = size * 1024
+    subi.l  #HEAP_BASE, d0
+    sub.l   d7, d0                          ; free bytes
+    lsr.l   #8, d0
+    lsr.l   #2, d0                          ; -> KB
+    cmpi.l  #256, d0
+    blo.s   .rsl_fk
+    moveq   #-1, d0
+.rsl_fk:
+    move.b  d0, d3
+    moveq   #0, d4
+    bsr     draw_dec3
+    move.w  #'K', VDP_DATA
+    moveq   #9, d3                          ; "SONGS" header at row 9
+    moveq   #1, d4
+    lea     str_o_songs, a1
+    bsr     print_at
+    move.l  #$44900003, (a0)               ; count at row 9, col 8
+    move.b  d5, d3
+    moveq   #0, d4
+    bsr     draw_dec3
+    tst.w   d5
+    bne.s   .rsl_list
+    moveq   #11, d3                         ; (EMPTY) at row 11
+    moveq   #3, d4
+    lea     str_o_empty, a1
+    bsr     print_at
+    bra.s   .rsl_done
+.rsl_list:
+    lea     dir_cache, a2
+    moveq   #11, d6                          ; first list row
+    moveq   #DIR_N-1, d5
+.rsl_ll:
+    cmpi.b  #$A5, (a2)
+    bne.s   .rsl_ln
+    moveq   #0, d0                           ; name at row d6, col 3
+    move.w  d6, d0
+    lsl.w   #6, d0
+    addq.w  #3, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     6(a2), a3
+    moveq   #8-1, d1
+.rsl_nm:
+    moveq   #0, d2
+    move.b  (a3)+, d2
+    move.w  d2, VDP_DATA
+    dbra    d1, .rsl_nm
+    addq.w  #1, d6
+.rsl_ln:
+    lea     16(a2), a2
+    dbra    d5, .rsl_ll
+.rsl_done:
+    movem.l (sp)+, d0-d7/a0-a3
+.rsl_x:
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
@@ -11623,6 +11733,9 @@ str_o_sram: dc.b "SRAM",0
 str_sram_no: dc.b "NONE",0
 str_sram_od: dc.b "K ODD",0
 str_sram_li: dc.b "K LIN",0
+str_o_songs: dc.b "SONGS",0
+str_o_free:  dc.b "FREE",0
+str_o_empty: dc.b "(EMPTY)",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_demo: dc.b "DEMO",0
