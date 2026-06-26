@@ -9951,15 +9951,17 @@ draw_dec4:                                ; d3.w = 0..9999, d4 = char offset; (a
     move.w  d0, VDP_DATA
     rts
 
-draw_kb1:                                 ; d0.w = bytes -> "XX.YKB" (one decimal, space-padded); addr preset; preserves d0-d3
+draw_kb1:                                 ; d0.w = bytes -> "XX.YKB" (one decimal, ROUNDED UP, space-padded); addr preset; preserves d0-d3
     movem.l d0-d3, -(sp)
-    andi.l  #$FFFF, d0                        ; ensure the high word is clear (divu below is 32-bit)
-    divu.w  #1024, d0                        ; d0.lo = KB (0-23), d0.hi = remainder
+    andi.l  #$FFFF, d0                        ; clear the high word (divu is 32-bit)
+    mulu.w  #10, d0                          ; bytes*10 (<= 239040)
+    addi.l  #1023, d0                        ; ceil to the tenth: (bytes*10 + 1023) / 1024
+    divu.w  #1024, d0                        ; d0.lo = total tenths of a KB (0..234)
+    andi.l  #$FFFF, d0                        ; keep the quotient, drop the remainder
+    divu.w  #10, d0                          ; d0.lo = KB whole part, d0.hi = tenth digit
     move.w  d0, d2                           ; KB
     clr.w   d0
-    swap    d0                               ; remainder (0-1023)
-    mulu.w  #10, d0                          ; rem*10
-    divu.w  #1024, d0                        ; d0.lo = tenth (0-9)
+    swap    d0                               ; tenth
     move.w  d0, d3                           ; tenth
     moveq   #0, d0
     move.w  d2, d0
