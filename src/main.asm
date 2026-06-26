@@ -11230,94 +11230,95 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     moveq   #0, d4
     bsr     draw_dec3
     move.w  #'K', VDP_DATA
-    moveq   #9, d3                          ; SAVE (cur_row 3)
-    moveq   #1, d4
+    moveq   #3, d3                          ; SAVE (cur_row 3) -- actions sit right of the settings
+    moveq   #18, d4
     lea     str_p_save, a1
     bsr     print_at
-    moveq   #9, d3
+    moveq   #3, d3
+    moveq   #25, d4
     moveq   #3, d6
     bsr     draw_go_hl
-    moveq   #10, d3                         ; LOAD (cur_row 4)
-    moveq   #1, d4
+    moveq   #4, d3                          ; LOAD (cur_row 4)
+    moveq   #18, d4
     lea     str_p_load, a1
     bsr     print_at
-    moveq   #10, d3
+    moveq   #4, d3
+    moveq   #25, d4
     moveq   #4, d6
     bsr     draw_go_hl
-    moveq   #11, d3                         ; DELETE (cur_row 5)
-    moveq   #1, d4
+    moveq   #5, d3                          ; DELETE (cur_row 5)
+    moveq   #18, d4
     lea     str_o_del, a1
     bsr     print_at
-    moveq   #11, d3
+    moveq   #5, d3
+    moveq   #25, d4
     moveq   #5, d6
     bsr     draw_go_hl
-    moveq   #12, d3                         ; NEW (cur_row 6)
-    moveq   #1, d4
+    moveq   #6, d3                          ; NEW (cur_row 6)
+    moveq   #18, d4
     lea     str_p_new, a1
     bsr     print_at
-    moveq   #12, d3
+    moveq   #6, d3
+    moveq   #25, d4
     moveq   #6, d6
     bsr     draw_go_hl
-    moveq   #13, d3                         ; DEMO (cur_row 7)
-    moveq   #1, d4
+    moveq   #7, d3                          ; DEMO (cur_row 7)
+    moveq   #18, d4
     lea     str_p_demo, a1
     bsr     print_at
-    moveq   #13, d3
+    moveq   #7, d3
+    moveq   #25, d4
     moveq   #7, d6
     bsr     draw_go_hl
     tst.b   proj_armed                      ; SURE? when a destructive action is armed
     beq.s   .rsl_hdr
-    moveq   #13, d3
-    moveq   #16, d4
+    moveq   #8, d3
+    moveq   #18, d4
     lea     str_sure, a1
     bsr     print_at
 .rsl_hdr:
-    moveq   #15, d3                         ; SONGS header + count (row 15)
+    moveq   #9, d3                          ; SONGS header + count (row 9)
     moveq   #1, d4
     lea     str_o_songs, a1
     bsr     print_at
-    move.l  #$47900003, (a0)               ; count at row 15, col 8
+    move.l  #$44900003, (a0)               ; count at row 9, col 8
     move.b  d5, d3
     moveq   #0, d4
     bsr     draw_dec3
     tst.w   d5
     bne.s   .rsl_list
-    moveq   #16, d3                         ; (EMPTY) at row 16
+    moveq   #10, d3                         ; (EMPTY) at row 10
     moveq   #3, d4
     lea     str_o_empty, a1
     bsr     print_at
     bra     .rsl_done
-.rsl_list:
-    moveq   #0, d2                           ; target list pos = cur_row - 8 (highlight)
+.rsl_list:                                   ; two columns x 16 rows (rows 10..25) -> all 32 visible, no scroll
+    moveq   #0, d2                           ; target list pos = opt_song (highlight)
     move.b  cur_row, d2
     subi.w  #8, d2
-    moveq   #0, d4                           ; scroll_offset = max(0, opt_song - (SONGVIS-1))
-    move.b  opt_song, d4                     ;   -> the selected song stays on screen (anchored to the bottom)
-    subi.w  #SONGVIS-1, d4
-    bpl.s   .rsl_so
-    moveq   #0, d4
-.rsl_so:
     lea     dir_cache, a2
-    moveq   #0, d7                           ; list position P
+    moveq   #0, d7                           ; list position P (0..31)
     moveq   #DIR_N-1, d3
 .rsl_ll:
     cmpi.b  #$A5, (a2)
-    bne.s   .rsl_ln                          ; invalid entry -> no list position
-    move.w  d7, d6                           ; row-in-window = P - scroll_offset
-    sub.w   d4, d6
-    bmi.s   .rsl_ln2                          ; above the window
-    cmpi.w  #SONGVIS, d6
-    bcc.s   .rsl_ln2                          ; below the window
-    addi.w  #16, d6                          ; -> screen row 16..27
+    bne.s   .rsl_ln                          ; invalid entry -> not a list position
+    move.w  d7, d6                           ; screen row = 10 + (P & 15)
+    andi.w  #15, d6
+    addi.w  #10, d6
+    moveq   #3, d4                           ; name col: left (P<16) at 3, right (P>=16) at 22
+    cmpi.w  #16, d7
+    blo.s   .rsl_cl
+    moveq   #22, d4
+.rsl_cl:
     moveq   #0, d1                           ; highlight when this is the selected song
     cmp.w   d2, d7
     bne.s   .rsl_h0
     moveq   #$60, d1
 .rsl_h0:
-    moveq   #0, d0                           ; name at row d6, col 3
+    moveq   #0, d0                           ; name at (row d6, col d4)
     move.w  d6, d0
     lsl.w   #6, d0
-    addq.w  #3, d0
+    add.w   d4, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
@@ -11330,10 +11331,11 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     add.w   d1, d5
     move.w  d5, VDP_DATA
     dbra    d0, .rsl_nm
-    moveq   #0, d0                            ; --- stored size (rounded-up KB) at col 12 ---
+    moveq   #0, d0                            ; --- stored size (X.YKB) at col d4+9 ---
     move.w  d6, d0
     lsl.w   #6, d0
-    addi.w  #12, d0
+    add.w   d4, d0
+    addi.w  #9, d0
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
@@ -11351,13 +11353,12 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
 .rsl_x:
     rts
 
-draw_go_hl:                                ; draw "GO" at (d3=row, col 8); highlight if cur_row==d6. a0=VDP_CTRL.
+draw_go_hl:                                ; draw "GO" at (d3=row, d4=col); highlight if cur_row==d6. a0=VDP_CTRL.
     moveq   #0, d2
     cmp.b   cur_row, d6
     bne.s   .dgh0
     moveq   #$60, d2
 .dgh0:
-    moveq   #8, d4
     lea     str_go, a1
     bra     print_hl
 
