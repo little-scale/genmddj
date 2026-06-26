@@ -266,7 +266,9 @@ dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory 
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
-opt_songcol equ $00FFD435           ; OPTIONS grid nav: which top column the songs were entered from (0 = settings, 1 = actions)
+opt_songcol equ $00FFD435           ; (vestigial)
+files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR/DEMO sub-menu is open
+menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=DEMO)
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -1200,8 +1202,10 @@ input_tick:
     move.b  #1, vdirty
     rts
 .nben:
-    btst    #6, d3                        ; C held + B tap -> context playback
+    btst    #6, d3                        ; C held + B tap -> context playback (FILES: open/close the action menu)
     beq.s   .doins
+    cmpi.b  #SCR_FILES, cur_screen
+    beq     files_menu_toggle
     bsr     play_context
     rts
 .doins:
@@ -1647,8 +1651,24 @@ dpad_fire:
     moveq   #0, d1
     rts
 
-files_nav:                                 ; FILES single column: actions (0-4) then the song list (5+); clamped, no wrap
-    bsr     row_max                          ; d1 = max cur_row (4 = no songs; else 4 + song count)
+files_nav:                                 ; FILES: list mode = slots 0..count; sub-menu mode = the 4 actions
+    tst.b   files_menu
+    beq.s   .fn_list
+    btst    #0, d2                            ; sub-menu: Up = previous action
+    beq.s   .fn_mdn
+    tst.b   menu_row
+    beq.s   .fn_x
+    subq.b  #1, menu_row
+    rts
+.fn_mdn:
+    btst    #1, d2                            ; sub-menu: Down = next action (0-4, last = CANCEL)
+    beq.s   .fn_x
+    cmpi.b  #4, menu_row
+    bhs.s   .fn_x
+    addq.b  #1, menu_row
+    rts
+.fn_list:
+    bsr     row_max                          ; d1 = max cur_row (= the (empty) slot index)
     moveq   #0, d0
     move.b  cur_row, d0
     cmp.b   d1, d0                            ; clamp a stale cur_row (count may have shrunk)
@@ -1656,14 +1676,14 @@ files_nav:                                 ; FILES single column: actions (0-4) 
     move.b  d1, d0
     move.b  d1, cur_row
 .fn_ok:
-    btst    #0, d2                            ; Up: previous item, stop at SAVE
+    btst    #0, d2                            ; Up: previous slot, stop at the top
     beq.s   .fn_dn
     tst.b   d0
     beq.s   .fn_x
     subq.b  #1, cur_row
     rts
 .fn_dn:
-    btst    #1, d2                            ; Down: next item (DEMO -> first song -> ...), stop at the last
+    btst    #1, d2                            ; Down: next slot, stop at the (empty) row
     beq.s   .fn_x
     cmp.b   d1, d0
     bhs.s   .fn_x
@@ -1880,11 +1900,10 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1                          ; no SRAM -> nothing on FILES
     rts
 .rmfiles_sram:
-    movem.l d0/d2-d3, -(sp)                 ; SAVE LOAD DELETE NEW DEMO (0..4) + count songs
+    movem.l d0/d2-d3, -(sp)                 ; slots 0..count-1 + the (empty) slot at index count
     bsr     dir_count
     move.l  d0, d1
     movem.l (sp)+, d0/d2-d3
-    addi.w  #4, d1
     rts
 .rmproj:
     moveq   #4, d1                          ; TMPO TSP MODE LFO NAME (save/load moved to OPTIONS)
@@ -11249,56 +11268,52 @@ dir_readall:                               ; SRAM directory -> dir_cache (512 B)
     movem.l (sp)+, d0-d5/a0-a1
     rts
 
-render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/DELETE/NEW/DEMO + the song list (a0=VDP_CTRL)
+render_files:                              ; FILES body: SRAM/FREE + the slot list (songs + (empty)); C+B opens the actions
     tst.b   sram_layout
-    beq     .rsl_x
+    beq     .rf_x
     movem.l d0-d7/a0-a3, -(sp)
     bsr     dir_readall
     lea     VDP_CTRL, a0
-    moveq   #0, d7                          ; heap_used (max offset+len)
-    moveq   #0, d5                          ; valid-entry count
+    moveq   #0, d7                          ; heap_used
+    moveq   #0, d5                          ; valid count
     lea     dir_cache, a2
     moveq   #DIR_N-1, d6
-.rsl_scan:
+.rf_scan:
     cmpi.b  #$A5, (a2)
-    bne.s   .rsl_sn
+    bne.s   .rf_sn
     addq.w  #1, d5
     moveq   #0, d0
-    move.w  2(a2), d0                        ; offset
+    move.w  2(a2), d0
     moveq   #0, d1
-    move.w  4(a2), d1                        ; len
+    move.w  4(a2), d1
     add.l   d1, d0
     cmp.l   d7, d0
-    bls.s   .rsl_sn
+    bls.s   .rf_sn
     move.l  d0, d7
-.rsl_sn:
+.rf_sn:
     lea     16(a2), a2
-    dbra    d6, .rsl_scan
-    moveq   #0, d0                          ; track opt_song from the cursor (cur_row>=5 = a song row)
-    move.b  cur_row, d0
-    subi.w  #5, d0
-    bmi.s   .rsl_oc
-    move.b  d0, opt_song
-.rsl_oc:
-    tst.w   d5                              ; clamp opt_song to [0, count-1]
-    beq.s   .rsl_oc2
+    dbra    d6, .rf_scan
+    tst.b   files_menu                      ; list mode: cur_row IS the slot index (0..count = the (empty) slot)
+    bne.s   .rf_clamp
     moveq   #0, d0
+    move.b  cur_row, d0
+    move.b  d0, opt_song
+.rf_clamp:
+    moveq   #0, d0                          ; clamp opt_song to [0, count]
     move.b  opt_song, d0
     cmp.w   d5, d0
-    blo.s   .rsl_oc2
-    move.w  d5, d0
-    subq.w  #1, d0
-    move.b  d0, opt_song
-.rsl_oc2:
-    moveq   #3, d3                          ; SRAM read-out at row 3
+    bls.s   .rf_clok
+    move.b  d5, opt_song
+.rf_clok:
+    moveq   #3, d3                          ; --- SRAM read-out (row 3) ---
     moveq   #1, d4
     lea     str_o_sram, a1
     bsr     print_at
-    move.l  #$41920003, (a0)               ; size (3 digits) at row 3, col 9
+    move.l  #$41920003, (a0)
     move.b  sram_size, d3
     moveq   #0, d4
     bsr     draw_dec3
-    lea     str_sram_od, a1                ; "K ODD" / "K LIN" at col 12
+    lea     str_sram_od, a1
     cmpi.b  #2, sram_layout
     bne.s   .rf_lay
     lea     str_sram_li, a1
@@ -11306,87 +11321,40 @@ render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/D
     moveq   #3, d3
     moveq   #12, d4
     bsr     print_at
-    moveq   #4, d3                          ; "FREE" label at row 4
+    moveq   #4, d3                          ; --- FREE (row 4) ---
     moveq   #1, d4
     lea     str_o_free, a1
     bsr     print_at
-    move.l  #$42120003, (a0)               ; free KB at row 4, col 9 (aligned under the SRAM size)
+    move.l  #$42120003, (a0)
     moveq   #0, d0
     move.b  sram_size, d0
     lsl.l   #8, d0
-    lsl.l   #2, d0                          ; capacity = size * 1024
+    lsl.l   #2, d0
     subi.l  #HEAP_BASE, d0
-    sub.l   d7, d0                          ; free bytes
+    sub.l   d7, d0
     lsr.l   #8, d0
-    lsr.l   #2, d0                          ; -> KB
+    lsr.l   #2, d0
     cmpi.l  #256, d0
-    blo.s   .rsl_fk
+    blo.s   .rf_fk
     moveq   #-1, d0
-.rsl_fk:
+.rf_fk:
     move.b  d0, d3
     moveq   #0, d4
     bsr     draw_dec3
     move.w  #'K', VDP_DATA
-    tst.b   save_full                       ; "FULL" warning when the last save was refused
-    beq.s   .rsl_nofull
+    tst.b   save_full
+    beq.s   .rf_nofull
     moveq   #4, d3
     moveq   #14, d4
     lea     str_o_full, a1
     bsr     print_at
-.rsl_nofull:
-    moveq   #6, d3                          ; SAVE (cur_row 0) -- actions in a single left column
-    moveq   #1, d4
-    lea     str_p_save, a1
-    bsr     print_at
-    moveq   #6, d3
-    moveq   #8, d4
-    moveq   #0, d6
-    bsr     draw_go_hl
-    moveq   #7, d3                          ; LOAD (cur_row 1)
-    moveq   #1, d4
-    lea     str_p_load, a1
-    bsr     print_at
-    moveq   #7, d3
-    moveq   #8, d4
-    moveq   #1, d6
-    bsr     draw_go_hl
-    moveq   #8, d3                          ; DELETE (cur_row 2)
-    moveq   #1, d4
-    lea     str_o_del, a1
-    bsr     print_at
-    moveq   #8, d3
-    moveq   #8, d4
-    moveq   #2, d6
-    bsr     draw_go_hl
-    moveq   #9, d3                          ; NEW (cur_row 3)
-    moveq   #1, d4
-    lea     str_p_new, a1
-    bsr     print_at
-    moveq   #9, d3
-    moveq   #8, d4
-    moveq   #3, d6
-    bsr     draw_go_hl
-    moveq   #10, d3                         ; DEMO (cur_row 4)
-    moveq   #1, d4
-    lea     str_p_demo, a1
-    bsr     print_at
-    moveq   #10, d3
-    moveq   #8, d4
-    moveq   #4, d6
-    bsr     draw_go_hl
-    tst.b   proj_armed                      ; SURE? when a destructive action is armed
-    beq.s   .rsl_hdr
-    moveq   #5, d3
-    moveq   #1, d4
-    lea     str_sure, a1
-    bsr     print_at
-.rsl_hdr:                                   ; --- divider across row 11: dashes with " SONGS NN " centred ---
-    move.l  #$45800003, (a0)               ; row 11, col 0
+.rf_nofull:
+    move.l  #$43000003, (a0)               ; --- divider (row 6): " SONGS NN " centred ---
     moveq   #40-1, d3
-.rsl_dash:
+.rf_dash:
     move.w  #'-', VDP_DATA
-    dbra    d3, .rsl_dash
-    move.l  #$459E0003, (a0)               ; centred text at row 11, col 15
+    dbra    d3, .rf_dash
+    move.l  #$431E0003, (a0)
     move.w  #' ', VDP_DATA
     move.w  #'S', VDP_DATA
     move.w  #'O', VDP_DATA
@@ -11394,21 +11362,21 @@ render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/D
     move.w  #'G', VDP_DATA
     move.w  #'S', VDP_DATA
     move.w  #' ', VDP_DATA
-    moveq   #0, d3                          ; 2-digit count
+    moveq   #0, d3
     move.b  d5, d3
-    divu.w  #10, d3                          ; d3 = [ones:tens]
+    divu.w  #10, d3
     move.l  d3, d4
     andi.l  #$FFFF, d3
     add.w   #'0', d3
-    move.w  d3, VDP_DATA                     ; tens
+    move.w  d3, VDP_DATA
     swap    d4
     andi.l  #$FFFF, d4
     add.w   #'0', d4
-    move.w  d4, VDP_DATA                     ; ones
+    move.w  d4, VDP_DATA
     move.w  #' ', VDP_DATA
-    cmpi.w  #16, d5                          ; "Pn/m" near the right edge when >1 page
-    bls.s   .rsl_pgd
-    move.l  #$45C20003, (a0)               ; row 11, col 33
+    cmpi.w  #16, d5
+    bls.s   .rf_pgd
+    move.l  #$43420003, (a0)
     move.w  #'P', VDP_DATA
     moveq   #0, d3
     move.b  opt_song, d3
@@ -11422,39 +11390,59 @@ render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/D
     lsr.w   #4, d3
     add.w   #'0', d3
     move.w  d3, VDP_DATA
-.rsl_pgd:
-    tst.w   d5
-    bne.s   .rsl_list
-    moveq   #12, d3                         ; (EMPTY) at row 12
-    moveq   #3, d4
-    lea     str_o_empty, a1
-    bsr     print_at
-    bra     .rsl_done
-.rsl_list:                                   ; single column, 16 per page (rows 12..27); the page follows opt_song
-    moveq   #0, d2                           ; target list pos = opt_song (highlight)
-    move.b  cur_row, d2
-    subi.w  #5, d2
-    moveq   #0, d4                           ; page base = opt_song & ~15 (first song shown on this page)
+.rf_pgd:
+    moveq   #0, d2                          ; --- slot list (rows 7..22) ---  target = opt_song
+    move.b  opt_song, d2
+    moveq   #0, d4                          ; page base = opt_song & ~15
     move.b  opt_song, d4
     andi.w  #$FFF0, d4
-    lea     dir_cache, a2
-    moveq   #0, d7                           ; list position P
-    moveq   #DIR_N-1, d3
-.rsl_ll:
-    cmpi.b  #$A5, (a2)
-    bne.s   .rsl_ln                          ; invalid entry -> not a list position
-    move.w  d7, d6                           ; row-on-page = P - page_base
+    move.w  d5, d7                          ; the (empty) row sits at position = count, drawn first (frees d5)
+    move.w  d7, d6
     sub.w   d4, d6
-    bmi.s   .rsl_ln2                          ; before this page
+    bmi.s   .rf_songs
     cmpi.w  #16, d6
-    bcc.s   .rsl_ln2                          ; past this page
-    addi.w  #12, d6                          ; -> screen row 12..27
-    moveq   #0, d1                           ; highlight when this is the selected song
+    bcc.s   .rf_songs
+    addi.w  #7, d6
+    moveq   #0, d1
     cmp.w   d2, d7
-    bne.s   .rsl_h0
+    bne.s   .rf_e0
     moveq   #$60, d1
-.rsl_h0:
-    moveq   #0, d0                           ; name at (row d6, col 3)
+.rf_e0:
+    moveq   #0, d0
+    move.w  d6, d0
+    lsl.w   #6, d0
+    addq.w  #3, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    lea     str_o_empty, a3
+.rf_em:
+    moveq   #0, d0
+    move.b  (a3)+, d0
+    beq.s   .rf_songs
+    add.w   d1, d0
+    move.w  d0, VDP_DATA
+    bra.s   .rf_em
+.rf_songs:
+    lea     dir_cache, a2
+    moveq   #0, d7                          ; list position P
+    moveq   #DIR_N-1, d3
+.rf_ll:
+    cmpi.b  #$A5, (a2)
+    bne.s   .rf_ln
+    move.w  d7, d6
+    sub.w   d4, d6
+    bmi.s   .rf_ln2
+    cmpi.w  #16, d6
+    bcc.s   .rf_ln2
+    addi.w  #7, d6
+    moveq   #0, d1
+    cmp.w   d2, d7
+    bne.s   .rf_h0
+    moveq   #$60, d1
+.rf_h0:
+    moveq   #0, d0
     move.w  d6, d0
     lsl.w   #6, d0
     addq.w  #3, d0
@@ -11464,13 +11452,13 @@ render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/D
     move.l  d0, (a0)
     lea     6(a2), a3
     moveq   #8-1, d0
-.rsl_nm:
+.rf_nm:
     moveq   #0, d5
     move.b  (a3)+, d5
     add.w   d1, d5
     move.w  d5, VDP_DATA
-    dbra    d0, .rsl_nm
-    moveq   #0, d0                            ; --- stored size (X.YKB) at col 12 ---
+    dbra    d0, .rf_nm
+    moveq   #0, d0                          ; size (X.YKB) at col 12
     move.w  d6, d0
     lsl.w   #6, d0
     addi.w  #12, d0
@@ -11478,19 +11466,65 @@ render_files:                              ; FILES body: SRAM/FREE + SAVE/LOAD/D
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    moveq   #0, d0                              ; clear the high word (divu in draw_kb1 is 32-bit)
-    move.w  4(a2), d0                          ; blob length (big-endian)
+    moveq   #0, d0
+    move.w  4(a2), d0
     bsr     draw_kb1
-.rsl_ln2:
-    addq.w  #1, d7                           ; advance the list position (valid entries only)
-.rsl_ln:
+.rf_ln2:
+    addq.w  #1, d7
+.rf_ln:
     lea     16(a2), a2
-    dbra    d3, .rsl_ll
-.rsl_done:
+    dbra    d3, .rf_ll
+    tst.b   files_menu                      ; --- action sub-menu on the right when open ---
+    beq     .rf_done
+    moveq   #8, d3                          ; SAVE (menu_row 0) at row 8 col 22
+    moveq   #22, d4
+    moveq   #0, d2
+    tst.b   menu_row
+    bne.s   .rf_sm0
+    moveq   #$60, d2
+.rf_sm0:
+    lea     str_p_save, a1
+    bsr     print_hl
+    moveq   #9, d3                          ; LOAD (menu_row 1)
+    moveq   #22, d4
+    moveq   #0, d2
+    cmpi.b  #1, menu_row
+    bne.s   .rf_sm1
+    moveq   #$60, d2
+.rf_sm1:
+    lea     str_p_load, a1
+    bsr     print_hl
+    moveq   #10, d3                         ; CLEAR (menu_row 2)
+    moveq   #22, d4
+    moveq   #0, d2
+    cmpi.b  #2, menu_row
+    bne.s   .rf_sm2
+    moveq   #$60, d2
+.rf_sm2:
+    lea     str_o_clr, a1
+    bsr     print_hl
+    moveq   #11, d3                         ; DEMO (menu_row 3)
+    moveq   #22, d4
+    moveq   #0, d2
+    cmpi.b  #3, menu_row
+    bne.s   .rf_sm3
+    moveq   #$60, d2
+.rf_sm3:
+    lea     str_p_demo, a1
+    bsr     print_hl
+    moveq   #12, d3                         ; CANCEL (menu_row 4)
+    moveq   #22, d4
+    moveq   #0, d2
+    cmpi.b  #4, menu_row
+    bne.s   .rf_sm4
+    moveq   #$60, d2
+.rf_sm4:
+    lea     str_o_cancel, a1
+    bsr     print_hl
+.rf_done:
     movem.l (sp)+, d0-d7/a0-a3
-.rsl_x:
+.rf_x:
     rts
-
 draw_go_hl:                                ; draw "GO" at (d3=row, d4=col); highlight if cur_row==d6. a0=VDP_CTRL.
     moveq   #0, d2
     cmp.b   cur_row, d6
@@ -11934,64 +11968,85 @@ proj_confirm:                              ; d0 = this row; Z set = confirmed (p
     moveq   #1, d0
     rts
 
-files_action:                             ; B-tap on FILES: SAVE/LOAD/DELETE/NEW/DEMO (cur_row 0-4), or LOAD a song row (5+)
-    move.b  cur_row, d0
+files_action:                             ; B-tap on FILES: run the selected sub-menu action (menu must be open)
+    tst.b   files_menu
+    beq     .oa_ret                          ; list mode -> B-tap does nothing; C+B opens the menu
+    move.b  menu_row, d0
     tst.b   d0
-    beq.s   .oa_save
+    beq     .oa_save
     cmpi.b  #1, d0
-    beq.s   .oa_load
+    beq     .oa_load
     cmpi.b  #2, d0
-    beq.s   .oa_del
+    beq     .oa_clear
     cmpi.b  #3, d0
-    beq.s   .oa_new
-    cmpi.b  #4, d0
-    beq.s   .oa_demo
-    cmpi.b  #5, d0
-    bcc.s   .oa_load                         ; cur_row >= 5 (a song) -> LOAD it (opt_song = cur_row-5)
-    rts
+    beq     .oa_demo
+    bra     .oa_done                         ; menu_row 4 = CANCEL -> just close the menu
 .oa_save:
-    clr.b   proj_armed                       ; saving is non-destructive
-    bsr     dir_save
-    bra.s   .oa_done
+    clr.b   proj_armed
+    bsr     files_stop                       ; transport stops for the SRAM op
+    bsr     dir_save                         ; saves the working song under song_title
+    bra     .oa_done
 .oa_load:
-    moveq   #4, d0
-    bsr     proj_confirm
-    bne.s   .oa_ret
-    moveq   #0, d0
-    move.b  opt_song, d0
+    bsr     files_stop
+    bsr     dir_count                        ; d0 = song count
+    moveq   #0, d1
+    move.b  opt_song, d1
+    cmp.l   d0, d1
+    bcc     .oa_newproj                      ; opt_song >= count -> the (empty) slot -> new blank project
+    move.l  d1, d0
     bsr     dir_nth
     tst.l   d0
-    bmi.s   .oa_ret
+    bmi     .oa_done
     bsr     dir_load
-    bra.s   .oa_done
-.oa_del:
-    moveq   #5, d0
-    bsr     proj_confirm
-    bne.s   .oa_ret
-    moveq   #0, d0
-    move.b  opt_song, d0
+    bra     .oa_done
+.oa_newproj:
+    bsr     clear_song                       ; LOAD the (empty) slot = a fresh blank project
+    bra     .oa_done
+.oa_clear:
+    bsr     dir_count
+    moveq   #0, d1
+    move.b  opt_song, d1
+    cmp.l   d0, d1
+    bcc     .oa_done                         ; (empty) slot -> nothing to clear
+    move.l  d1, d0
     bsr     dir_nth
     tst.l   d0
-    bmi.s   .oa_ret
+    bmi     .oa_done
     bsr     dir_delete
-    bra.s   .oa_done
-.oa_new:
-    moveq   #6, d0
-    bsr     proj_confirm
-    bne.s   .oa_ret
-    bsr     clear_song
-    bra.s   .oa_done
+    bra     .oa_done
 .oa_demo:
-    moveq   #7, d0
-    bsr     proj_confirm
-    bne.s   .oa_ret
+    bsr     files_stop
     bsr     load_demo
-    bra.s   .oa_done
+    bra     .oa_done
 .oa_ret:
     rts
 .oa_done:
     clr.b   proj_armed
+    clr.b   files_menu                       ; the action ran (or was a no-op) -> close the menu
     move.b  #1, need_clear
+    rts
+
+files_stop:                                ; stop the transport (clean stop path) before a save/load
+    tst.b   playing
+    beq.s   .fst_x
+    bsr     toggle_play
+.fst_x:
+    rts
+
+files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD/CLEAR/DEMO sub-menu
+    tst.b   sram_layout
+    beq.s   .fmt_x                           ; no SRAM -> no menu
+    tst.b   files_menu
+    bne.s   .fmt_close
+    move.b  cur_row, opt_song                ; freeze the selected slot
+    clr.b   menu_row
+    move.b  #1, files_menu
+    move.b  #1, need_clear
+    rts
+.fmt_close:
+    clr.b   files_menu
+    move.b  #1, need_clear
+.fmt_x:
     rts
 
 load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
@@ -12158,6 +12213,8 @@ str_o_free:  dc.b "FREE",0
 str_o_full:  dc.b "FULL",0
 str_o_empty: dc.b "(EMPTY)",0
 str_o_del:   dc.b "DELETE",0
+str_o_clr:   dc.b "CLEAR",0
+str_o_cancel: dc.b "CANCEL",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_demo: dc.b "DEMO",0
