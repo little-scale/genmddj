@@ -64,11 +64,11 @@
 <script>
 "use strict";
 // ---- genmddj song model (from src/main.asm) ----
-const DATA_SIZE=20832, GMDJ_MAGIC="GMDJSONG", GMI_MAGIC="GMDJINS1";
-const POOL={globals:[0,256],song:[256,2400],phrases:[2656,10240],chains:[12896,3072],
-  instruments:[15968,2048],tables:[18016,2048],grooves:[20064,256],waves:[20320,512]};
-const NSONGROWS=240, NCH=10, NPHRASES=160, PH_ROWS=16, PH_BYTES=4, PHRASE_SZ=64;
-const NCHAINS=96, CH_STEPS=16, CHAIN_SZ=32, NINSTR=32, INSTR_SZ=64;
+const DATA_SIZE=23904, GMDJ_MAGIC="GMDJSONG", GMI_MAGIC="GMDJINS1";
+const POOL={globals:[0,256],song:[256,2400],phrases:[2656,12288],chains:[14944,4096],
+  instruments:[19040,2048],tables:[21088,2048],grooves:[23136,256],waves:[23392,512]};
+const NSONGROWS=240, NCH=10, NPHRASES=192, PH_ROWS=16, PH_BYTES=4, PHRASE_SZ=64;
+const NCHAINS=128, CH_STEPS=16, CHAIN_SZ=32, NINSTR=32, INSTR_SZ=64;
 const CMD_X=24;                              // command byte = letter position (A=1 .. X=24)
 const FM_CH=6;                               // channels 0-5 are FM, 6-8 PSG
 // MIDI<->genmddj note: genmddj note (0-95) = MIDI - 12 (C4 MIDI60 = genmddj48). Range MIDI 12..107.

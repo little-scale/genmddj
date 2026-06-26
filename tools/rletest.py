@@ -28,19 +28,19 @@ import sys
 
 GMDJ_MAGIC = b"GMDJSONG"
 DATA_OFF   = 32            # .gmdj header bytes before the data block
-DATA_LEN   = 20832         # $5160 -- the flat data block
+DATA_LEN   = 23904         # $5D60 -- the flat data block (phrases 192, chains 128)
 
 # data-block pool map (name, offset, length) -- from SAVEFORMAT.md / the SAVE_DATA
 # comment in src/main.asm. Lets us see which pools carry the redundancy.
 POOLS = [
     ("globals",     0,   256),
     ("song",      256,  2400),
-    ("phrases",  2656, 10240),
-    ("chains",  12896,  3072),
-    ("instr",   15968,  2048),
-    ("tables",  18016,  2048),
-    ("grooves", 20064,   256),
-    ("waves",   20320,   512),
+    ("phrases",  2656, 12288),
+    ("chains",  14944,  4096),
+    ("instr",   19040,  2048),
+    ("tables",  21088,  2048),
+    ("grooves", 23136,   256),
+    ("waves",   23392,   512),
 ]
 
 # cart sizes + a rough reservation for config + the 32-slot instrument bank +

@@ -33,7 +33,7 @@ SPLASH_FROM   = "    move.w  #150, splash_ctr"
 SPLASH_TO     = "    move.w  #3, splash_ctr"
 
 # directory layout (logical), matched against the +1 emulator lead-in below
-LEAD, DIR_BASE, DIR_ENT, DIR_N, HEAP_BASE, DATA_SIZE = 1, 2304, 16, 32, 2816, 20832
+LEAD, DIR_BASE, DIR_ENT, DIR_N, HEAP_BASE, DATA_SIZE = 1, 2304, 16, 32, 2816, 23904
 
 fails = []
 def check(name, ok, detail=""):

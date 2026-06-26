@@ -156,7 +156,7 @@ echo_rd2   equ $00FFE4DC           ; tap-2 level reduction
 echo_ster  equ $00FFE4DD           ; 0 off, 1 on (pan taps L/R; FM only)
 echo_head  equ $00FFE4DE           ; ECHO ring write head (0-63, wraps)
 echo_ring  equ $00FFE4E0           ; 64 entries x 4 bytes (note, keyon, trig, instr) = 256 B (..$E5DF)
-grooves    equ $00FF4E60           ; 16 grooves x 16 tick-counts (1 B each) = 256 B (..$D41F); free gap
+grooves    equ $00FF5A60           ; 16 grooves x 16 tick-counts (1 B each) = 256 B   [+$C00 vs old $4E60]
 groove_sel equ $00FFD420           ; active groove (0-15)   ($E5E0 was inside the stack's range!)
 groove_pos equ $00FFD421           ; row position within the active groove (cycles)
 cur_groove equ $00FFD422           ; GROOVE screen: which groove is being viewed/edited (0-15)
@@ -195,7 +195,7 @@ wave_pidx  equ $00FFE3EE           ; WAVE: B+C preset cycle index (0-7)
 wave_rng   equ $00FFE3F0           ; WAVE: random-preset xorshift state (4 bytes)
 wave_on    equ $00FFE3F4           ; engine: 1 = a wave note is sounding (per-frame re-bake)
 wave_ch    equ $00FFE3F6           ; engine: ch_state ptr of the sounding wave channel (long)
-wave_ram   equ $00FF4F60           ; 16 user waves x 32 steps x 8-bit (512 B); $D000-$D200 free
+wave_ram   equ $00FF5B60           ; 16 user waves x 32 steps x 8-bit (512 B)   [+$C00 vs old $4F60]
 wave_rowbuf equ $00FFD200          ; WAVE render: one row's 32-char string + terminator
 wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain output -> Z80)
 prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vol forced full)
@@ -204,8 +204,8 @@ wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fo
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
-phrase_plays equ $00FFD300         ; per-phrase play counters (NPHRASES=160 bytes, ..$D39F) for the I command
-lfo_amp    equ $00FFD3A0           ; NLFO amp bytes (0-7); sits right after phrase_plays (engine_play_reset clears both)
+phrase_plays equ $00FFD000         ; per-phrase play counters (NPHRASES bytes) for the I command; moved to the $D000 hole
+lfo_amp    equ $00FFD0C0           ; NLFO amp bytes (0-7); right after phrase_plays ($D000+192); cleared together
 song_title equ $00FFD3B0           ; 8-char song name (lives in the slot header, not the data block)
 song_page  equ $00FFD3B8           ; SONG screen: visible 16-row page 0..14 (240/16); transient view state
 proj_armed equ $00FFD3B9           ; PROJECT destructive-action confirm: armed cur_row (0 = none)
@@ -255,17 +255,17 @@ ym_data    equ $00FFE261
 
 phrases    equ $00FF0A60            ; phrases pool (PHRASE_SIZE each)
 PHRASE_SIZE equ 64
-NPHRASES   equ 160                  ; ($FFF400 chains - $FFF000 phrases) / 64
-chains     equ $00FF3260            ; chains pool (CHAIN_SIZE each)
+NPHRASES   equ 192                  ; phrases pool count (bumped 160->192, 2026-06-26; 1-byte index cap 255)
+chains     equ $00FF3A60            ; chains pool (CHAIN_SIZE each)   [+$800 vs old $3260: phrases 160->192]
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
-NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
+NCHAINS    equ 128                  ; chains pool count (bumped 96->128; 1-byte index cap 255)
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
-rle_buf    equ $00FF5160            ; RLE staging: the free gap above the data block (~28 KB, to env_canvas $C000)
+rle_buf    equ $00FF5D60            ; RLE staging: the free gap above the data block (~25 KB, to env_canvas $C000)
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
-SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
+SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
 SAVE_SLOT  equ SAVE_DATA+SAVE_HDR  ; $5170 per slot
@@ -278,11 +278,11 @@ DIR_N      equ 32                  ; max stored songs
 HEAP_BASE  equ DIR_BASE+DIR_N*DIR_ENT  ; compressed (or raw) blobs packed contiguously from here (logical 2816)
 song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 240               ; full-song data depth; SONG cursor still capped at 15 until scroll lands
-instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
+instrum    equ $00FF4A60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
                                     ; ($FFC000) so a canvas overrun can't reach it, clear of the stack
 INSTR_SIZE equ 64                   ; type + algo/fb/pan + 4 ops x 10 + i_tbl/i_tbs + reserved
                                     ; (power of 2; 50-63 reserved headroom while the save format is soft)
-tbl_ram    equ $00FF4660            ; editable macro tables (boot-copied from psg_tables)
+tbl_ram    equ $00FF5260            ; editable macro tables (boot-copied from psg_tables)
 NTABLE     equ 32
 TBL_ROWS   equ 16
 TROW       equ 4                    ; bytes per table row

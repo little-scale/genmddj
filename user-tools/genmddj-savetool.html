@@ -91,7 +91,7 @@
 "use strict";
 // ---- genmddj save format (authoritative, from src/main.asm) ----
 const SLOT_MAGIC = "GMDDJ", SAVE_VER = 1;
-const DATA_SIZE = 20832;            // SAVE_DATA $5160
+const DATA_SIZE = 23904;            // SAVE_DATA $5D60 (phrases 192, chains 128)
 const SLOT_HDR  = 16;               // magic5+ver1+csum2+title8
 const SLOT_SIZE = DATA_SIZE+SLOT_HDR;   // $5170 = 20848
 const CONFIG_SZ = 256;
@@ -103,12 +103,12 @@ const DIR_BASE = SLOT0;                 // compressed-song directory (replaces f
 const DIR_ENT = 16, DIR_N = 32;         // entry: valid raw off(2) len(2) name(8) csum(2); 32 songs
 const HEAP_BASE = DIR_BASE+DIR_N*DIR_ENT;  // 2816 -- compressed (or raw) blobs packed from here
 const RLE_UNIT = 4;                     // 4-byte-unit RLE (row-aligned); matches the cart + tools/rletest.py
-// data-block pools (offset,len) within the 20832 block:
+// data-block pools (offset,len) within the 23904 block:
 const POOL = {
-  globals:[0,256], song:[256,2400], phrases:[2656,10240], chains:[12896,3072],
-  instruments:[15968,2048], tables:[18016,2048], grooves:[20064,256], waves:[20320,512] };
-const NSONGROWS=240, NCH=10, NPHRASES=160, PH_ROWS=16, PH_BYTES=4, PHRASE_SZ=64;
-const NCHAINS=96, CH_STEPS=16, CHAIN_SZ=32, NINSTR=32, INSTR_SZ=64;
+  globals:[0,256], song:[256,2400], phrases:[2656,12288], chains:[14944,4096],
+  instruments:[19040,2048], tables:[21088,2048], grooves:[23136,256], waves:[23392,512] };
+const NSONGROWS=240, NCH=10, NPHRASES=192, PH_ROWS=16, PH_BYTES=4, PHRASE_SZ=64;
+const NCHAINS=128, CH_STEPS=16, CHAIN_SZ=32, NINSTR=32, INSTR_SZ=64;
 const NTABLE=32, TBL_ROWS=16, TROW=4, NGROOVE=16, GR_LEN=16, NWAVE=16, WAVE_STEPS=32;
 const ITYPE=["FM","KIT","WAVE","TONE","NOISE","PERC"];
 const GMDJ_MAGIC = "GMDJSONG";          // .gmdj file magic (this tool's song container)
