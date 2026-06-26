@@ -260,6 +260,7 @@ chains     equ $00FF3260            ; chains pool (CHAIN_SIZE each)
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
+rle_buf    equ $00FF5160            ; RLE staging: the free gap above the data block (~28 KB, to env_canvas $C000)
 SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
@@ -10654,6 +10655,124 @@ check_dirty:                               ; song_dirty = (data block != last sa
 .ckd:
     move.b  d1, song_dirty
     movem.l (sp)+, d0/d1
+    rts
+
+; ---- 4-byte-unit RLE (matches tools/rletest.py; 4-byte units crush empty phrase/chain rows).
+; ctrl bit7=1 repeat: run=(c&7F)+2 then 1 unit; bit7=0 literal: n=(c&7F)+1 then n units. Decode is
+; canonical; pair with a store-raw fallback so the stored size is never worse than raw. ----
+rle_pack:                                  ; a0=src longs, d0=unit count, a1=dst -> a1=end of stream
+    movem.l d2-d4/a2, -(sp)
+.rp_top:
+    tst.l   d0
+    beq     .rp_end
+    move.l  (a0), d1                       ; current unit value
+    moveq   #1, d2                          ; run length
+    lea     4(a0), a2
+    move.l  d0, d3
+    subq.l  #1, d3
+.rp_runl:
+    tst.l   d3
+    beq.s   .rp_rune
+    cmpi.w  #129, d2
+    beq.s   .rp_rune
+    cmp.l   (a2), d1
+    bne.s   .rp_rune
+    addq.l  #4, a2
+    addq.w  #1, d2
+    subq.l  #1, d3
+    bra.s   .rp_runl
+.rp_rune:
+    cmpi.w  #2, d2
+    blo.s   .rp_lit
+    move.w  d2, d4                          ; --- repeat run ---
+    subq.w  #2, d4
+    ori.b   #$80, d4
+    move.b  d4, (a1)+
+    move.b  (a0), (a1)+                     ; the unit, byte-wise (stream is unaligned after the ctrl byte)
+    move.b  1(a0), (a1)+
+    move.b  2(a0), (a1)+
+    move.b  3(a0), (a1)+
+    move.w  d2, d4
+    ext.l   d4
+    sub.l   d4, d0
+    lsl.l   #2, d4
+    adda.l  d4, a0
+    bra     .rp_top
+.rp_lit:
+    move.l  a0, a2                          ; --- literal run: scan to the next 2+ run ---
+    moveq   #0, d2
+    move.l  d0, d3
+.rp_litl:
+    cmpi.w  #128, d2
+    beq.s   .rp_lite
+    tst.l   d3
+    beq.s   .rp_lite
+    cmpi.l  #2, d3
+    blo.s   .rp_littk
+    move.l  (a2), d4
+    cmp.l   4(a2), d4
+    beq.s   .rp_lite
+.rp_littk:
+    addq.w  #1, d2
+    addq.l  #4, a2
+    subq.l  #1, d3
+    bra.s   .rp_litl
+.rp_lite:
+    move.w  d2, d4
+    subq.w  #1, d4
+    move.b  d4, (a1)+
+    move.w  d2, d4
+    lsl.w   #2, d4                          ; d2 units = d2*4 bytes, byte-wise to the unaligned stream
+    subq.w  #1, d4
+.rp_litc:
+    move.b  (a0)+, (a1)+
+    dbra    d4, .rp_litc
+    move.w  d2, d4
+    ext.l   d4
+    sub.l   d4, d0
+    bra     .rp_top
+.rp_end:
+    movem.l (sp)+, d2-d4/a2
+    rts
+
+rle_unpack:                                ; a0=stream (byte), a1=dst longs (aligned), d0=unit count
+    move.l  d2, -(sp)
+.ru_top:
+    tst.l   d0
+    beq     .ru_end
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    btst    #7, d1
+    beq.s   .ru_lit
+    andi.w  #$7F, d1                        ; repeat: run = (c&7F)+2; read 1 unit byte-wise (stream unaligned)
+    addq.w  #2, d1
+    moveq   #0, d2
+    move.b  (a0)+, d2
+    lsl.l   #8, d2
+    move.b  (a0)+, d2
+    lsl.l   #8, d2
+    move.b  (a0)+, d2
+    lsl.l   #8, d2
+    move.b  (a0)+, d2
+.ru_repc:
+    move.l  d2, (a1)+                       ; dst aligned -> move.l OK
+    subq.l  #1, d0
+    subq.w  #1, d1
+    bne.s   .ru_repc
+    bra     .ru_top
+.ru_lit:
+    andi.w  #$7F, d1                        ; literal: n = (c&7F)+1
+    addq.w  #1, d1
+    move.l  d1, d2                          ; d0 -= n; copy n*4 bytes byte-wise (stream unaligned)
+    sub.l   d2, d0
+    lsl.w   #2, d1
+    subq.w  #1, d1
+.ru_litc:
+    move.b  (a0)+, (a1)+
+    dbra    d1, .ru_litc
+    bra     .ru_top
+.ru_end:
+    move.l  (sp)+, d2
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
