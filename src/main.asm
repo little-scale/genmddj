@@ -11036,6 +11036,15 @@ dir_load:                                  ; d0 = directory entry index -> load 
     move.l  #(SAVE_DATA/4), d0
     bsr     rle_unpack
 .dl_done2:
+    bsr     data_checksum                   ; verify the stored checksum before committing the load
+    lea     dir_ent, a0
+    move.w  14(a0), d0                       ; entry's stored csum
+    cmp.w   d0, d2
+    beq.s   .dl_ok
+    bsr     clear_song                       ; corrupt / mismatched blob -> blank to a known state, don't scatter garbage
+    move.b  #1, need_clear
+    bra.s   .dl_done
+.dl_ok:
     bsr     scatter_globals
     move.b  proj_groove, groove_sel
     move.b  #1, g_lfo_dirty
