@@ -265,6 +265,7 @@ dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory 
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
+opt_songcol equ $00FFD435           ; OPTIONS grid nav: which top column the songs were entered from (0 = settings, 1 = actions)
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -1641,12 +1642,113 @@ dpad_fire:
     moveq   #0, d1
     rts
 
+opts_nav:                                  ; OPTIONS grid: settings col (0-2) | actions col (3-7) | songs (8+)
+    bsr     row_max                          ; d1 = max cur_row (2 = no SRAM; else 7 + song count)
+    moveq   #0, d0
+    move.b  cur_row, d0
+    cmp.b   d1, d0                            ; clamp a stale cur_row first (count may have shrunk)
+    bls.s   .onc_ok
+    move.b  d1, d0
+    move.b  d1, cur_row
+.onc_ok:
+    cmpi.b  #3, d1
+    bhs.s   .ong_have                         ; SRAM present -> full grid
+    btst    #0, d2                            ; no SRAM: just VID/SYNC/PAL, plain up/down
+    beq.s   .onns_dn
+    tst.b   d0
+    beq.s   .ong_x
+    subq.b  #1, cur_row
+    rts
+.onns_dn:
+    btst    #1, d2
+    beq.s   .ong_x
+    cmp.b   d1, d0
+    bhs.s   .ong_x
+    addq.b  #1, cur_row
+.ong_x:
+    rts
+.ong_have:
+    cmpi.b  #8, d0
+    bhs     .ong_songs                        ; --- in the song list ---
+    btst    #0, d2                            ; Up: within the column, clamp at the top
+    beq.s   .ong_dn
+    cmpi.b  #3, d0
+    beq.s   .ong_x                             ; SAVE (actions top) -> stay
+    tst.b   d0
+    beq.s   .ong_x                             ; VID (settings top) -> stay
+    subq.b  #1, cur_row
+    rts
+.ong_dn:
+    btst    #1, d2                            ; Down: PAL/DEMO drop into the songs, else within the column
+    beq.s   .ong_lt
+    cmpi.b  #2, d0
+    beq.s   .ong_d0
+    cmpi.b  #7, d0
+    beq.s   .ong_d1
+    addq.b  #1, cur_row
+    rts
+.ong_d0:
+    moveq   #0, d3
+    bra.s   .ong_tosong
+.ong_d1:
+    moveq   #1, d3
+.ong_tosong:
+    cmpi.b  #8, d1                             ; any songs? (row_max >= 8)
+    blo.s   .ong_x
+    move.b  d3, opt_songcol
+    move.b  #8, cur_row
+    rts
+.ong_lt:
+    btst    #2, d2                            ; Left: actions -> settings (map row, clamp to PAL)
+    beq.s   .ong_rt
+    cmpi.b  #3, d0
+    blo.s   .ong_x
+    subi.w  #3, d0
+    cmpi.b  #2, d0
+    bls.s   .ong_lw
+    moveq   #2, d0
+.ong_lw:
+    move.b  d0, cur_row
+    rts
+.ong_rt:
+    btst    #3, d2                            ; Right: settings -> actions (same row + 3)
+    beq     .ong_x
+    cmpi.b  #3, d0
+    bhs     .ong_x
+    addi.w  #3, d0
+    move.b  d0, cur_row
+    rts
+.ong_songs:
+    btst    #0, d2                            ; Up: prev song, or off the top -> the entry column bottom
+    beq.s   .ongs_dn
+    cmpi.b  #8, d0
+    bne.s   .ongs_up1
+    moveq   #2, d3                             ; PAL (settings bottom)
+    tst.b   opt_songcol
+    beq.s   .ongs_setr
+    moveq   #7, d3                             ; DEMO (actions bottom)
+.ongs_setr:
+    move.b  d3, cur_row
+    rts
+.ongs_up1:
+    subq.b  #1, cur_row
+    rts
+.ongs_dn:
+    btst    #1, d2                            ; Down: next song, clamp to the last
+    beq     .ong_x
+    cmp.b   d1, d0
+    bhs     .ong_x
+    addq.b  #1, cur_row
+    rts
+
 move_cursor:                              ; d-pad moves the cursor; edges WRAP (all screens)
     move.b  d2, d0
     andi.b  #$0F, d0                         ; any d-pad press disarms a pending PROJECT confirm
     beq.s   .mc_ndis
     clr.b   proj_armed
 .mc_ndis:
+    cmpi.b  #SCR_OPTS, cur_screen           ; OPTIONS: 2D grid nav (settings | actions | songs)
+    beq     opts_nav
     cmpi.b  #SCR_INSTR, cur_screen          ; INSTR FM editor: the 2D grid is FM-only
     bne     .mc_move
     moveq   #0, d0                          ; non-FM (TONE/NOISE/KIT/WAVE/PERC) -> plain linear nav
