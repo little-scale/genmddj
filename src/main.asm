@@ -11213,7 +11213,7 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     moveq   #1, d4
     lea     str_o_free, a1
     bsr     print_at
-    move.l  #$420C0003, (a0)               ; free KB at row 4, col 6
+    move.l  #$42100003, (a0)               ; free KB at row 4, col 8 (aligned under the SRAM size)
     moveq   #0, d0
     move.b  sram_size, d0
     lsl.l   #8, d0
