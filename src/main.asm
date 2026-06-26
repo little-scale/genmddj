@@ -9951,6 +9951,30 @@ draw_dec4:                                ; d3.w = 0..9999, d4 = char offset; (a
     move.w  d0, VDP_DATA
     rts
 
+draw_kb1:                                 ; d0.w = bytes -> "XXK" (KB rounded up, space-padded); addr preset; preserves d0-d3
+    movem.l d0-d3, -(sp)
+    addi.w  #1023, d0                        ; ceil: (bytes + 1023) / 1024   (max 23904+1023 < 65535)
+    divu.w  #1024, d0                        ; d0.lo = KB rounded up (1-24)
+    andi.l  #$FFFF, d0                        ; keep the quotient, drop the remainder in the high word
+    divu.w  #10, d0                          ; d0.lo = tens, d0.hi = ones
+    move.w  d0, d1                           ; tens
+    clr.w   d0
+    swap    d0                               ; ones
+    move.w  d0, d2                           ; ones
+    moveq   #' ', d0                          ; tens digit, or a leading space when < 10 KB
+    tst.w   d1
+    beq.s   .kb_tw
+    move.w  d1, d0
+    add.w   #'0', d0
+.kb_tw:
+    move.w  d0, VDP_DATA
+    move.w  d2, d0                            ; ones
+    add.w   #'0', d0
+    move.w  d0, VDP_DATA
+    move.w  #'K', VDP_DATA
+    movem.l (sp)+, d0-d3
+    rts
+
 groove_bpm:                               ; in d3.b = groove#; out d3.w = BPM (= 1250*len/sum). clobbers d0-d2/a0
     moveq   #0, d0
     move.b  d3, d0
@@ -11292,6 +11316,17 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     add.w   d1, d5
     move.w  d5, VDP_DATA
     dbra    d0, .rsl_nm
+    moveq   #0, d0                            ; --- stored size (rounded-up KB) at col 12 ---
+    move.w  d6, d0
+    lsl.w   #6, d0
+    addi.w  #12, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #0, d0                              ; clear the high word (divu in draw_kb1 is 32-bit)
+    move.w  4(a2), d0                          ; blob length (big-endian)
+    bsr     draw_kb1
 .rsl_ln2:
     addq.w  #1, d7                           ; advance the list position (valid entries only)
 .rsl_ln:
