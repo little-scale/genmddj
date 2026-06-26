@@ -104,11 +104,14 @@ int main(int argc, char **argv) {
     void (*retro_run)(void);
     void (*retro_get_system_av_info)(struct retro_system_av_info *);
     void (*retro_set_controller_port_device)(unsigned, unsigned);
+    void *(*retro_get_memory_data)(unsigned);
+    size_t (*retro_get_memory_size)(unsigned);
     SYM(retro_set_environment); SYM(retro_set_video_refresh);
     SYM(retro_set_input_poll);  SYM(retro_set_input_state);
     SYM(retro_set_audio_sample); SYM(retro_set_audio_sample_batch);
     SYM(retro_init); SYM(retro_load_game); SYM(retro_run);
     SYM(retro_get_system_av_info); SYM(retro_set_controller_port_device);
+    SYM(retro_get_memory_data); SYM(retro_get_memory_size);
 
     retro_set_environment(env_cb);
     retro_set_video_refresh(video_cb);
@@ -132,6 +135,24 @@ int main(int argc, char **argv) {
     const char *dev = getenv("GENMDDJ_DEV");
     if (dev) retro_set_controller_port_device(0, (unsigned)strtoul(dev, NULL, 16));
 
+    /* optional SRAM restore: RETROSHOT_SRAM=<path> is loaded into the core's
+       SAVE_RAM after load_game (the core allocates it during load). The printed
+       buffer size tells us how the core sized SRAM (odd-byte packed vs linear). */
+    {
+        void  *sram   = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+        size_t sramsz = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+        const char *srampath = getenv("RETROSHOT_SRAM");
+        fprintf(stderr, "SRAM: core buffer = %zu bytes\n", sramsz);
+        if (srampath && sram && sramsz) {
+            FILE *sf = fopen(srampath, "rb");
+            if (sf) {
+                size_t n = fread(sram, 1, sramsz, sf);
+                fclose(sf);
+                fprintf(stderr, "SRAM: loaded %zu bytes from %s\n", n, srampath);
+            } else fprintf(stderr, "SRAM: cannot open %s\n", srampath);
+        }
+    }
+
     struct retro_system_av_info av; memset(&av, 0, sizeof av);
     retro_get_system_av_info(&av);
     unsigned arate = (unsigned)(av.timing.sample_rate ? av.timing.sample_rate : 44100);
@@ -153,6 +174,18 @@ int main(int argc, char **argv) {
 
     write_wav(argv[3], arate);                  /* <out>.wav alongside the ppm */
     fprintf(stderr, "audio: %zu samples @ %u Hz -> %s.wav\n", g_aud_n / 2, arate, argv[3]);
+
+    /* optional SRAM dump: RETROSHOT_SRAM_OUT=<path> writes SAVE_RAM after the run */
+    {
+        const char *outp = getenv("RETROSHOT_SRAM_OUT");
+        void  *sram   = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+        size_t sramsz = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+        if (outp && sram && sramsz) {
+            FILE *of = fopen(outp, "wb");
+            if (of) { fwrite(sram, 1, sramsz, of); fclose(of);
+                fprintf(stderr, "SRAM: dumped %zu bytes to %s\n", sramsz, outp); }
+        }
+    }
 
     if (!g_w || !g_h) { fprintf(stderr, "no frame captured\n"); return 5; }
     FILE *o = fopen(argv[3], "wb");
