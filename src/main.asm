@@ -671,8 +671,8 @@ VBlankInt:
     bsr     screen_ptr                     ; a1 = hdr table entry
     move.l  (a1), a1
     bsr     print_at
-    move.l  #$40820003, (a0)              ; clear the name area (cols 1-11) first -- a longer
-    moveq   #11-1, d0                      ; previous name (e.g. WAVEFORM) bleeds under a shorter
+    move.l  #$40820003, (a0)              ; clear the name area (cols 1-22) first -- a longer
+    moveq   #22-1, d0                      ; previous name (e.g. WAVEFORM) bleeds under a shorter
 .cnm:                                       ; one since clear_grid leaves rows 0-2 untouched
     move.w  #' ', VDP_DATA
     dbra    d0, .cnm
@@ -687,6 +687,17 @@ VBlankInt:
     lea     str_md_live, a1
 .nm_show:
     bsr     print_at
+    cmpi.b  #SCR_SONG, cur_screen          ; SONG: show the current song name (past the page + track-name slots)
+    bne.s   .nm_nosg
+    move.l  #$409C0003, (a0)               ; row 1, col 14
+    lea     song_title, a1
+    moveq   #8-1, d1
+.nm_sgnm:
+    moveq   #0, d0
+    move.b  (a1)+, d0
+    move.w  d0, VDP_DATA
+    dbra    d1, .nm_sgnm
+.nm_nosg:
     cmpi.b  #SCR_PROJ, cur_screen          ; entering PROJECT (full redraw): recompute unsaved state
     bne.s   .nc_dc
     bsr     check_dirty
