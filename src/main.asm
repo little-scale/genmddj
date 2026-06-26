@@ -246,6 +246,7 @@ SCR_PROJ   equ 8                    ; above CHAIN
 SCR_WAVE   equ 9                    ; above INSTR
 SCR_GROOVE equ 10                   ; below CHAIN
 SCR_LFO    equ 11                   ; below INSTR -- FM LFO bank editor
+SCR_FILES  equ 12                   ; below SONG -- the song library (save/load/delete + the list)
 NSCR       equ 12
 SCR_MAXPOS equ 4                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
@@ -12191,6 +12192,7 @@ str_e_son:  dc.b "ON ",0
 emode_lbl:  dc.l str_e_moff, str_e_f2, str_e_f2f3, str_e_t2, str_e_t2t3
 e_onoff_lbl: dc.l str_e_soff, str_e_son
 str_scr_lfo: dc.b "FM LFO",0
+str_scr_fi:  dc.b "FILES",0
 str_scr_opt:  dc.b "OPTIONS",0
 str_scr_proj: dc.b "PROJECT",0
 str_scr_wave: dc.b "WAVFORM",0
@@ -12381,10 +12383,10 @@ scr_pos:    dc.b 2, 1, 0, 3, $FF, 4         ; screen id -> map pos ($FF = off th
 ; 2D map grid (3 rows x 5 cols): vrow*5 + hcol -> screen id ($FF = empty cell)
 scr_grid:   dc.b SCR_OPTS, SCR_PROJ,   $FF, SCR_WAVE, $FF   ; row 0 (above)
             dc.b SCR_SONG, SCR_CHAIN,  SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; row 1 (main)
-            dc.b $FF,      SCR_GROOVE, $FF, SCR_LFO,  SCR_ECHO ; row 2 (below): LFO under INSTR, ECHO under TABLE
-scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2,2     ; screen id -> grid row (..GR LFO)
-scr_hcol:   dc.b 2,1,0,3,3,4,4,0,1,3,1,3     ; screen id -> grid col (ECHO now col 4, LFO col 3)
-scr_letter: dc.b "PCSIFTEOPWGL"             ; screen id -> map-cross letter (L = LFO)
+            dc.b SCR_FILES, SCR_GROOVE, $FF, SCR_LFO,  SCR_ECHO ; row 2 (below): FILES under SONG, LFO under INSTR, ECHO under TABLE
+scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2,2,2   ; screen id -> grid row (..GR LFO FILES)
+scr_hcol:   dc.b 2,1,0,3,3,4,4,0,1,3,1,3,0   ; screen id -> grid col (FILES = col 0)
+scr_letter: dc.b "PCSIFTEOPWGLF"            ; screen id -> map-cross letter (F = FILES)
     even
 scr_tabs:                                   ; {header, name} per screen, indexed by SCR_*
     dc.l str_hdr_ph, str_scr_ph             ; 0  PHRASE
@@ -12399,6 +12401,7 @@ scr_tabs:                                   ; {header, name} per screen, indexed
     dc.l str_hdr_in, str_scr_wave           ; 9  WAVEFORM
     dc.l str_hdr_in, str_scr_grv            ; 10 GROOVE
     dc.l str_hdr_in, str_scr_lfo            ; 11 LFO
+    dc.l str_hdr_in, str_scr_fi             ; 12 FILES
 
 tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $00000000
