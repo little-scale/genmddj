@@ -35,6 +35,13 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 | *(in block mode)* **C** | Cancel |
 | **B** double-tap | Paste the block (rows anchor at the cursor; columns stay type-safe) |
 
+## A-hold — navigate (CHAIN / PHRASE / SONG)
+
+| Input | Action |
+|---|---|
+| **A-hold + Left / Right** | CHAIN / PHRASE: switch channel (which track's chain/phrase is shown) |
+| **A-hold + Up / Down** | PHRASE: flip prev/next **phrase** (0–191) · CHAIN: flip prev/next **chain** (0–127) · SONG: page the 240-row view |
+
 ## C + B — context play
 
 | Screen | Action |
