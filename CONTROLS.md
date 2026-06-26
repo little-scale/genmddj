@@ -50,6 +50,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 | SONG (LIVE mode) | See **LIVE mode** below — launch / stop the cursor's track |
 | CHAIN | Solo this track's chain, from the cursor step |
 | PHRASE | Solo this phrase |
+| FILES | Open / close the SAVE / LOAD / CLEAR / DEMO / CANCEL sub-menu for the selected slot |
 
 ## LIVE mode (SONG screen, `MODE = LIVE`)
 
@@ -68,21 +69,23 @@ contiguous chain group — independently, with its own playhead (silent/un-launc
 
 ## FILES — song library (C+Down from SONG)
 
-A single column: the SRAM/FREE read-out, then the SAVE/LOAD/DELETE/NEW/DEMO actions, then —
-below the `—— SONGS NN ——` divider — the song list (16 per page, `Pn/m`; the page follows the
-cursor). Up to 32 songs, each shown with its stored KB.
+A slot browser: the SRAM/FREE read-out, then — below the `—— SONGS NN ——` divider — the saved
+songs (16 per page, `Pn/m`, each with its stored KB) followed by a trailing **`(EMPTY)`** slot.
+Up to 32 songs. The action buttons live in a sub-menu (C+B), not on the screen.
 
 | Input | Action |
 |---|---|
-| **Up / Down** | Move through the actions, then on into the song list (and back up) |
-| **B** tap on **SAVE** | Store the current song under its name (a same name overwrites + reclaims) |
-| **B** tap on **LOAD / DELETE** | Load / delete the selected song — second confirming tap within ~1.5 s |
-| **B** tap on **NEW / DEMO** | Blank to a new song / load the demo (confirm) |
-| **B** tap on a **song row** | Load that song (confirm) |
+| **Up / Down** | Move between slots (songs, then the `(EMPTY)` slot) |
+| **B-hold + Left / Right** | Move the name cursor (the inverted character) across the 8 name chars |
+| **B-hold + Up / Down** | Cycle the character under the cursor — the ring is `BLANK`-home: Up → A–Z then specials, Down → 0–9. Edits a saved slot rename it live; the `(EMPTY)` slot edits the working song's name |
+| **C-hold + B** tap | Open / close the action sub-menu for the selected slot |
+| *(menu)* **Up / Down + B** | Run **SAVE** (store the working song), **LOAD** (load the slot — or on `(EMPTY)`, start a fresh blank project), **CLEAR** (delete the slot), **DEMO** (load the built-in demo), or **CANCEL** (close) |
 
-A refused save (directory or SRAM full) shows **FULL** by the FREE meter. A fresh cart is
-formatted on first boot; a load that fails its checksum blanks to a known state. OPTIONS now
-holds just the display/sync settings (VID / SYNC / PALETTE).
+The name is unified (`song_title`): it shows on PROJECT and on the SONG header, and is the slot
+name on save. Transport **stops automatically** on SAVE/LOAD. A refused save (directory or SRAM
+full) shows **FULL** by the FREE meter; a fresh cart is formatted on first boot; a load that
+fails its checksum blanks to a known state. OPTIONS holds just the display/sync settings
+(VID / SYNC / PALETTE).
 
 ## Per-screen field edits (B-hold + D-pad)
 
