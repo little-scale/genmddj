@@ -10983,11 +10983,18 @@ dir_save:                                  ; compress the current song + store i
     movem.l (sp)+, d0-d7/a0-a3
     rts
 
-dir_load:                                  ; load the song named song_title into the work-RAM image
+dir_load:                                  ; d0 = directory entry index -> load that song (name -> song_title)
     movem.l d0-d7/a0-a3, -(sp)
-    bsr     dir_find
-    tst.l   d0
-    bmi     .dl_done                        ; not found
+    bsr     dir_rd                          ; entry d0 -> dir_ent
+    lea     dir_ent, a0
+    cmpi.b  #$A5, (a0)
+    bne     .dl_done                        ; invalid entry -> nothing
+    lea     6(a0), a1                       ; copy the entry name -> song_title
+    lea     song_title, a2
+    moveq   #7, d1
+.dl_cn:
+    move.b  (a1)+, (a2)+
+    dbra    d1, .dl_cn
     lea     dir_ent, a0
     move.b  1(a0), d7                       ; raw flag
     moveq   #0, d2
@@ -11025,6 +11032,69 @@ dir_load:                                  ; load the song named song_title into
     clr.b   song_dirty
     move.b  #1, need_clear
 .dl_done:
+    movem.l (sp)+, d0-d7/a0-a3
+    rts
+
+dir_delete:                                ; d0 = entry index -> free it + compact the heap (recover the hole)
+    movem.l d0-d7/a0-a3, -(sp)
+    move.l  d0, d6                          ; d6 = victim index (preserved across sram_at)
+    bsr     dir_rd
+    lea     dir_ent, a0
+    cmpi.b  #$A5, (a0)
+    bne     .dd_done                        ; not a valid entry
+    moveq   #0, d4                          ; d4 = O (victim heap offset)
+    move.w  2(a0), d4
+    moveq   #0, d7                          ; d7 = L (victim blob length)
+    move.w  4(a0), d7
+    bsr     dir_heapend                     ; d0 = heap_end (includes the victim)
+    move.l  d0, d1                          ; bytes to shift = heap_end - (O + L)
+    sub.l   d4, d1
+    sub.l   d7, d1
+    tst.l   d1
+    beq.s   .dd_fixup                        ; victim was the last blob -> nothing to move
+    move.l  d1, d2                          ; d2 = move count (preserved across sram_at)
+    move.l  d4, d0                          ; dst = HEAP_BASE + O
+    addi.l  #HEAP_BASE, d0
+    bsr     sram_at
+    move.l  a1, a3                          ; a3 = dst phys
+    move.l  d4, d0                          ; src = HEAP_BASE + O + L
+    add.l   d7, d0
+    addi.l  #HEAP_BASE, d0
+    bsr     sram_at                          ; a1 = src phys, d5 = stride
+.dd_ml:
+    move.b  (a1), (a3)                       ; move one byte down by L (32-bit count -> manual loop, not dbra)
+    adda.l  d5, a1
+    adda.l  d5, a3
+    subq.l  #1, d2
+    bne.s   .dd_ml
+.dd_fixup:
+    moveq   #0, d3                          ; --- fix offsets: any entry with offset > O loses L ---
+.dd_fl:
+    move.l  d3, d0
+    bsr     dir_rd
+    lea     dir_ent, a0
+    cmpi.b  #$A5, (a0)
+    bne.s   .dd_fn
+    moveq   #0, d1
+    move.w  2(a0), d1
+    cmp.l   d4, d1
+    bls.s   .dd_fn
+    sub.l   d7, d1
+    move.w  d1, 2(a0)
+    move.l  d3, d0
+    bsr     dir_wr
+.dd_fn:
+    addq.l  #1, d3
+    cmpi.l  #DIR_N, d3
+    blo.s   .dd_fl
+    move.l  d6, d0                          ; --- free the victim entry (valid = 0) ---
+    bsr     dir_rd
+    lea     dir_ent, a0
+    move.b  #0, (a0)
+    move.l  d6, d0
+    bsr     dir_wr
+    move.b  #0, $A130F1                     ; unmap
+.dd_done:
     movem.l (sp)+, d0-d7/a0-a3
     rts
 
