@@ -225,6 +225,7 @@ function buildSav(){
   const LEAD=1;
   const kb=+$("size").value, out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
   out[LEAD]=0xA5; out[LEAD+2]=config.pal&7; out[LEAD+4]=config.vid; out[LEAD+6]=config.sync;  // config (stride 2)
+  out[LEAD+8]=0x47; out[LEAD+9]=0x4D; out[LEAD+10]=0x44; out[LEAD+11]=0x31;       // "GMD1" dir signature (logical 8) so the cart won't re-format it
   if (bank) out.set(bank.subarray(0,BANK_SIZE), LEAD+BANK_BASE);                 // bank (+1)
   let heapOff=0, ne=0;                                                           // directory + compressed heap
   for (const s of songs){

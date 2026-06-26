@@ -264,6 +264,7 @@ rle_buf    equ $00FF5D60            ; RLE staging: the free gap above the data b
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
+save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -272,6 +273,7 @@ SAVE_SLOT  equ SAVE_DATA+SAVE_HDR  ; $5170 per slot
 NUBANK     equ 32                  ; SRAM cross-song instrument bank: 32 slots (64 B each)
 SRAM_BANK  equ 256                 ; bank base (logical): just after the 256-B config block
 SRAM_SLOT0 equ SRAM_BANK+NUBANK*64 ; song slots start after config + bank (= logical 2304)
+DIR_SIG    equ 8                   ; SRAM logical offset of the 4-byte "directory initialised" signature ("GMD1")
 DIR_BASE   equ SRAM_SLOT0          ; compressed-song directory (replaces the fixed numbered slots)
 DIR_ENT    equ 16                  ; entry: valid(1,$A5) raw(1) offset(2,BE) len(2,BE) name(8) csum(2,BE)
 DIR_N      equ 32                  ; max stored songs
@@ -548,6 +550,7 @@ Start:
     move.b  #0, opt_sync                  ;   sync OFF
     move.b  #0, opt_pal                   ;   UI palette 0
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
+    bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
     moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
     move.b  sram_size, d0
     beq.s   .sl_none
@@ -10846,6 +10849,52 @@ dir_wr:                                    ; d0 = entry index <- dir_ent[16] (pr
     movem.l (sp)+, d0-d5/a0-a1
     rts
 
+sram_init:                                 ; once at boot: format the directory if this cart has no "GMD1" signature
+    movem.l d0-d5/a0-a1, -(sp)
+    tst.b   sram_layout
+    beq     .si_x                            ; no SRAM -> nothing
+    move.l  #DIR_SIG, d0                      ; read the 4-byte signature (stride-aware, byte-wise)
+    bsr     sram_at
+    moveq   #0, d0
+    move.b  (a1), d0
+    adda.l  d5, a1
+    lsl.l   #8, d0
+    move.b  (a1), d0
+    adda.l  d5, a1
+    lsl.l   #8, d0
+    move.b  (a1), d0
+    adda.l  d5, a1
+    lsl.l   #8, d0
+    move.b  (a1), d0
+    cmpi.l  #$474D4431, d0                    ; "GMD1" present -> already initialised, leave the directory alone
+    beq.s   .si_unmap
+    lea     dir_ent, a0                       ; --- format: zero a scratch entry, write it to all 32 slots ---
+    moveq   #DIR_ENT-1, d0
+.si_z:
+    move.b  #0, (a0)+
+    dbra    d0, .si_z
+    moveq   #0, d3
+.si_l:
+    move.l  d3, d0
+    bsr     dir_wr
+    addq.l  #1, d3
+    cmpi.l  #DIR_N, d3
+    blo.s   .si_l
+    move.l  #DIR_SIG, d0                      ; stamp the signature so we don't re-format next boot
+    bsr     sram_at
+    move.b  #'G', (a1)
+    adda.l  d5, a1
+    move.b  #'M', (a1)
+    adda.l  d5, a1
+    move.b  #'D', (a1)
+    adda.l  d5, a1
+    move.b  #'1', (a1)
+.si_unmap:
+    move.b  #0, $A130F1
+.si_x:
+    movem.l (sp)+, d0-d5/a0-a1
+    rts
+
 dir_heapend:                               ; -> d0.l = heap bytes used = max(offset+len) over valid entries
     movem.l d1-d3/a0, -(sp)
     moveq   #0, d2                          ; running max
@@ -10944,7 +10993,7 @@ dir_save:                                  ; compress the current song + store i
 .dsv_free:
     bsr     dir_findfree
     tst.l   d0
-    bmi     .dsv_done                       ; directory full -> refuse
+    bmi     .dsv_full                       ; directory full -> refuse + flag
 .dsv_ent:
     move.l  d0, d3                          ; d3 = entry index
     bsr     dir_heapend
@@ -10957,7 +11006,7 @@ dir_save:                                  ; compress the current song + store i
     lsl.l   #8, d1
     lsl.l   #2, d1
     cmp.l   d1, d0
-    bhi     .dsv_done                       ; would overflow -> SRAM full
+    bhi     .dsv_full                       ; would overflow -> SRAM full + flag
     lea     dir_ent, a0                     ; --- write the directory entry FIRST (d3=index; sram_at below clobbers d3) ---
     move.b  #$A5, (a0)
     move.b  d7, 1(a0)
@@ -10991,9 +11040,13 @@ dir_save:                                  ; compress the current song + store i
     bsr     data_longsum
     move.l  d0, saved_sum
     clr.b   song_dirty
+    clr.b   save_full                       ; saved OK -> clear any prior full warning
 .dsv_done:
     movem.l (sp)+, d0-d7/a0-a3
     rts
+.dsv_full:
+    move.b  #1, save_full                   ; directory / SRAM full -> flag it for the OPTIONS meter
+    bra.s   .dsv_done
 
 dir_load:                                  ; d0 = directory entry index -> load that song (name -> song_title)
     movem.l d0-d7/a0-a3, -(sp)
@@ -11062,6 +11115,7 @@ dir_load:                                  ; d0 = directory entry index -> load 
 
 dir_delete:                                ; d0 = entry index -> free it + compact the heap (recover the hole)
     movem.l d0-d7/a0-a3, -(sp)
+    clr.b   save_full                       ; freeing space clears the FULL warning
     move.l  d0, d6                          ; d6 = victim index (preserved across sram_at)
     bsr     dir_rd
     lea     dir_ent, a0
@@ -11243,6 +11297,13 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     moveq   #0, d4
     bsr     draw_dec3
     move.w  #'K', VDP_DATA
+    tst.b   save_full                       ; "FULL" warning when the last save was refused
+    beq.s   .rsl_nofull
+    moveq   #4, d3
+    moveq   #13, d4
+    lea     str_o_full, a1
+    bsr     print_at
+.rsl_nofull:
     moveq   #3, d3                          ; SAVE (cur_row 3) -- actions sit right of the settings
     moveq   #18, d4
     lea     str_p_save, a1
@@ -12046,6 +12107,7 @@ str_sram_od: dc.b "K ODD",0
 str_sram_li: dc.b "K LIN",0
 str_o_songs: dc.b "SONGS",0
 str_o_free:  dc.b "FREE",0
+str_o_full:  dc.b "FULL",0
 str_o_empty: dc.b "(EMPTY)",0
 str_o_del:   dc.b "DELETE",0
 str_p_tmpo: dc.b "TMPO",0
