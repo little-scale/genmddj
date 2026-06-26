@@ -360,8 +360,8 @@ i_tsp      equ 53                   ; FM per-instrument transpose, signed semito
 i_psweep   equ 62                   ; FM pitch sweep: hi nibble = depth (x4 semis, downward), lo nibble = rate/tick
 i_name     equ 54                   ; 8-char name (patcher metadata; engine ignores 54-63)
 NITYPE     equ 6
-NPHRASE_ED equ 7                    ; highest editable phrase (C+Up/Down)
-NCHAIN_ED  equ 7                    ; highest editable chain
+NPHRASE_ED equ NPHRASES-1           ; highest phrase the A+Up/Down flip reaches (full pool, 0..191)
+NCHAIN_ED  equ NCHAINS-1            ; highest chain the A+Up/Down flip reaches (0..127)
 NINSTR_ED  equ 31                   ; highest editable instrument
 
 I_VOL      equ $F
@@ -1316,7 +1316,7 @@ input_tick:
     rts
 
 .aheld:                                   ; A + Left/Right -> switch channel (CHAIN/PHRASE);
-    move.b  cur_screen, d0                 ;   A + Up/Down -> page the SONG view
+    move.b  cur_screen, d0                 ;   A + Up/Down -> page SONG, or flip phrase|chain on PHRASE|CHAIN
     cmpi.b  #SCR_SONG, d0
     beq.s   .apage
     cmpi.b  #SCR_CHAIN, d0
@@ -1341,6 +1341,31 @@ input_tick:
 .apg_done:
     rts
 .ado:
+    cmpi.b  #SCR_PHRASE, cur_screen        ; A+Up/Down -> flip cur_phrase (PHRASE) / cur_chain (CHAIN)
+    bne.s   .ado_chn
+    lea     cur_phrase, a1
+    move.w  #NPHRASE_ED, d1
+    bra.s   .ado_ud
+.ado_chn:
+    lea     cur_chain, a1
+    move.w  #NCHAIN_ED, d1
+.ado_ud:
+    btst    #0, d5                          ; A+Up -> previous (clamp at 0)
+    beq.s   .ado_dn
+    tst.b   (a1)
+    beq.s   .ado_dn
+    subq.b  #1, (a1)
+    move.b  #1, need_clear
+.ado_dn:
+    btst    #1, d5                          ; A+Down -> next (clamp at the pool top)
+    beq.s   .ado_lr
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmp.w   d1, d0
+    bhs.s   .ado_lr
+    addq.b  #1, (a1)
+    move.b  #1, need_clear
+.ado_lr:
     btst    #2, d5                         ; A+Left -> previous channel
     beq.s   .arl
     move.b  cur_chan, d0
