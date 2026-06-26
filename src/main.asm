@@ -11013,6 +11013,10 @@ dir_load:                                  ; d0 = directory entry index -> load 
     move.w  2(a0), d2                       ; heap offset
     moveq   #0, d6
     move.w  4(a0), d6                       ; blob len
+    tst.w   d6                              ; bound it: a corrupt 0 / >SAVE_DATA len would overrun the read buffer
+    beq     .dl_done
+    cmpi.w  #SAVE_DATA, d6
+    bhi     .dl_done
     move.l  d2, d0                          ; --- read the blob from heap[d2] ---
     addi.l  #HEAP_BASE, d0
     bsr     sram_at
