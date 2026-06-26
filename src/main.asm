@@ -9951,11 +9951,18 @@ draw_dec4:                                ; d3.w = 0..9999, d4 = char offset; (a
     move.w  d0, VDP_DATA
     rts
 
-draw_kb1:                                 ; d0.w = bytes -> "XXK" (KB rounded up, space-padded); addr preset; preserves d0-d3
+draw_kb1:                                 ; d0.w = bytes -> "XX.YKB" (one decimal, space-padded); addr preset; preserves d0-d3
     movem.l d0-d3, -(sp)
-    addi.w  #1023, d0                        ; ceil: (bytes + 1023) / 1024   (max 23904+1023 < 65535)
-    divu.w  #1024, d0                        ; d0.lo = KB rounded up (1-24)
-    andi.l  #$FFFF, d0                        ; keep the quotient, drop the remainder in the high word
+    andi.l  #$FFFF, d0                        ; ensure the high word is clear (divu below is 32-bit)
+    divu.w  #1024, d0                        ; d0.lo = KB (0-23), d0.hi = remainder
+    move.w  d0, d2                           ; KB
+    clr.w   d0
+    swap    d0                               ; remainder (0-1023)
+    mulu.w  #10, d0                          ; rem*10
+    divu.w  #1024, d0                        ; d0.lo = tenth (0-9)
+    move.w  d0, d3                           ; tenth
+    moveq   #0, d0
+    move.w  d2, d0
     divu.w  #10, d0                          ; d0.lo = tens, d0.hi = ones
     move.w  d0, d1                           ; tens
     clr.w   d0
@@ -9971,7 +9978,12 @@ draw_kb1:                                 ; d0.w = bytes -> "XXK" (KB rounded up
     move.w  d2, d0                            ; ones
     add.w   #'0', d0
     move.w  d0, VDP_DATA
+    move.w  #'.', VDP_DATA
+    move.w  d3, d0                            ; tenth
+    add.w   #'0', d0
+    move.w  d0, VDP_DATA
     move.w  #'K', VDP_DATA
+    move.w  #'B', VDP_DATA
     movem.l (sp)+, d0-d3
     rts
 
