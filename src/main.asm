@@ -261,6 +261,7 @@ CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 NCHAINS    equ 96                   ; ($FFF600 song - $FFF400 chains) / 32
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
 rle_buf    equ $00FF5160            ; RLE staging: the free gap above the data block (~28 KB, to env_canvas $C000)
+dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
 SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
@@ -268,6 +269,10 @@ SAVE_SLOT  equ SAVE_DATA+SAVE_HDR  ; $5170 per slot
 NUBANK     equ 32                  ; SRAM cross-song instrument bank: 32 slots (64 B each)
 SRAM_BANK  equ 256                 ; bank base (logical): just after the 256-B config block
 SRAM_SLOT0 equ SRAM_BANK+NUBANK*64 ; song slots start after config + bank (= logical 2304)
+DIR_BASE   equ SRAM_SLOT0          ; compressed-song directory (replaces the fixed numbered slots)
+DIR_ENT    equ 16                  ; entry: valid(1,$A5) raw(1) offset(2,BE) len(2,BE) name(8) csum(2,BE)
+DIR_N      equ 32                  ; max stored songs
+HEAP_BASE  equ DIR_BASE+DIR_N*DIR_ENT  ; compressed (or raw) blobs packed contiguously from here (logical 2816)
 song       equ $00FF0100            ; song matrix: NSONGROWS x NCH chain#s ($FF empty)
 NSONGROWS  equ 240               ; full-song data depth; SONG cursor still capped at 15 until scroll lands
 instrum    equ $00FF3E60            ; instrument pool (INSTR_SIZE each); BELOW env_canvas
@@ -10773,6 +10778,252 @@ rle_unpack:                                ; a0=stream (byte), a1=dst longs (ali
     bra     .ru_top
 .ru_end:
     move.l  (sp)+, d2
+    rts
+
+; ---- SRAM song directory + compressed-blob heap (replaces the fixed slots; see COMPRESSION.md) ----
+sram_at:                                   ; d0 = logical byte offset -> a1=phys, d5=stride; maps SRAM. Z set = no SRAM.
+    tst.b   sram_layout
+    beq.s   .sa_none
+    moveq   #0, d3                          ; shift: linear=0, odd-byte=1
+    cmpi.b  #1, sram_layout
+    bne.s   .sa_lin
+    moveq   #1, d3
+.sa_lin:
+    moveq   #1, d5
+    lsl.l   d3, d5                          ; stride
+    move.l  d0, d1
+    lsl.l   d3, d1                          ; physical delta = logical << shift
+    lea     $00200001, a1
+    adda.l  d1, a1
+    move.b  #1, $A130F1                     ; map SRAM
+    moveq   #1, d0                          ; Z clear = ok
+    rts
+.sa_none:
+    moveq   #0, d0
+    rts
+
+dir_rd:                                    ; d0 = entry index -> dir_ent[16] filled (preserves all regs)
+    movem.l d0-d5/a0-a1, -(sp)
+    mulu.w  #DIR_ENT, d0
+    addi.l  #DIR_BASE, d0
+    bsr     sram_at
+    beq.s   .drd_x
+    lea     dir_ent, a0
+    moveq   #DIR_ENT-1, d1
+.drd_l:
+    move.b  (a1), (a0)+
+    adda.l  d5, a1
+    dbra    d1, .drd_l
+.drd_x:
+    movem.l (sp)+, d0-d5/a0-a1
+    rts
+
+dir_wr:                                    ; d0 = entry index <- dir_ent[16] (preserves all regs)
+    movem.l d0-d5/a0-a1, -(sp)
+    mulu.w  #DIR_ENT, d0
+    addi.l  #DIR_BASE, d0
+    bsr     sram_at
+    beq.s   .dwr_x
+    lea     dir_ent, a0
+    moveq   #DIR_ENT-1, d1
+.dwr_l:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d1, .dwr_l
+.dwr_x:
+    movem.l (sp)+, d0-d5/a0-a1
+    rts
+
+dir_heapend:                               ; -> d0.l = heap bytes used = max(offset+len) over valid entries
+    movem.l d1-d3/a0, -(sp)
+    moveq   #0, d2                          ; running max
+    moveq   #0, d3                          ; entry index
+.dhe_l:
+    move.l  d3, d0
+    bsr     dir_rd
+    lea     dir_ent, a0
+    cmpi.b  #$A5, (a0)
+    bne.s   .dhe_n
+    moveq   #0, d0
+    move.w  2(a0), d0                       ; offset
+    moveq   #0, d1
+    move.w  4(a0), d1                       ; len
+    add.l   d1, d0
+    cmp.l   d2, d0
+    bls.s   .dhe_n
+    move.l  d0, d2
+.dhe_n:
+    addq.l  #1, d3
+    cmpi.l  #DIR_N, d3
+    blo.s   .dhe_l
+    move.l  d2, d0
+    movem.l (sp)+, d1-d3/a0
+    rts
+
+dir_find:                                  ; -> d0 = index of first valid entry named song_title, else -1; dir_ent = it
+    movem.l d1-d3/a1-a2, -(sp)
+    moveq   #0, d3
+.dfn_l:
+    move.l  d3, d0
+    bsr     dir_rd
+    lea     dir_ent, a1
+    cmpi.b  #$A5, (a1)
+    bne.s   .dfn_n
+    lea     6(a1), a1                       ; entry name
+    lea     song_title, a2
+    moveq   #8-1, d1
+.dfn_c:
+    move.b  (a1)+, d2
+    cmp.b   (a2)+, d2
+    bne.s   .dfn_n
+    dbra    d1, .dfn_c
+    move.l  d3, d0                          ; match
+    bra.s   .dfn_x
+.dfn_n:
+    addq.l  #1, d3
+    cmpi.l  #DIR_N, d3
+    blo.s   .dfn_l
+    moveq   #-1, d0
+.dfn_x:
+    movem.l (sp)+, d1-d3/a1-a2
+    rts
+
+dir_findfree:                              ; -> d0 = index of first free entry, else -1
+    movem.l d3/a1, -(sp)
+    moveq   #0, d3
+.dff_l:
+    move.l  d3, d0
+    bsr     dir_rd
+    lea     dir_ent, a1
+    cmpi.b  #$A5, (a1)
+    bne.s   .dff_f
+    addq.l  #1, d3
+    cmpi.l  #DIR_N, d3
+    blo.s   .dff_l
+    moveq   #-1, d0
+    bra.s   .dff_x
+.dff_f:
+    move.l  d3, d0
+.dff_x:
+    movem.l (sp)+, d3/a1
+    rts
+
+dir_save:                                  ; compress the current song + store it under song_title
+    movem.l d0-d7/a0-a3, -(sp)
+    bsr     gather_globals
+    lea     SAVE_BASE, a0                   ; compress -> rle_buf
+    move.l  #(SAVE_DATA/4), d0
+    lea     rle_buf, a1
+    bsr     rle_pack
+    move.l  a1, d6                          ; d6 = compressed length
+    sub.l   #rle_buf, d6
+    moveq   #0, d7                          ; raw flag
+    cmpi.l  #SAVE_DATA, d6
+    blo.s   .dsv_blob
+    moveq   #1, d7                          ; store-raw fallback
+    move.l  #SAVE_DATA, d6
+.dsv_blob:
+    bsr     data_checksum                   ; d2.w = checksum of the (decompressed) block
+    move.w  d2, d4                          ; stash
+    bsr     dir_find                        ; reuse a same-named entry, else first free
+    tst.l   d0
+    bpl.s   .dsv_ent
+    bsr     dir_findfree
+    tst.l   d0
+    bmi     .dsv_done                       ; directory full -> refuse
+.dsv_ent:
+    move.l  d0, d3                          ; d3 = entry index
+    bsr     dir_heapend
+    move.l  d0, d2                          ; d2 = heap offset for this blob (sram_at won't touch d2)
+    move.l  d2, d0                          ; capacity check: HEAP_BASE + heap_used + len <= size*1024
+    add.l   d6, d0
+    addi.l  #HEAP_BASE, d0
+    moveq   #0, d1
+    move.b  sram_size, d1
+    lsl.l   #8, d1
+    lsl.l   #2, d1
+    cmp.l   d1, d0
+    bhi     .dsv_done                       ; would overflow -> SRAM full
+    move.l  d2, d0                          ; --- write the blob to heap[d2] ---
+    addi.l  #HEAP_BASE, d0
+    bsr     sram_at
+    beq     .dsv_done
+    lea     rle_buf, a0
+    tst.b   d7
+    beq.s   .dsv_wsrc
+    lea     SAVE_BASE, a0
+.dsv_wsrc:
+    move.l  d6, d1
+    subq.l  #1, d1
+.dsv_wl:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d1, .dsv_wl
+    lea     dir_ent, a0                     ; --- fill + write the directory entry ---
+    move.b  #$A5, (a0)
+    move.b  d7, 1(a0)
+    move.w  d2, 2(a0)
+    move.w  d6, 4(a0)
+    lea     6(a0), a1
+    lea     song_title, a2
+    moveq   #8-1, d1
+.dsv_nm:
+    move.b  (a2)+, (a1)+
+    dbra    d1, .dsv_nm
+    move.w  d4, 14(a0)
+    move.l  d3, d0
+    bsr     dir_wr
+    move.b  #0, $A130F1                     ; unmap
+    bsr     data_longsum
+    move.l  d0, saved_sum
+    clr.b   song_dirty
+.dsv_done:
+    movem.l (sp)+, d0-d7/a0-a3
+    rts
+
+dir_load:                                  ; load the song named song_title into the work-RAM image
+    movem.l d0-d7/a0-a3, -(sp)
+    bsr     dir_find
+    tst.l   d0
+    bmi     .dl_done                        ; not found
+    lea     dir_ent, a0
+    move.b  1(a0), d7                       ; raw flag
+    moveq   #0, d2
+    move.w  2(a0), d2                       ; heap offset
+    moveq   #0, d6
+    move.w  4(a0), d6                       ; blob len
+    move.l  d2, d0                          ; --- read the blob from heap[d2] ---
+    addi.l  #HEAP_BASE, d0
+    bsr     sram_at
+    beq     .dl_done
+    lea     rle_buf, a0
+    tst.b   d7
+    beq.s   .dl_rsrc
+    lea     SAVE_BASE, a0
+.dl_rsrc:
+    move.l  d6, d1
+    subq.l  #1, d1
+.dl_rl:
+    move.b  (a1), (a0)+
+    adda.l  d5, a1
+    dbra    d1, .dl_rl
+    move.b  #0, $A130F1                     ; unmap
+    tst.b   d7
+    bne.s   .dl_done2                       ; raw was read straight to SAVE_BASE
+    lea     rle_buf, a0                     ; else decompress rle_buf -> SAVE_BASE
+    lea     SAVE_BASE, a1
+    move.l  #(SAVE_DATA/4), d0
+    bsr     rle_unpack
+.dl_done2:
+    bsr     scatter_globals
+    move.b  proj_groove, groove_sel
+    move.b  #1, g_lfo_dirty
+    bsr     data_longsum
+    move.l  d0, saved_sum
+    clr.b   song_dirty
+    move.b  #1, need_clear
+.dl_done:
+    movem.l (sp)+, d0-d7/a0-a3
     rts
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
