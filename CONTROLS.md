@@ -66,12 +66,32 @@ The SONG grid becomes a clip-launcher; the screen title reads **LIVE**.
 A launched track plays its chain, advances down its column, and on an empty cell loops the top of that
 contiguous chain group — independently, with its own playhead (silent/un-launched tracks show none).
 
+## OPTIONS — settings + song library
+
+Laid out as a grid: a left column of read-outs/settings (SRAM, FREE, VID, SYNC, PALETTE) and a
+right column of song actions (SAVE, LOAD, DELETE, NEW, DEMO), then — below the
+`—— SONGS NN ——` divider — the song list (one column, 16 per page, `Pn/m`; the page follows
+the cursor). Up to 32 songs, each shown with its stored KB.
+
+| Input | Action |
+|---|---|
+| **Left / Right** | Switch between the settings column and the actions column |
+| **Up / Down** | Move within a column. Off the **bottom** → into the song list; off the **first song** (Up) → back to the column you came down from |
+| **B-hold + D-pad** on VID / SYNC / PALETTE | Adjust the setting |
+| **B** tap on **SAVE** | Store the current song under its name (a same name overwrites + reclaims) |
+| **B** tap on **LOAD / DELETE** | Load / delete the selected song — second confirming tap within ~1.5 s |
+| **B** tap on **NEW / DEMO** | Blank to a new song / load the demo (confirm) |
+| **B** tap on a **song row** | Load that song (confirm) |
+
+A refused save (directory or SRAM full) shows **FULL** by the FREE meter. A fresh cart is
+formatted on first boot; a load that fails its checksum blanks to a known state.
+
 ## Per-screen field edits (B-hold + D-pad)
 
 | Screen | Fields |
 |---|---|
-| **PROJECT** | TMPO / TSP / MODE / SLOT / LFO. **B** tap on a row = NEW · DEMO · SAVE · LOAD (NEW / DEMO / LOAD need a second confirming tap within ~1.5 s; "SURE? TAP AGAIN") |
-| **OPTIONS** | VID / SYNC / PAL (SRAM line is read-only) |
+| **PROJECT** | TMPO / TSP / MODE / LFO + the song NAME (B-hold + D-pad edits the name). Save / load / new / demo moved to OPTIONS. |
+| **OPTIONS** | VID / SYNC / PALETTE — plus the song library (see the OPTIONS section above); SRAM/FREE are read-only |
 | **WAVE** | plain Left/Right = wave-step cursor; B-hold + D-pad = sample level |
 | **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context |
 | **TABLE / GROOVE / ECHO / LFO** | their respective fields |
