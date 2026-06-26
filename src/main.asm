@@ -268,7 +268,8 @@ opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (driv
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
 opt_songcol equ $00FFD435           ; (vestigial)
 files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR/DEMO sub-menu is open
-menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=DEMO)
+menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=DEMO 4=CANCEL)
+files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -1245,6 +1246,16 @@ input_tick:
     bne.s   .nwb
     jmp     wave_bheld
 .nwb:
+    cmpi.b  #SCR_FILES, cur_screen         ; FILES: B + d-pad edits the current slot's name (list mode only)
+    bne.s   .nwf
+    tst.b   files_menu
+    bne     .done
+    tst.b   d5
+    beq     .done
+    move.b  d5, d2
+    bsr     files_name_edit
+    rts
+.nwf:
     btst    #6, d4                        ; B + C tap -> cut (clear cell)
     beq.s   .nbc
     bsr     do_cut
@@ -3914,6 +3925,37 @@ name_step:                                ; d3 = char, d2 = dir (nonzero = next)
     movem.l (sp)+, d0-d1/a0
     rts
 name_chars: dc.b " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"   ; the 37-char name edit set
+    even
+
+fname_step:                               ; d3 = char, d2 = dir (nonzero = next/Up) -> d3 = next/prev in name_chars2 (the FILES ring)
+    movem.l d0-d1/a0, -(sp)
+    lea     name_chars2, a0
+    moveq   #0, d0                          ; find d3's index (default 0/BLANK if not in the set)
+    moveq   #40-1, d1
+.fns_find:
+    cmp.b   (a0,d0.w), d3
+    beq.s   .fns_have
+    addq.w  #1, d0
+    dbra    d1, .fns_find
+    moveq   #0, d0
+.fns_have:
+    tst.b   d2
+    beq.s   .fns_back
+    addq.w  #1, d0
+    cmpi.w  #40, d0
+    blo.s   .fns_get
+    moveq   #0, d0
+    bra.s   .fns_get
+.fns_back:
+    subq.w  #1, d0
+    bpl.s   .fns_get
+    moveq   #40-1, d0
+.fns_get:
+    move.b  (a0,d0.w), d3
+    movem.l (sp)+, d0-d1/a0
+    rts
+; the FILES name ring: BLANK home, Up -> A..Z then specials, Down -> 0..9 (wraps so 0 is one step down)
+name_chars2: dc.b " ABCDEFGHIJKLMNOPQRSTUVWXYZ-./9876543210"
     even
 
 render_inst_hdr:
@@ -11406,6 +11448,8 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     moveq   #0, d1
     cmp.w   d2, d7
     bne.s   .rf_e0
+    tst.b   files_menu                       ; full-row highlight only while the menu is open; else the char cursor shows selection
+    beq.s   .rf_e0
     moveq   #$60, d1
 .rf_e0:
     moveq   #0, d0
@@ -11416,11 +11460,25 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
+    cmp.w   d2, d7                            ; show the working-song name only when the (empty) slot is selected
+    bne.s   .rf_emptylbl
+    cmpi.b  #' ', song_title                 ; ...and only if it's actually named; else "(EMPTY)"
+    bls.s   .rf_emptylbl
+    lea     song_title, a3
+    moveq   #8-1, d0
+.rf_emn:
+    moveq   #0, d5
+    move.b  (a3)+, d5
+    add.w   d1, d5
+    move.w  d5, VDP_DATA
+    dbra    d0, .rf_emn
+    bra     .rf_songs
+.rf_emptylbl:
     lea     str_o_empty, a3
 .rf_em:
     moveq   #0, d0
     move.b  (a3)+, d0
-    beq.s   .rf_songs
+    beq     .rf_songs
     add.w   d1, d0
     move.w  d0, VDP_DATA
     bra.s   .rf_em
@@ -11440,6 +11498,8 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     moveq   #0, d1
     cmp.w   d2, d7
     bne.s   .rf_h0
+    tst.b   files_menu                       ; full-row highlight only while the menu is open
+    beq.s   .rf_h0
     moveq   #$60, d1
 .rf_h0:
     moveq   #0, d0
@@ -11474,8 +11534,29 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_ln:
     lea     16(a2), a2
     dbra    d3, .rf_ll
-    tst.b   files_menu                      ; --- action sub-menu on the right when open ---
-    beq     .rf_done
+    tst.b   files_menu
+    bne     .rf_menu                        ; menu open -> draw the sub-menu
+    bsr     files_name_addr                  ; list mode -> inverted name-cursor on the selected slot
+    lea     VDP_CTRL, a0                      ; (dir helpers may have clobbered a0)
+    moveq   #0, d0
+    move.b  opt_song, d0
+    andi.w  #15, d0
+    addi.w  #7, d0
+    lsl.w   #6, d0
+    addq.w  #3, d0
+    moveq   #0, d1
+    move.b  files_namecol, d1
+    add.w   d1, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    moveq   #0, d0
+    move.b  (a1,d1.w), d0
+    addi.w  #$60, d0
+    move.w  d0, VDP_DATA
+    bra     .rf_done
+.rf_menu:                                   ; --- action sub-menu on the right ---
     moveq   #8, d3                          ; SAVE (menu_row 0) at row 8 col 22
     moveq   #22, d4
     moveq   #0, d2
@@ -12047,6 +12128,70 @@ files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD
     clr.b   files_menu
     move.b  #1, need_clear
 .fmt_x:
+    rts
+
+files_name_addr:                          ; -> a1 = 8-byte name buffer for cur_row's slot, d0 = dir index (real) or -1 ((empty))
+    movem.l d1-d2, -(sp)
+    bsr     dir_count                        ; d0 = song count
+    moveq   #0, d1
+    move.b  cur_row, d1
+    cmp.l   d0, d1
+    bcc.s   .fna_empty                        ; cur_row >= count -> the (empty) slot
+    move.l  d1, d0
+    bsr     dir_nth                           ; list pos -> dir index
+    tst.l   d0
+    bmi.s   .fna_empty
+    move.l  d0, d2
+    bsr     dir_rd                            ; dir_ent <- entry (preserves regs)
+    lea     dir_ent+6, a1                      ; -> the entry's 8-byte name
+    move.l  d2, d0
+    movem.l (sp)+, d1-d2
+    rts
+.fna_empty:
+    lea     song_title, a1                    ; the (empty) slot edits the working song's name
+    moveq   #-1, d0
+    movem.l (sp)+, d1-d2
+    rts
+
+files_name_edit:                          ; d2 = d-pad bits: B+L/R move the name cursor, B+U/D cycle the char (the ring)
+    btst    #2, d2                            ; Left -> cursor left
+    beq.s   .fne_rt
+    tst.b   files_namecol
+    beq.s   .fne_red
+    subq.b  #1, files_namecol
+    bra.s   .fne_red
+.fne_rt:
+    btst    #3, d2                            ; Right -> cursor right (0..7)
+    beq.s   .fne_ud
+    cmpi.b  #7, files_namecol
+    bhs.s   .fne_red
+    addq.b  #1, files_namecol
+    bra.s   .fne_red
+.fne_ud:
+    moveq   #1, d1                            ; Up -> next char in the ring
+    btst    #0, d2
+    bne.s   .fne_cyc
+    moveq   #0, d1                            ; Down -> previous
+    btst    #1, d2
+    beq.s   .fne_x                            ; no L/R/U/D this frame
+.fne_cyc:
+    bsr     files_name_addr                   ; a1 = name buffer (d1 = dir preserved), d0 = index or -1
+    move.l  d0, d4                            ; d4 = dir index (survives fname_step)
+    moveq   #0, d0
+    move.b  files_namecol, d0
+    adda.w  d0, a1
+    move.l  a1, a2                            ; a2 = char ptr (survives fname_step)
+    move.b  (a1), d3                          ; current char
+    move.l  d1, d2                            ; d2 = direction for fname_step
+    bsr     fname_step
+    move.b  d3, (a2)                          ; write the cycled char back
+    tst.l   d4
+    bmi.s   .fne_red                          ; (empty) slot -> song_title edited in place, nothing to commit
+    move.l  d4, d0
+    bsr     dir_wr                            ; real slot -> commit the rename to SRAM
+.fne_red:
+    move.b  #1, need_clear
+.fne_x:
     rts
 
 load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
