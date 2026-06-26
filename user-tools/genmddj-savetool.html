@@ -99,6 +99,10 @@ const NUBANK = 32, BANK_REC = 64;
 const BANK_BASE = CONFIG_SZ;            // 256
 const BANK_SIZE = NUBANK*BANK_REC;      // 2048
 const SLOT0 = BANK_BASE+BANK_SIZE;      // 2304
+const DIR_BASE = SLOT0;                 // compressed-song directory (replaces fixed slots)
+const DIR_ENT = 16, DIR_N = 32;         // entry: valid raw off(2) len(2) name(8) csum(2); 32 songs
+const HEAP_BASE = DIR_BASE+DIR_N*DIR_ENT;  // 2816 -- compressed (or raw) blobs packed from here
+const RLE_UNIT = 4;                     // 4-byte-unit RLE (row-aligned); matches the cart + tools/rletest.py
 // data-block pools (offset,len) within the 20832 block:
 const POOL = {
   globals:[0,256], song:[256,2400], phrases:[2656,10240], chains:[12896,3072],
@@ -126,6 +130,31 @@ function ascii(u8,o,n){ let s=""; for(let i=0;i<n;i++){ const c=u8[o+i]; if(c===
 function findStr(u8, str, from=0){ const m=enc.encode(str); outer:for(let i=from;i<=u8.length-m.length;i++){ for(let j=0;j<m.length;j++) if(u8[i+j]!==m[j]) continue outer; return i; } return -1; }
 function deinterleave(u8){ const o=new Uint8Array(u8.length>>1); for(let i=0;i<o.length;i++) o[i]=u8[i*2+1]; return o; }   // odd bytes
 function dataChecksum(d){ let s=0; for(let i=0;i<DATA_SIZE;i++) s=(s+d[i])&0xFFFF; return s; }
+// 4-byte-unit RLE: ctrl bit7=1 repeat (run=(c&7F)+2, 1 unit); bit7=0 literal (n=(c&7F)+1, n units).
+function rleCompress(data){
+  const out=[]; const U=RLE_UNIT, n=Math.floor(data.length/U);
+  const eq=(a,b)=>{ for(let k=0;k<U;k++) if(data[a*U+k]!==data[b*U+k]) return false; return true; };
+  let i=0;
+  while(i<n){
+    let run=1; while(i+run<n && eq(i+run,i) && run<129) run++;
+    if(run>=2){ out.push(0x80|(run-2)); for(let k=0;k<U;k++) out.push(data[i*U+k]); i+=run; continue; }
+    let j=i; while(j<n && (j-i)<128 && !(j+1<n && eq(j+1,j))) j++;
+    if(j===i) j=i+1;
+    out.push((j-i)-1);
+    for(let u=i;u<j;u++) for(let k=0;k<U;k++) out.push(data[u*U+k]);
+    i=j;
+  }
+  return new Uint8Array(out);
+}
+function rleDecompress(stream, outLen){
+  const out=new Uint8Array(outLen), U=RLE_UNIT; let oi=0, i=0;
+  while(oi<outLen && i<stream.length){
+    const c=stream[i++];
+    if(c&0x80){ const cnt=(c&0x7F)+2; for(let r=0;r<cnt;r++){ for(let k=0;k<U;k++) out[oi+k]=stream[i+k]; oi+=U; } i+=U; }
+    else{ const cnt=((c&0x7F)+1)*U; for(let k=0;k<cnt;k++) out[oi+k]=stream[i+k]; oi+=cnt; i+=cnt; }
+  }
+  return out;
+}
 
 // ---------- load ----------
 function looksLikeSram(u8){
@@ -160,20 +189,22 @@ function loadSram(raw, forceDeint){
   sram = u8;
   if (u8[0]===0xA5){ config = {pal:u8[1], vid:u8[2], sync:u8[3]}; }
   bank = u8.slice(BANK_BASE, BANK_BASE+BANK_SIZE);
-  const kb = +$("size").value, ns = slotsFor(kb);
-  songs = [];
-  for (let n=0;n<ns;n++){
-    const base = SLOT0 + n*SLOT_SIZE;
-    if (base+SLOT_SIZE > u8.length){ songs.push(null); continue; }
-    if (ascii(u8,base,5)!==SLOT_MAGIC){ songs.push(null); continue; }
-    const csum = (u8[base+6]<<8)|u8[base+7];
-    const title = ascii(u8, base+8, 8);
-    const data = u8.slice(base+SLOT_HDR, base+SLOT_HDR+DATA_SIZE);
+  songs = [];                                  // parse the compressed-song directory
+  for (let i=0;i<DIR_N;i++){
+    const e = DIR_BASE + i*DIR_ENT;
+    if (u8[e]!==0xA5) continue;                 // valid entries only
+    const rawFlag = u8[e+1];
+    const off = (u8[e+2]<<8)|u8[e+3];
+    const len = (u8[e+4]<<8)|u8[e+5];
+    const title = ascii(u8, e+6, 8);
+    const csum = (u8[e+14]<<8)|u8[e+15];
+    const blob = u8.slice(HEAP_BASE+off, HEAP_BASE+off+len);
+    const data = rawFlag ? blob.slice(0,DATA_SIZE) : rleDecompress(blob, DATA_SIZE);
     const valid = dataChecksum(data)===csum;
-    songs.push({title, data, valid, src:"slot"});
+    songs.push({title, data, valid, src: rawFlag?"raw":"rle"});
   }
   syncCfgUI(); render();
-  note(`${det.fmt} · ${songs.filter(s=>s).length} slot(s) read`, false);
+  note(`${det.fmt} · ${songs.length} song(s)`, false);
 }
 function addGmdj(raw, name){
   if (ascii(raw,0,8)!==GMDJ_MAGIC){ note(`${name}: not a .gmdj file`, true); return; }
@@ -181,13 +212,9 @@ function addGmdj(raw, name){
   if (dsz!==DATA_SIZE){ note(`${name}: data size ${dsz} != ${DATA_SIZE} (different build?)`, true); return; }
   const title = ascii(raw, 12, 8) || name.replace(/\.gmdj$/i,"").slice(0,8);
   const data = raw.slice(32, 32+DATA_SIZE);
-  // place into the first empty slot
-  const kb=+$("size").value, ns=slotsFor(kb);
-  let i = songs.findIndex(s=>!s);
-  if (i<0 && songs.length<ns) i = songs.push(null)-1;
-  if (i<0){ note(`all ${ns} slots full at ${kb}KB`, true); return; }
-  songs[i] = {title, data, valid:true, src:"gmdj"};
-  render(); note(`added ${title} -> slot ${i}`, false);
+  if (songs.length >= DIR_N){ note(`directory full (${DIR_N} songs)`, true); return; }
+  songs.push({title, data, valid:true, src:"gmdj"});
+  render(); note(`added ${title}`, false);
 }
 
 // ---------- build ----------
@@ -197,16 +224,24 @@ function buildSav(){
   // logical byte 0 lands at file[1] (a 1-byte even lead-in). Bank + slots run +1 and
   // contiguous; the config block is stride-2 (the ROM hardcodes $200001 + i*2).
   const LEAD=1;
-  const kb=+$("size").value, ns=slotsFor(kb), out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
+  const kb=+$("size").value, out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
   out[LEAD]=0xA5; out[LEAD+2]=config.pal&7; out[LEAD+4]=config.vid; out[LEAD+6]=config.sync;  // config (stride 2)
   if (bank) out.set(bank.subarray(0,BANK_SIZE), LEAD+BANK_BASE);                 // bank (+1)
-  for (let n=0;n<ns;n++){
-    const s=songs[n]; if(!s||!s.data) continue;
-    const base=LEAD+SLOT0+n*SLOT_SIZE;
-    enc.encodeInto(SLOT_MAGIC, out.subarray(base,base+5)); out[base+5]=SAVE_VER;
-    const cs=dataChecksum(s.data); out[base+6]=(cs>>8)&255; out[base+7]=cs&255;
-    const t=(s.title||"SONG").padEnd(8," ").slice(0,8); enc.encodeInto(t, out.subarray(base+8,base+16));
-    out.set(s.data, base+SLOT_HDR);
+  let heapOff=0, ne=0;                                                           // directory + compressed heap
+  for (const s of songs){
+    if (!s || !s.data) continue;
+    if (ne >= DIR_N){ note(`directory full -- ${ne} songs written`, true); break; }
+    let blob = rleCompress(s.data), raw=0;
+    if (blob.length >= DATA_SIZE){ blob = s.data; raw=1; }                       // store-raw fallback
+    if (LEAD+HEAP_BASE+heapOff+blob.length > out.length){ note(`SRAM full at ${kb}KB -- ${ne} songs written`, true); break; }
+    out.set(blob, LEAD+HEAP_BASE+heapOff);                                       // blob -> heap
+    const e = LEAD+DIR_BASE+ne*DIR_ENT;                                          // directory entry
+    out[e]=0xA5; out[e+1]=raw;
+    out[e+2]=(heapOff>>8)&255; out[e+3]=heapOff&255;
+    out[e+4]=(blob.length>>8)&255; out[e+5]=blob.length&255;
+    enc.encodeInto((s.title||"SONG").padEnd(8," ").slice(0,8), out.subarray(e+6,e+14));
+    const cs=dataChecksum(s.data); out[e+14]=(cs>>8)&255; out[e+15]=cs&255;
+    heapOff += blob.length; ne++;
   }
   return out;
 }
