@@ -133,16 +133,33 @@ function looksLikeSram(u8){
   if (u8[0]===0xA5) return true;                       // config magic
   return findStr(u8, SLOT_MAGIC, SLOT0-4) >= 0;        // any slot
 }
+// Detect the physical .sav layout and return the logical contiguous image (config@0-3,
+// bank@256, slots@2304). Three real layouts: emulator-linear (1-byte even lead-in, config
+// stride-2, bank/slots +1 -- what the ROM reads on a linear-SRAM emulator), odd-byte
+// hardware (everything at 2*offset+1, e.g. EverDrive), and the legacy pure-logical layout.
+function toLogical(raw){
+  const p = findStr(raw, SLOT_MAGIC, 0);
+  if (p === SLOT0+1){                                  // emulator-linear (slot magic at 2305)
+    const lg = raw.slice(1);
+    lg[1]=raw[3]; lg[2]=raw[5]; lg[3]=raw[7];          // collapse the stride-2 config
+    return {logical:lg, fmt:"emulator"};
+  }
+  if (p === SLOT0) return {logical:raw, fmt:"logical"};            // legacy contiguous
+  const di = deinterleave(raw);
+  if (findStr(di, SLOT_MAGIC, 0) === SLOT0) return {logical:di, fmt:"odd-byte"};
+  // config-only saves (no valid slot): decide by the config-magic position
+  if (raw[1]===0xA5){ const lg=raw.slice(1); lg[1]=raw[3]; lg[2]=raw[5]; lg[3]=raw[7]; return {logical:lg, fmt:"emulator"}; }
+  if (raw[0]===0xA5) return {logical:raw, fmt:"logical"};
+  if (di[0]===0xA5) return {logical:di, fmt:"odd-byte"};
+  return {logical:raw, fmt:"unknown"};
+}
 function loadSram(raw, forceDeint){
-  let u8 = raw;
-  usedDeint = false;
-  if (forceDeint || (!looksLikeSram(raw) && looksLikeSram(deinterleave(raw)))){ u8 = deinterleave(raw); usedDeint = true; }
+  const det = forceDeint ? {logical:deinterleave(raw), fmt:"odd-byte"} : toLogical(raw);
+  const u8 = det.logical;
+  usedDeint = det.fmt==="odd-byte";
   sram = u8;
-  // config
   if (u8[0]===0xA5){ config = {pal:u8[1], vid:u8[2], sync:u8[3]}; }
-  // instrument bank
   bank = u8.slice(BANK_BASE, BANK_BASE+BANK_SIZE);
-  // song slots (by fixed offset; verify magic+checksum)
   const kb = +$("size").value, ns = slotsFor(kb);
   songs = [];
   for (let n=0;n<ns;n++){
@@ -156,7 +173,7 @@ function loadSram(raw, forceDeint){
     songs.push({title, data, valid, src:"slot"});
   }
   syncCfgUI(); render();
-  note(`${usedDeint?"de-interleaved · ":""}${songs.filter(Boolean).filter(s=>s).length} slot(s) read`, false);
+  note(`${det.fmt} · ${songs.filter(s=>s).length} slot(s) read`, false);
 }
 function addGmdj(raw, name){
   if (ascii(raw,0,8)!==GMDJ_MAGIC){ note(`${name}: not a .gmdj file`, true); return; }
@@ -175,12 +192,17 @@ function addGmdj(raw, name){
 
 // ---------- build ----------
 function buildSav(){
-  const kb=+$("size").value, ns=slotsFor(kb), out=new Uint8Array(sizeBytes(kb)).fill(0);
-  out[0]=0xA5; out[1]=config.pal&7; out[2]=config.vid; out[3]=config.sync;     // config
-  if (bank) out.set(bank.subarray(0,BANK_SIZE), BANK_BASE);                     // preserve bank
+  // Physical cart/emulator layout (verified against a ROM-written .sav). The ROM's SRAM
+  // base is the ODD byte $200001, and a linear-SRAM emulator maps $200000 -> file[0], so
+  // logical byte 0 lands at file[1] (a 1-byte even lead-in). Bank + slots run +1 and
+  // contiguous; the config block is stride-2 (the ROM hardcodes $200001 + i*2).
+  const LEAD=1;
+  const kb=+$("size").value, ns=slotsFor(kb), out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
+  out[LEAD]=0xA5; out[LEAD+2]=config.pal&7; out[LEAD+4]=config.vid; out[LEAD+6]=config.sync;  // config (stride 2)
+  if (bank) out.set(bank.subarray(0,BANK_SIZE), LEAD+BANK_BASE);                 // bank (+1)
   for (let n=0;n<ns;n++){
     const s=songs[n]; if(!s||!s.data) continue;
-    const base=SLOT0+n*SLOT_SIZE;
+    const base=LEAD+SLOT0+n*SLOT_SIZE;
     enc.encodeInto(SLOT_MAGIC, out.subarray(base,base+5)); out[base+5]=SAVE_VER;
     const cs=dataChecksum(s.data); out[base+6]=(cs>>8)&255; out[base+7]=cs&255;
     const t=(s.title||"SONG").padEnd(8," ").slice(0,8); enc.encodeInto(t, out.subarray(base+8,base+16));
