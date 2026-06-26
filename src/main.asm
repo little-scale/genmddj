@@ -221,6 +221,8 @@ c_delay    equ $00FFD3EA           ; D command: per-channel note-on delay countd
 d_set      equ $00FFD3F4           ; D command: 1 if D delayed the note this row (skip the immediate trigger)
 c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override (0-3; $FF = use instrument i_rate)
 a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
+c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override (ticks/step; $FF = use instrument)
+c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
@@ -6303,6 +6305,11 @@ engine_play_reset:
 .epr_sr:
     move.b  #$FF, (a0)+
     dbra    d0, .epr_sr
+    lea     c_eatk, a0                   ; E command: clear per-channel attack/decay overrides ($FF = use instrument)
+    moveq   #(NCH*2)-1, d0
+.epr_e:
+    move.b  #$FF, (a0)+
+    dbra    d0, .epr_e
     move.b  #GROOVE, g_gctr
     move.b  #0, groove_pos                ; restart the groove at play-start
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
@@ -7748,6 +7755,8 @@ exec_cmd:
     beq     .cmd_m
     cmpi.b  #22, d2                         ; V xx = vibrato (FM FMS depth)
     beq     .cmd_v
+    cmpi.b  #5, d2                          ; E xy = envelope re-slope (x=attack, y=decay; PSG/WAVE AHD)
+    beq     .cmd_e
     rts                                    ; not a voice command (or no command)
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
@@ -7972,6 +7981,18 @@ exec_cmd:
     move.b  #$FF, c_trow(a6)             ; restart: the note-on step / next tick lands on row 0
     move.b  #1, a_set                      ; note-on must not reload the instrument's i_tbl over it
     bra     .cmddone
+.cmd_e:                                   ; E xy = AHD envelope re-slope: x=attack, y=decay ticks/step (PSG/WAVE; FM AR/RR TODO)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    move.b  (3,a1,d1.w), d0               ; xy
+    move.b  d0, d2
+    lsr.b   #4, d0                         ; x = attack ticks/step
+    andi.b  #$0F, d2                       ; y = decay ticks/step
+    lea     c_eatk, a4
+    move.b  d0, (a4,d3.w)
+    lea     c_edcy, a4
+    move.b  d2, (a4,d3.w)
+    bra     .cmddone
 .cmddone:                                 ; local: the handlers' "done" -> just return (no note here)
     rts
 
@@ -8169,7 +8190,8 @@ env_ch:                                   ; a6 = channel
     move.b  c_estate(a6), d0              ; reload: the table-arp/chord path above clobbers d0
     cmpi.b  #1, d0
     bne.s   .e_hold
-    move.b  (ip_atk,a4), d1               ; state 1 = attack
+    bsr     env_atk                        ; state 1 = attack (E may re-slope it per-channel)
+    tst.b   d1
     bne.s   .a_ramp
     move.b  (ip_vol,a4), d1               ; ATK 0 -> instant to peak
     move.b  d1, c_vol(a6)
@@ -8211,7 +8233,8 @@ env_ch:                                   ; a6 = channel
     move.b  #0, c_ectr(a6)
     rts
 .e_decay:
-    move.b  (ip_dcy,a4), d1               ; state 3 = decay
+    bsr     env_dcy                        ; state 3 = decay (E may re-slope it per-channel)
+    tst.b   d1
     bne.s   .d_ramp
     move.b  #0, c_vol(a6)                 ; DCY 0 -> instant cut
     move.b  #0, c_estate(a6)
@@ -9219,6 +9242,33 @@ dac_play:
     movem.l (sp)+, d2-d6/a0
     rts
 
+; E command: effective AHD attack/decay = the per-channel override (c_eatk/c_edcy; $FF = none),
+; else the instrument's ip_atk/ip_dcy. a6 = channel, a4 = instrument. Clobbers d1/d2, preserves a3.
+env_atk:
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    move.l  a3, -(sp)
+    lea     c_eatk, a3
+    move.b  (a3,d2.w), d1
+    move.l  (sp)+, a3
+    cmpi.b  #$FF, d1
+    bne.s   .ea_x
+    move.b  (ip_atk,a4), d1
+.ea_x:
+    rts
+env_dcy:
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    move.l  a3, -(sp)
+    lea     c_edcy, a3
+    move.b  (a3,d2.w), d1
+    move.l  (sp)+, a3
+    cmpi.b  #$FF, d1
+    bne.s   .ed_x
+    move.b  (ip_dcy,a4), d1
+.ed_x:
+    rts
+
 ; ---- advance the wave AHD envelope one frame (a6 = channel, a4 = WAVE instrument).
 ; Mirrors the PSG software AHD: state 1 attack (0->VOL) -> 2 hold (HLD) -> 3 decay (->0)
 ; -> 0 off. Sets c_vol 0-15, which bake_wave uses as the per-frame amplitude. Clobbers d0-d2.
@@ -9228,7 +9278,8 @@ wave_env:
     beq     .wend                           ; state 0 = off (c_vol stays 0)
     cmpi.b  #1, d0
     bne.s   .whld
-    move.b  (ip_atk,a4), d1                 ; --- attack ---
+    bsr     env_atk                          ; --- attack --- (E re-slope per-channel)
+    tst.b   d1
     bne.s   .wa_ramp
     move.b  (ip_vol,a4), d1                 ; ATK 0 -> instant to peak
     move.b  d1, c_vol(a6)
@@ -9270,7 +9321,8 @@ wave_env:
     move.b  #0, c_ectr(a6)
     rts
 .wdcy:
-    move.b  (ip_dcy,a4), d1                 ; --- decay ---
+    bsr     env_dcy                          ; --- decay --- (E re-slope per-channel)
+    tst.b   d1
     bne.s   .wd_ramp
     move.b  #0, c_vol(a6)                    ; DCY 0 -> instant cut
     move.b  #0, c_estate(a6)
