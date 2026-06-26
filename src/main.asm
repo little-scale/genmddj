@@ -263,6 +263,7 @@ SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data bloc
 rle_buf    equ $00FF5160            ; RLE staging: the free gap above the data block (~28 KB, to env_canvas $C000)
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
+opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 SAVE_DATA  equ $5160               ; data-block size = globals 256 + song 2400 + ph 10240 + ch 3072
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
@@ -1809,7 +1810,16 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1
     rts
 .rmopts:
-    moveq   #2, d1                          ; VID SYNC PAL
+    tst.b   sram_layout
+    bne.s   .rmopts_sram
+    moveq   #2, d1                          ; no SRAM -> VID SYNC PAL only
+    rts
+.rmopts_sram:
+    movem.l d0/d2-d3, -(sp)                 ; VID SYNC PAL SAVE LOAD DELETE NEW DEMO (0..7) + count songs
+    bsr     dir_count
+    move.l  d0, d1
+    movem.l (sp)+, d0/d2-d3
+    addi.w  #7, d1
     rts
 .rmproj:
     moveq   #9, d1                          ; TMPO TSP MODE NEW DEMO SLOT SAVE LOAD LFO NAME
@@ -2895,6 +2905,8 @@ edit_instr:
     rts
 
 do_insert:
+    cmpi.b  #SCR_OPTS, cur_screen          ; OPTIONS: B-tap = SAVE/LOAD/DELETE/NEW/DEMO or load a song
+    beq     opts_action
     cmpi.b  #SCR_PROJ, cur_screen          ; PROJECT: B-tap triggers NEW/DEMO/SAVE/LOAD
     beq     proj_action
     cmpi.b  #SCR_INSTR, cur_screen         ; INSTR/FM: B-tap on a library button = LOAD/SAVE
@@ -11098,6 +11110,48 @@ dir_delete:                                ; d0 = entry index -> free it + compa
     movem.l (sp)+, d0-d7/a0-a3
     rts
 
+dir_count:                                 ; -> d0 = number of valid directory entries
+    movem.l d1/a0, -(sp)
+    bsr     dir_readall
+    lea     dir_cache, a0
+    moveq   #0, d0
+    moveq   #DIR_N-1, d1
+.dc_l:
+    cmpi.b  #$A5, (a0)
+    bne.s   .dc_n
+    addq.l  #1, d0
+.dc_n:
+    lea     16(a0), a0
+    dbra    d1, .dc_l
+    movem.l (sp)+, d1/a0
+    rts
+
+dir_nth:                                   ; d0 = list position (Nth valid) -> d0 = directory index, or -1
+    movem.l d1-d3/a0, -(sp)
+    move.l  d0, d2                          ; target position
+    bsr     dir_readall
+    lea     dir_cache, a0
+    moveq   #0, d1                          ; valid seen
+    moveq   #0, d3                          ; dir index
+.dn_l:
+    cmpi.b  #$A5, (a0)
+    bne.s   .dn_n
+    cmp.l   d2, d1
+    beq.s   .dn_f
+    addq.l  #1, d1
+.dn_n:
+    lea     16(a0), a0
+    addq.l  #1, d3
+    cmpi.l  #DIR_N, d3
+    blo.s   .dn_l
+    moveq   #-1, d0
+    bra.s   .dn_x
+.dn_f:
+    move.l  d3, d0
+.dn_x:
+    movem.l (sp)+, d1-d3/a0
+    rts
+
 dir_readall:                               ; SRAM directory -> dir_cache (512 B), one mapped pass
     movem.l d0-d5/a0-a1, -(sp)
     move.l  #DIR_BASE, d0
@@ -11139,6 +11193,22 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
 .rsl_sn:
     lea     16(a2), a2
     dbra    d6, .rsl_scan
+    moveq   #0, d0                          ; track opt_song from the cursor (cur_row>=8 = a song row)
+    move.b  cur_row, d0
+    subi.w  #8, d0
+    bmi.s   .rsl_oc
+    move.b  d0, opt_song
+.rsl_oc:
+    tst.w   d5                              ; clamp opt_song to [0, count-1]
+    beq.s   .rsl_oc2
+    moveq   #0, d0
+    move.b  opt_song, d0
+    cmp.w   d5, d0
+    blo.s   .rsl_oc2
+    move.w  d5, d0
+    subq.w  #1, d0
+    move.b  d0, opt_song
+.rsl_oc2:
     moveq   #4, d3                          ; "FREE" label at row 4
     moveq   #1, d4
     lea     str_o_free, a1
@@ -11160,28 +11230,79 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     moveq   #0, d4
     bsr     draw_dec3
     move.w  #'K', VDP_DATA
-    moveq   #9, d3                          ; "SONGS" header at row 9
+    moveq   #9, d3                          ; SAVE (cur_row 3)
+    moveq   #1, d4
+    lea     str_p_save, a1
+    bsr     print_at
+    moveq   #9, d3
+    moveq   #3, d6
+    bsr     draw_go_hl
+    moveq   #10, d3                         ; LOAD (cur_row 4)
+    moveq   #1, d4
+    lea     str_p_load, a1
+    bsr     print_at
+    moveq   #10, d3
+    moveq   #4, d6
+    bsr     draw_go_hl
+    moveq   #11, d3                         ; DELETE (cur_row 5)
+    moveq   #1, d4
+    lea     str_o_del, a1
+    bsr     print_at
+    moveq   #11, d3
+    moveq   #5, d6
+    bsr     draw_go_hl
+    moveq   #12, d3                         ; NEW (cur_row 6)
+    moveq   #1, d4
+    lea     str_p_new, a1
+    bsr     print_at
+    moveq   #12, d3
+    moveq   #6, d6
+    bsr     draw_go_hl
+    moveq   #13, d3                         ; DEMO (cur_row 7)
+    moveq   #1, d4
+    lea     str_p_demo, a1
+    bsr     print_at
+    moveq   #13, d3
+    moveq   #7, d6
+    bsr     draw_go_hl
+    tst.b   proj_armed                      ; SURE? when a destructive action is armed
+    beq.s   .rsl_hdr
+    moveq   #13, d3
+    moveq   #16, d4
+    lea     str_sure, a1
+    bsr     print_at
+.rsl_hdr:
+    moveq   #15, d3                         ; SONGS header + count (row 15)
     moveq   #1, d4
     lea     str_o_songs, a1
     bsr     print_at
-    move.l  #$44900003, (a0)               ; count at row 9, col 8
+    move.l  #$47900003, (a0)               ; count at row 15, col 8
     move.b  d5, d3
     moveq   #0, d4
     bsr     draw_dec3
     tst.w   d5
     bne.s   .rsl_list
-    moveq   #11, d3                         ; (EMPTY) at row 11
+    moveq   #16, d3                         ; (EMPTY) at row 16
     moveq   #3, d4
     lea     str_o_empty, a1
     bsr     print_at
-    bra.s   .rsl_done
+    bra     .rsl_done
 .rsl_list:
+    moveq   #0, d2                           ; target list pos = cur_row - 8
+    move.b  cur_row, d2
+    subi.w  #8, d2
     lea     dir_cache, a2
-    moveq   #11, d6                          ; first list row
-    moveq   #DIR_N-1, d5
+    moveq   #16, d6                          ; first list row
+    moveq   #0, d7                           ; list position
+    moveq   #DIR_N-1, d3
 .rsl_ll:
     cmpi.b  #$A5, (a2)
     bne.s   .rsl_ln
+    moveq   #0, d1                           ; highlight when this is the selected song
+    cmp.w   d2, d7
+    bne.s   .rsl_h0
+    moveq   #$60, d1
+.rsl_h0:
     moveq   #0, d0                           ; name at row d6, col 3
     move.w  d6, d0
     lsl.w   #6, d0
@@ -11191,20 +11312,32 @@ render_songlist:                           ; OPTIONS: FREE meter + count + the s
     ori.l   #$40000003, d0
     move.l  d0, (a0)
     lea     6(a2), a3
-    moveq   #8-1, d1
+    moveq   #8-1, d0
 .rsl_nm:
-    moveq   #0, d2
-    move.b  (a3)+, d2
-    move.w  d2, VDP_DATA
-    dbra    d1, .rsl_nm
+    moveq   #0, d4
+    move.b  (a3)+, d4
+    add.w   d1, d4
+    move.w  d4, VDP_DATA
+    dbra    d0, .rsl_nm
     addq.w  #1, d6
+    addq.w  #1, d7
 .rsl_ln:
     lea     16(a2), a2
-    dbra    d5, .rsl_ll
+    dbra    d3, .rsl_ll
 .rsl_done:
     movem.l (sp)+, d0-d7/a0-a3
 .rsl_x:
     rts
+
+draw_go_hl:                                ; draw "GO" at (d3=row, col 8); highlight if cur_row==d6. a0=VDP_CTRL.
+    moveq   #0, d2
+    cmp.b   cur_row, d6
+    bne.s   .dgh0
+    moveq   #$60, d2
+.dgh0:
+    moveq   #8, d4
+    lea     str_go, a1
+    bra     print_hl
 
 ; ---- instrument tiers: ROM factory bank + SRAM cross-song bank <-> the current song instrument ----
 do_bank_action:                            ; row 1: col 2 = SRAM LOAD, col 3 = SRAM SAVE, col 4 = ROM LOAD
@@ -11645,6 +11778,66 @@ proj_confirm:                              ; d0 = this row; Z set = confirmed (p
     moveq   #1, d0
     rts
 
+opts_action:                              ; B-tap on OPTIONS: SAVE/LOAD/DELETE/NEW/DEMO, or LOAD a song row
+    move.b  cur_row, d0
+    cmpi.b  #3, d0
+    beq.s   .oa_save
+    cmpi.b  #4, d0
+    beq.s   .oa_load
+    cmpi.b  #5, d0
+    beq.s   .oa_del
+    cmpi.b  #6, d0
+    beq.s   .oa_new
+    cmpi.b  #7, d0
+    beq.s   .oa_demo
+    cmpi.b  #8, d0
+    bcc.s   .oa_load                         ; cur_row >= 8 (a song) -> LOAD it (opt_song = cur_row-8)
+    rts
+.oa_save:
+    clr.b   proj_armed                       ; saving is non-destructive
+    bsr     dir_save
+    bra.s   .oa_done
+.oa_load:
+    moveq   #4, d0
+    bsr     proj_confirm
+    bne.s   .oa_ret
+    moveq   #0, d0
+    move.b  opt_song, d0
+    bsr     dir_nth
+    tst.l   d0
+    bmi.s   .oa_ret
+    bsr     dir_load
+    bra.s   .oa_done
+.oa_del:
+    moveq   #5, d0
+    bsr     proj_confirm
+    bne.s   .oa_ret
+    moveq   #0, d0
+    move.b  opt_song, d0
+    bsr     dir_nth
+    tst.l   d0
+    bmi.s   .oa_ret
+    bsr     dir_delete
+    bra.s   .oa_done
+.oa_new:
+    moveq   #6, d0
+    bsr     proj_confirm
+    bne.s   .oa_ret
+    bsr     clear_song
+    bra.s   .oa_done
+.oa_demo:
+    moveq   #7, d0
+    bsr     proj_confirm
+    bne.s   .oa_ret
+    bsr     load_demo
+    bra.s   .oa_done
+.oa_ret:
+    rts
+.oa_done:
+    clr.b   proj_armed
+    move.b  #1, need_clear
+    rts
+
 load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
     lea     phrases, a2
     move.w  #NPHRASES*16-1, d0
@@ -11806,6 +11999,7 @@ str_sram_li: dc.b "K LIN",0
 str_o_songs: dc.b "SONGS",0
 str_o_free:  dc.b "FREE",0
 str_o_empty: dc.b "(EMPTY)",0
+str_o_del:   dc.b "DELETE",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_demo: dc.b "DEMO",0
