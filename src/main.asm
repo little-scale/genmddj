@@ -7298,8 +7298,28 @@ midi_pgm:                                 ; a6=channel, d1=PC 0-95 (MIDI.md §4.
     rts
 
 midi_cc:                                   ; TODO step 2c (CC map, MIDI.md §4.3)
-midi_bend:                                 ; TODO step 2d (pitch bend)
-midi_panic:                                ; TODO step 2d (all-notes-off)
+    rts
+
+midi_bend:                                 ; a6=channel, d1=bend LSB7, d2=bend MSB7 (center 64) -> c_pfine
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    move.b  d2, d3
+    subi.b  #64, d3                          ; coarse: MSB-64 = -64..+63 (TODO: 14-bit + range scale)
+    lea     c_pfine, a0
+    move.b  d3, (a0,d0.w)                    ; persists across MIDI notes (no per-note reset in midi_note_on)
+    rts
+
+midi_panic:                                ; all-notes-off (channel byte ignored); also used on mode entry/exit
+    movem.l d7/a6, -(sp)
+    moveq   #NCH-1, d7
+    lea     ch_state, a6
+.mpa:
+    move.b  #0, c_keyon(a6)              ; FM key-off
+    move.b  #0, c_vol(a6)                ; PSG/level -> silence
+    move.b  #0, c_estate(a6)
+    lea     CHSIZE(a6), a6
+    dbra    d7, .mpa
+    movem.l (sp)+, d7/a6
     rts
 
 ; ---- per-frame wave re-bake: re-push the sounding wave + re-arm (no phase reset on the
