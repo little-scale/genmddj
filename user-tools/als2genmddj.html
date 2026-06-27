@@ -32,7 +32,8 @@
   <p class="dim">Drop a Live Set (<code>.als</code>) or a Standard MIDI File (<code>.mid</code>) → a genmddj <code>.gmdj</code> song (+ <code>.gmi</code>
   instruments), or a <code>.gmdj</code> → a <code>.als</code>. The first <b>9 MIDI tracks</b> map to genmddj
   channels <b>F1–F6</b> (FM) then <b>S1–S3</b> (PSG/TONE) — each FM track's <b>Operator</b> device is
-  converted to a YM2612 patch (also exported as <code>.gmi</code>). Session clips become phrases; a clip &gt; 16 steps
+  converted to a YM2612 patch (also exported as <code>.gmi</code>), and each PSG track's <b>Analog</b> device gets a
+  rough port (amp ADSR → the TONE AHD envelope; LFO→pitch/amp → vibrato/tremolo). Session clips become phrases; a clip &gt; 16 steps
   spills into more phrases. <b>Contiguous</b> vertical clip runs fill chains; an empty scene starts a new chain.
   Notes quantise to the 16th grid, octave-fold into range, highest pitch wins on polyphony.</p>
 
@@ -104,6 +105,35 @@ function toneInst(name){
   r[0]=3; r[7]=15; r[6]=15; r[48]=0xFF;                    // type 3 = TONE, full vol, hold
   const nm=(name||"TONE").toUpperCase().replace(/[^A-Z0-9 ]/g,"").padEnd(8," ").slice(0,8);
   for(let i=0;i<8;i++) r[54+i]=nm.charCodeAt(i);
+  return r;
+}
+
+// ---- Ableton Analog (UltraAnalog) -> PSG TONE record (rough: ADSR->AHD, LFO->vibrato/tremolo) ----
+// Verified vs a real Analog preset: device <UltraAnalog>; per voice two envelopes <Envelope.0>
+// (filter) + <Envelope.1> (amp/loudness); ADSR = AttackTime/DecayTime/SustainLevel/ReleaseTime
+// (all 0..1). LFO = LFOToggle/LFOSpeed; routing OscillatorLFOModPitch (->vibrato) and
+// AmplifierLFOAmpMod (->tremolo). AMP_ENV = which envelope is loudness; flip to 0 if inverted.
+const AMP_ENV=1;
+function analogToTone(dev, name){
+  const r=toneInst(name);                                   // start from the default TONE, then shape it
+  const f=(el,tag)=>{ const v=parseFloat(mval(el,tag)); return isFinite(v)?v:0; };
+  const cl=(x,lo,hi)=>Math.max(lo,Math.min(hi,Math.round(x)));
+  const env=dev.getElementsByTagName('Envelope.'+AMP_ENV)[0];   // first voice's amp envelope
+  if(env){
+    const atk=f(env,'AttackTime'), dec=f(env,'DecayTime'), sus=f(env,'SustainLevel'), rel=f(env,'ReleaseTime');
+    r[8]=15;                                                 // ip_vol: AHD peaks at full
+    r[9]=cl(atk*20,0,31);                                    // ip_atk: ticks/step up (0=instant)
+    r[11]=cl(((sus>=0.5)?rel:dec)*20,1,31);                  // ip_dcy: decay-to-0 (release if sustained, else decay)
+    r[10]=sus>=0.95?0xF:cl(sus*14,0,14);                     // ip_hld: high sustain -> long/inf hold at peak
+  }
+  if((mval(dev,'LFOToggle')||'false')!=='false'){            // LFO -> vibrato (pitch) / tremolo (amp)
+    const spd=cl(f(dev,'LFOSpeed')*15,0,15);                 // ip_vib/ip_trm = (speed<<4)|depth
+    const vd=cl(Math.abs(f(dev,'OscillatorLFOModPitch'))*15,0,15);
+    let td=cl(Math.abs(f(dev,'AmplifierLFOAmpMod'))*15,0,15);
+    if(!td) td=cl(Math.abs(f(dev,'FilterLFOCutoffMod'))*15,0,15);   // fall back to cutoff mod for "amplitude"
+    if(vd) r[14]=(spd<<4)|vd;
+    if(td) r[15]=(spd<<4)|td;
+  }
   return r;
 }
 
@@ -201,10 +231,11 @@ function convertAls(xml, velToV){
   st.tracks=tracks.length; st.skipped=Math.max(0,tracks.length-9);
   const phraseList=[], phraseMap=new Map();                 // de-dup identical phrases
   const trackChains=Array.from({length:9},()=>[]);
-  const instNames=Array(9).fill(""), instOps=Array(9).fill(null);
+  const instNames=Array(9).fill(""), instOps=Array(9).fill(null), instAnalog=Array(9).fill(null);
   tracks.slice(0,9).forEach((track,ti)=>{
     instNames[ti]=ascii(enc.encode((track.getElementsByTagName("EffectiveName")[0]||track.getElementsByTagName("UserName")[0]||{}).getAttribute?.("Value")||("TRK"+(ti+1))),0,8);
     if(ti<FM_CH) instOps[ti]=track.getElementsByTagName("Operator")[0]||null;   // FM track's Operator device, if any
+    else instAnalog[ti]=track.getElementsByTagName("UltraAnalog")[0]||null;      // PSG track's Analog device, if any
     const seq=track.getElementsByTagName("MainSequencer")[0];
     const csl=seq&&seq.getElementsByTagName("ClipSlotList")[0];
     if(!csl) return;
@@ -237,7 +268,7 @@ function convertAls(xml, velToV){
     }
     flushRun();
   });
-  return {phraseList, chainList:window.__chainList, trackChains, instNames, instOps, st};
+  return {phraseList, chainList:window.__chainList, trackChains, instNames, instOps, instAnalog, st};
 }
 function buildBlock(conv, velToV){
   const d=new Uint8Array(DATA_SIZE).fill(0);
@@ -258,17 +289,20 @@ function buildBlock(conv, velToV){
   // instruments: FM (0-5) / TONE (6-8); index = track
   const io=POOL.instruments[0], gmis=[];
   for(let ti=0;ti<NINSTR;ti++) d[io+ti*INSTR_SZ]=0xFF;      // $FF type = unused slot
-  let fmConv=0;
+  let fmConv=0, anConv=0;
   for(let ti=0;ti<9;ti++){
     let rec;
     if(ti<FM_CH){ const nm=conv.instNames[ti]||("FM"+(ti+1)), op=conv.instOps&&conv.instOps[ti];
       try{ rec=op?operatorToRecord(op,nm):defaultFM(nm); if(op)fmConv++; }
       catch(e){ rec=defaultFM(nm); }                        // not an Operator we can read -> default patch
-    } else rec=toneInst(conv.instNames[ti]||("PSG"+(ti-5)));
+    } else { const nm=conv.instNames[ti]||("PSG"+(ti-5)), an=conv.instAnalog&&conv.instAnalog[ti];
+      try{ rec=an?analogToTone(an,nm):toneInst(nm); if(an)anConv++; }
+      catch(e){ rec=toneInst(nm); }                         // not an Analog we can read -> default TONE
+    }
     d.set(rec, io+ti*INSTR_SZ);
     if(ti<FM_CH) gmis.push({name:conv.instNames[ti]||("fm"+(ti+1)), rec});
   }
-  conv.st.fmConv=fmConv;
+  conv.st.fmConv=fmConv; conv.st.anConv=anConv;
   // tables/grooves/waves left zero (defaults); groove pool: fill with 6
   d.fill(6, POOL.grooves[0], POOL.grooves[0]+POOL.grooves[1]);
   return {d, gmis};
@@ -299,6 +333,7 @@ async function fromAls(buf, name){
   report(`Live Set: ${s.tracks} MIDI track(s)${s.skipped?` (${s.skipped} beyond 9 skipped)`:""}
 mapped 9 channels -> F1..F6 (FM) + S1..S3 (TONE)
 FM patches: ${s.fmConv||0} converted from Operator devices, ${FM_CH-(s.fmConv||0)} default
+PSG patches: ${s.anConv||0} converted from Analog devices (ADSR->AHD, LFO->vib/trm), ${3-(s.anConv||0)} default
 clips: ${s.clips} · phrases: ${conv.phraseList.length}/${NPHRASES} · chains: ${conv.chainList.length}/${NCHAINS}
 notes octave-folded: ${s.folded} · polyphony reduced: ${s.poly}${s.truncated?"\n⚠ song exceeded pool limits — truncated":""}
 velocity->X: ${velToV?"on":"off"} · FM .gmi export: ${exportGmi?"on":"off"}`);
