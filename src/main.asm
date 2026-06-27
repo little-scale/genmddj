@@ -11677,7 +11677,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     move.w  d0, VDP_DATA
     bra     .rf_done
 .rf_menu:                                   ; --- action sub-menu on the right ---
-    moveq   #8, d3                          ; SAVE (menu_row 0) at row 8 col 22
+    moveq   #10, d3                         ; SAVE (menu_row 0) at row 10 col 22 (below the divider)
     moveq   #22, d4
     moveq   #0, d2
     tst.b   menu_row
@@ -11686,7 +11686,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm0:
     lea     str_p_save, a1
     bsr     print_hl
-    moveq   #9, d3                          ; LOAD (menu_row 1)
+    moveq   #11, d3                         ; LOAD (menu_row 1)
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #1, menu_row
@@ -11695,7 +11695,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm1:
     lea     str_p_load, a1
     bsr     print_hl
-    moveq   #10, d3                         ; CLEAR (menu_row 2)
+    moveq   #12, d3                         ; CLEAR (menu_row 2)
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #2, menu_row
@@ -11704,7 +11704,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm2:
     lea     str_o_clr, a1
     bsr     print_hl
-    moveq   #11, d3                         ; CANCEL (menu_row 3)
+    moveq   #13, d3                         ; CANCEL (menu_row 3)
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #3, menu_row
