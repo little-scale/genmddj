@@ -268,8 +268,8 @@ dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directo
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
 opt_songcol equ $00FFD435           ; (vestigial)
-files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR/DEMO sub-menu is open
-menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=DEMO 4=CANCEL)
+files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR sub-menu is open
+menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=CANCEL)
 files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
@@ -1684,9 +1684,9 @@ files_nav:                                 ; FILES: list mode = slots 0..count; 
     subq.b  #1, menu_row
     rts
 .fn_mdn:
-    btst    #1, d2                            ; sub-menu: Down = next action (0-4, last = CANCEL)
+    btst    #1, d2                            ; sub-menu: Down = next action (0-3, last = CANCEL)
     beq.s   .fn_x
-    cmpi.b  #4, menu_row
+    cmpi.b  #3, menu_row
     bhs.s   .fn_x
     addq.b  #1, menu_row
     rts
@@ -3012,7 +3012,7 @@ edit_instr:
     rts
 
 do_insert:
-    cmpi.b  #SCR_FILES, cur_screen         ; FILES: B-tap = SAVE/LOAD/DELETE/NEW/DEMO or load a song
+    cmpi.b  #SCR_FILES, cur_screen         ; FILES: B-tap runs the open sub-menu action
     beq     files_action
     cmpi.b  #SCR_INSTR, cur_screen         ; INSTR/FM: B-tap on a library button = LOAD/SAVE
     beq.s   .di_bank
@@ -11696,19 +11696,10 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm2:
     lea     str_o_clr, a1
     bsr     print_hl
-    moveq   #11, d3                         ; DEMO (menu_row 3)
+    moveq   #11, d3                         ; CANCEL (menu_row 3)
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #3, menu_row
-    bne.s   .rf_sm3
-    moveq   #$60, d2
-.rf_sm3:
-    lea     str_p_demo, a1
-    bsr     print_hl
-    moveq   #12, d3                         ; CANCEL (menu_row 4)
-    moveq   #22, d4
-    moveq   #0, d2
-    cmpi.b  #4, menu_row
     bne.s   .rf_sm4
     moveq   #$60, d2
 .rf_sm4:
@@ -12084,8 +12075,6 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     move.b  cur_row, d0
     cmpi.b  #3, d0
     beq.s   .pa_new
-    cmpi.b  #4, d0
-    beq.s   .pa_demo
     cmpi.b  #6, d0
     beq.s   .pa_save
     cmpi.b  #7, d0
@@ -12096,12 +12085,6 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     bsr     proj_confirm
     bne.s   .pa_ret
     bsr     clear_song
-    bra.s   .pa_done
-.pa_demo:
-    moveq   #4, d0
-    bsr     proj_confirm
-    bne.s   .pa_ret
-    bsr     load_demo
     bra.s   .pa_done
 .pa_load:
     moveq   #7, d0
@@ -12151,9 +12134,7 @@ files_action:                             ; B-tap on FILES: run the selected sub
     beq     .oa_load
     cmpi.b  #2, d0
     beq     .oa_clear
-    cmpi.b  #3, d0
-    beq     .oa_demo
-    bra     .oa_done                         ; menu_row 4 = CANCEL -> just close the menu
+    bra     .oa_done                         ; menu_row 3 = CANCEL -> just close the menu
 .oa_save:
     clr.b   proj_armed
     bsr     files_stop                       ; transport stops for the SRAM op
@@ -12187,10 +12168,6 @@ files_action:                             ; B-tap on FILES: run the selected sub
     bmi     .oa_done
     bsr     dir_delete
     bra     .oa_done
-.oa_demo:
-    bsr     files_stop
-    bsr     load_demo
-    bra     .oa_done
 .oa_ret:
     rts
 .oa_done:
@@ -12206,7 +12183,7 @@ files_stop:                                ; stop the transport (clean stop path
 .fst_x:
     rts
 
-files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD/CLEAR/DEMO sub-menu
+files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD/CLEAR sub-menu
     tst.b   sram_layout
     beq.s   .fmt_x                           ; no SRAM -> no menu
     tst.b   files_menu
@@ -12286,51 +12263,6 @@ files_name_edit:                          ; d2 = d-pad bits: B+L/R move the name
 .fne_x:
     rts
 
-load_demo:                                ; phrases -> rests, then copy demo phrases/chains/song
-    lea     phrases, a2
-    move.w  #NPHRASES*16-1, d0
-.ld_clr:
-    move.b  #$FF, (a2)+
-    move.b  #0, (a2)+
-    move.b  #0, (a2)+
-    move.b  #0, (a2)+
-    dbra    d0, .ld_clr
-    lea     chains, a2                     ; chains pool -> empty ($FF) so untouched slots aren't phrase 00
-    move.w  #(NCHAINS*CHAIN_SIZE)-1, d0
-.ld_ce:
-    move.b  #$FF, (a2)+
-    dbra    d0, .ld_ce
-    lea     song, a2                       ; song pool -> empty ($FF) (no longer adjacent to chains)
-    move.w  #(NSONGROWS*NCH)-1, d0
-.ld_se:
-    move.b  #$FF, (a2)+
-    dbra    d0, .ld_se
-    lea     demo_phrases, a1
-    lea     phrases, a2
-    move.w  #(demo_end-demo_phrases)-1, d0
-.ld_cp:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .ld_cp
-    lea     demo_chains, a1
-    lea     chains, a2
-    move.w  #(demo_chains_end-demo_chains)-1, d0
-.ld_cc:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .ld_cc
-    lea     demo_song, a1
-    lea     song, a2
-    move.w  #(demo_song_end-demo_song)-1, d0
-.ld_cs:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .ld_cs
-    bsr     copy_factory_bank             ; demo instruments: factory bank + a TONE in slot 1 for the PSG tracks
-    lea     instrum+INSTR_SIZE, a2
-    lea     default_tone, a1
-    moveq   #INSTR_SIZE-1, d0
-.ld_dt:
-    move.b  (a1)+, (a2)+
-    dbra    d0, .ld_dt
-    rts
 
 copy_factory_bank:                        ; fm_factory (ROM) -> instrum (RAM): all NINSTR patches, 1:1
     lea     fm_factory, a1
@@ -12454,7 +12386,6 @@ str_o_clr:   dc.b "CLEAR",0
 str_o_cancel: dc.b "CANCEL",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
-str_p_demo: dc.b "DEMO",0
 str_p_slot: dc.b "SLOT",0
 str_p_lfo:  dc.b "LFO",0
 str_p_save: dc.b "SAVE",0
@@ -12634,49 +12565,6 @@ tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $01000000
     dc.l $00000000
 
-; 4 single-note phrases (note at row 0, rests after): C-4 E-4 G-4 C-5
-demo_phrases:
-    dc.b 48,0,0,0            ; phrase 0  C-4
-    rept 15
-    dc.b $FF,0,0,0
-    endr
-    dc.b 52,1,0,0            ; phrase 1  E-4 (instrument 1 = TONE, the PSG voice)
-    rept 15
-    dc.b $FF,0,0,0
-    endr
-    dc.b 55,1,0,0            ; phrase 2  G-4 (instrument 1 = TONE)
-    rept 15
-    dc.b $FF,0,0,0
-    endr
-    dc.b 60,0,0,0            ; phrase 3  C-5
-    rept 15
-    dc.b $FF,0,0,0
-    endr
-demo_end:
-    even
-
-; chains (2 steps each so the chain playhead has somewhere to move):
-; each step = (phrase#, transpose); $FF phrase# = end-of-chain
-demo_chains:
-    dc.b 0,0, 3,0          ; chain 0: C-4 then C-5
-    dcb.b CHAIN_SIZE-4, $FF
-    dc.b 1,0, 2,0          ; chain 1: E-4 then G-4
-    dcb.b CHAIN_SIZE-4, $FF
-    dc.b 2,0, 1,0          ; chain 2: G-4 then E-4
-    dcb.b CHAIN_SIZE-4, $FF
-    dc.b 3,0, 0,0          ; chain 3: C-5 then C-4
-    dcb.b CHAIN_SIZE-4, $FF
-demo_chains_end:
-    even
-
-; song: chain# per track (F1 F2 F3 F4 F5 F6 T1 T2 T3 NO); $FF = empty/inactive
-; demo plays F1 (FM) + T1 + T2 (square); the rest are silent
-demo_song:
-    dc.b 0,   $FF,$FF,$FF,$FF,$FF,  1,   2,   $FF, $FF   ; row 0
-    dc.b 3,   $FF,$FF,$FF,$FF,$FF,  2,   1,   $FF, $FF   ; row 1
-    dcb.b (NSONGROWS-2)*NCH, $FF
-demo_song_end:
-    even
 
 ; M6-A FM test: a minimal patch on YM channel 1 + key-on.
 ; triples: part(0=ch1-3), reg, value. algorithm 7 (all ops are carriers),
