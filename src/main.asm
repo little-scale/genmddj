@@ -7189,7 +7189,75 @@ engine_tick:
     bra     .noadv                        ; compose held voices + push; the OUT/PULSE checks skip (opt_sync=4)
 
 midi_poll:                                ; STUB until the ESP32-S3 2-wire link exists (MIDI.md §3).
-    rts                                   ; the dispatch (midi_dispatch) is testable now by injecting events.
+    rts                                   ; the wire feeds midi_dispatch; dispatch is testable now by injection.
+
+; --- MIDI event dispatch (MIDI.md §3.4) -- d0=status (type<<4|chan), d1=data1, d2=data2 ---
+midi_dispatch:
+    moveq   #0, d3
+    move.b  d0, d3
+    andi.b  #$0F, d3                       ; MIDI channel 0-15
+    cmpi.b  #NCH, d3                        ; -> track (1:1 map for now); >=NCH has no voice -> ignore
+    bhs     .md_done
+    mulu.w  #CHSIZE, d3
+    lea     ch_state, a6
+    adda.w  d3, a6                          ; a6 = the addressed channel's state
+    move.b  d0, d3
+    lsr.b   #4, d3                          ; message type (high nibble)
+    cmpi.b  #2, d3
+    beq     midi_note_on
+    cmpi.b  #1, d3
+    beq     midi_note_off
+    cmpi.b  #3, d3
+    beq     midi_cc
+    cmpi.b  #4, d3
+    beq     midi_pgm
+    cmpi.b  #5, d3
+    beq     midi_bend
+    cmpi.b  #7, d3
+    beq     midi_panic
+.md_done:
+    rts
+
+midi_note_on:                             ; a6=channel, d1=MIDI note 0-127, d2=velocity 1-127
+    moveq   #0, d0
+    move.b  d1, d0
+    subi.w  #12, d0                         ; MIDI C0(12) -> genmddj note 0 (TODO: calibrate offset)
+    bge.s   .mn_chkhi
+    moveq   #0, d0                          ; clamp below
+    bra.s   .mn_set
+.mn_chkhi:
+    cmpi.w  #95, d0
+    bls.s   .mn_set
+    moveq   #95, d0                         ; clamp above (0..95)
+.mn_set:
+    move.b  d0, c_note(a6)
+    bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync
+    lea     instrum, a4                     ; (re)start the macro table from instrum[c_instr]
+    moveq   #0, d3
+    move.b  c_instr(a6), d3
+    mulu.w  #INSTR_SIZE, d3
+    cmpi.b  #1, (i_type,a4,d3.w)           ; KIT (1) -> no macro table
+    beq.s   .mn_notbl
+    move.b  (i_tbl,a4,d3.w), c_tbl(a6)
+    move.b  #$FF, c_tcrow(a6)
+    move.b  #0, c_trow(a6)
+    move.b  #0, c_tctr(a6)
+    bra.s   .mn_trig
+.mn_notbl:
+    move.b  #$FF, c_tbl(a6)
+.mn_trig:
+    bsr     note_trigger                   ; key-on with the channel's current instrument
+    rts                                     ; (velocity -> volume comes with the CC/level work, step 2c)
+
+midi_note_off:                            ; a6=channel -> release
+    move.b  #0, c_keyon(a6)              ; FM key-off (release); PSG release refined later
+    rts
+
+midi_cc:                                   ; TODO step 2c (CC map, MIDI.md §4.3)
+midi_pgm:                                  ; TODO step 2b (program change, MIDI.md §4.2)
+midi_bend:                                 ; TODO step 2d (pitch bend)
+midi_panic:                                ; TODO step 2d (all-notes-off)
+    rts
 
 ; ---- per-frame wave re-bake: re-push the sounding wave + re-arm (no phase reset on the
 ;      Z80 side, so it's seamless). a6/a1 set from wave_ch + its instrument. ----
