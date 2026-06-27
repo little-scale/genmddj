@@ -23,7 +23,7 @@ No build step. The whole tool is one HTML page (canvas swatches + a colour picke
 | c1 | colour 1 | text / cursor-block |
 | c2 | colour 2 | cursor glyph (currently = bg) |
 
-Default schemes: `0 KIDD`, `1 WHT`, `2 GRN`, `3 AMBR`, `4 CYAN`, `5 PINK`, `6 NEON`, `7 MINT`.
+Default schemes: `0 BLK`, `1 WHT`, `2 KIDD`, `3 AMBR`, `4 CYAN`, `5 PINK`, `6 NEON`, `7 MINT`.
 (`apply_palette` loads `pal_table[opt_pal]` into CRAM 0–2; `opt_pal`'s "0..3" comment is **stale** —
 there are 8 — confirm the OPTIONS UI exposes all 8 when wiring the editor.)
 

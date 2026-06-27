@@ -10615,9 +10615,9 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
 ; ---- 8 UI palettes: c0 background, c1 text/cursor-block, c2 cursor glyph (= bg). MD $0BGR. ----
     dc.b    "GMDJPAL0"              ; locator for the browser palette ROM-patcher (PALETTE.md §5)
 pal_table:                          ; SMSGGDJ's 8 schemes (SMS 2:2:2 -> MD: 1->$4 2->$A 3->$E)
-    dc.w $0E40, $00EE, $0E40        ; 0 KIDD  yellow on sky blue (default; SMSGGDJ $34/$0F)
-    dc.w $0000, $0EEE, $0000        ; 1 BLK   white on black
-    dc.w $0EEE, $0000, $0EEE        ; 2 WHT   black on white
+    dc.w $0000, $0EEE, $0000        ; 0 BLK   white on black (default)
+    dc.w $0EEE, $0000, $0EEE        ; 1 WHT   black on white
+    dc.w $0E40, $00EE, $0E40        ; 2 KIDD  yellow on sky blue (SMSGGDJ $34/$0F)
     dc.w $0002, $00AE, $0002        ; 3 AMBR  amber terminal
     dc.w $0400, $0EE0, $0400        ; 4 CYAN  cyan on navy
     dc.w $0404, $0E0E, $0404        ; 5 PINK  magenta on purple
