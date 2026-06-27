@@ -12049,6 +12049,9 @@ rom_load_instr:                            ; d0 = factory slot -> copy fm_factor
 .rli_c:
     move.b  (a0)+, (a1)+
     dbra    d2, .rli_c
+    lea     instrum+i_pan, a1             ; ROM preset load -> force stereo L+R (only ROM, not SRAM/RAM)
+    adda.l  d1, a1                          ; d1 still = cur_instr*INSTR_SIZE
+    move.b  #3, (a1)
 .rli_done:
     movem.l (sp)+, d0-d2/a0-a1
     rts
