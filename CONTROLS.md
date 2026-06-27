@@ -91,7 +91,7 @@ fails its checksum blanks to a known state. OPTIONS holds just the display/sync 
 
 | Screen | Fields |
 |---|---|
-| **PROJECT** | TMPO / TSP / MODE / LFO + the song NAME (B-hold + D-pad edits the name). Save / load / new / demo moved to OPTIONS. |
+| **PROJECT** | TMPO / TSP / MODE / LFO. The song NAME is shown but **read-only** here — rename only on FILES. Save / load / new / demo moved to FILES. |
 | **OPTIONS** | VID / SYNC / PALETTE (the song library moved to its own FILES screen — C+Down from SONG) |
 | **WAVE** | plain Left/Right = wave-step cursor; B-hold + D-pad = sample level |
 | **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context |

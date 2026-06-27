@@ -1928,7 +1928,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     movem.l (sp)+, d0/d2-d3
     rts
 .rmproj:
-    moveq   #4, d1                          ; TMPO TSP MODE LFO NAME (save/load moved to OPTIONS)
+    moveq   #3, d1                          ; TMPO TSP MODE LFO (NAME is read-only here -- rename only in FILES)
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
@@ -11977,9 +11977,7 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     beq.s   .ep_mode
     cmpi.b  #3, d0
     beq.s   .ep_lfo
-    cmpi.b  #4, d0
-    beq     .ep_name
-    rts
+    rts                                       ; NAME is read-only on PROJECT (rename only in FILES)
 .ep_mode:
     lea     proj_mode, a1
     moveq   #1, d3
@@ -12005,24 +12003,6 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     moveq   #1, d4
     bsr     adj_field
     move.b  #1, g_lfo_dirty                   ; re-emit $22 on the next push -> new rate heard at once
-    rts
-.ep_name:                                 ; cur_row 9: cycle the song-name char at cur_col (song_title)
-    moveq   #0, d0
-    move.b  cur_col, d0
-    lea     song_title, a1
-    adda.w  d0, a1
-    move.b  (a1), d3
-    move.b  d2, d0
-    andi.b  #6, d0
-    bne.s   .epn_back
-    moveq   #1, d2
-    bra.s   .epn_go
-.epn_back:
-    moveq   #0, d2
-.epn_go:
-    bsr     name_step
-    move.b  d3, (a1)
-    move.b  #1, need_clear
     rts
 .ep_tmpo:                                 ; TMPO = scale the active groove (every tick +-1): faster/slower, swing kept
     moveq   #0, d0                          ; d0 = delta added to every tick (+1 slower / -1 faster)
