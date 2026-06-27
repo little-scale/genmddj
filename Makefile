@@ -7,7 +7,7 @@ EMU   := mednafen
 SRCS  := src/main.asm
 
 # version (from ver_str in the source) + short git hash (+ for a dirty tree) -> stamped ROM name
-VER     := $(shell sed -nE 's/^ver_str:.*"([^"]+)".*/\1/p' src/main.asm)
+VER     := $(shell sed -nE 's/^ver_str:.*"([^"]+)".*/\1/p' src/main.asm | tr A-Z a-z)
 HASH    := $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo 0000000)$(shell test -n "$$(git status --porcelain 2>/dev/null)" && printf '+')
 STAMPED := $(BUILD)/genmddj-$(VER)-$(HASH).bin
 
