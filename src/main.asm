@@ -225,6 +225,7 @@ c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override
 c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
 c_slide    equ $00FFD650           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0). NOTE: a WORD array (NCH*2 bytes) -- kept in the free $D650+ block so it can't overrun the groove/sync/sram vars at $D420+ (the engine_play_reset clear spans c_slide+c_lrate = NCH*3 bytes)
 c_lrate    equ $00FFD664           ; L command: per-channel slide rate (byte array, immediately after c_slide so the clear covers both; 0 = no glide)
+c_lfopitch equ $00FFD66E           ; FM LFO TUNE target: per-channel pitch (fnum) offset, word array (right after c_lrate; cleared each tick by fmlfo_tick + by engine_play_reset)
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -4777,10 +4778,10 @@ lf_colx: dc.b 3, 6, 9, 15, 18, 20, 26, 28, 30 ; 9 cols: ON CH PARAM R % SYNC PO 
     even
 dir_glyph: dc.b $7F, $7E, $7C              ; DIR 0 BOTH=updown, 1 UP, 2 DOWN -> arrow tiles
     even
-lf_pnames:                                  ; 34 FM-param names (4 chars), in fmlfo_ptab order
+lf_pnames:                                  ; 35 FM-param names (4 chars), in fmlfo_ptab order (34 = TUNE, pitch)
     dc.b "TL1 TL3 TL2 TL4 DT1 DT3 DT2 DT4 MUL1MUL3MUL2MUL4FB  ALGO"
     dc.b "AR1 AR3 AR2 AR4 D1R1D1R3D1R2D1R4D2R1D2R3D2R2D2R4"
-    dc.b "RR1 RR3 RR2 RR4 SL1 SL3 SL2 SL4 "
+    dc.b "RR1 RR3 RR2 RR4 SL1 SL3 SL2 SL4 TUNE"
     even
 lf_snames: dc.b "NOTE PHRSEFREE "           ; resync modes (5 chars): NOTE / PHRASE / FREE
     even
@@ -6468,8 +6469,8 @@ engine_play_reset:
 .epr_e:
     move.b  #$FF, (a0)+
     dbra    d0, .epr_e
-    lea     c_slide, a0                   ; L command: clear portamento offsets + rates
-    moveq   #(NCH*3)-1, d0
+    lea     c_slide, a0                   ; clear L portamento offsets + rates + the LFO TUNE offsets (contiguous)
+    moveq   #(NCH*5)-1, d0
 .epr_l:
     clr.b   (a0)+
     dbra    d0, .epr_l
@@ -6590,6 +6591,11 @@ engine_play_reset:
 ; when the LFO is on. Resync resets the phase on note-on / phrase-start per the c_lfosync flag.
 fmlfo_tick:
     movem.l d0-d4/d6-d7/a1-a4, -(sp)
+    lea     c_lfopitch, a1                  ; clear all TUNE pitch offsets first (an off LFO -> no detune)
+    moveq   #NCH-1, d0
+.flt_pclr:
+    clr.w   (a1)+
+    dbra    d0, .flt_pclr
     lea     lfo_cfg, a2
     moveq   #0, d6                          ; LFO index = phase index 0..NLFO-1
 .flt:
@@ -6669,6 +6675,22 @@ fmlfo_tick:
 .fmacap:
     lea     lfo_amp, a4
     move.b  d0, (a4,d6.w)
+    move.b  (LF_PARM,a2), d0               ; --- TUNE (pitch) target: a per-channel fnum offset ---
+    cmpi.b  #LFP_TUNE, d0
+    bne.s   .flnottune
+    tst.b   c_keyon(a3)                    ; only while a note is on
+    beq     .fltn
+    moveq   #0, d0
+    move.b  c_track(a3), d0
+    add.w   d0, d0                          ; track*2 -> c_lfopitch (word)
+    lea     c_lfopitch, a4
+    add.w   d1, (a4,d0.w)                  ; accumulate the LFO delta into the pitch offset
+    cmpi.w  #YM_CAP, d5                    ; SCB headroom -> re-emit this channel's frequency this tick
+    bhi     .fltn
+    movea.l a3, a6                         ; fm_freq_send appends $A4/$A0 (base+fine+slide+TUNE), overriding the base
+    bsr     fm_freq_send
+    bra     .fltn
+.flnottune:
     moveq   #0, d0                           ; param table entry -> a4 = {patch_off, reg, max}
     move.b  (LF_PARM,a2), d0
     cmpi.w  #FMLFO_NPARM, d0
@@ -6764,7 +6786,8 @@ fmlfo_ptab:
     dc.b i_op+1*10+9, $84, 15, 4, i_op+1*10+8, 0    ; SL3
     dc.b i_op+2*10+9, $88, 15, 4, i_op+2*10+8, 0    ; SL2
     dc.b i_op+3*10+9, $8C, 15, 4, i_op+3*10+8, 0    ; SL4
-FMLFO_NPARM equ 34
+LFP_TUNE    equ 34                  ; FM LFO param 34 = TUNE (pitch): no fmlfo_ptab entry, special-cased in fmlfo_tick
+FMLFO_NPARM equ 35
     even
 
 ; ECHO: each engine tick (after the row advance, before compose), capture the input voice's
@@ -9278,14 +9301,16 @@ fm_freq_send:
     moveq   #95, d0
 .ffs_chi:
     bsr     fm_freq                         ; d1=$A4, d2=$A0
-    moveq   #0, d3                          ; F/P fine + L slide -> add to the 11-bit fnum
+    moveq   #0, d3                          ; F/P fine + L slide + LFO TUNE -> add to the 11-bit fnum
     move.b  c_track(a6), d3
     lea     c_pfine, a4
     move.b  (a4,d3.w), d0
     ext.w   d0
-    add.w   d3, d3                          ; track*2 -> c_slide (word array)
+    add.w   d3, d3                          ; track*2 -> c_slide/c_lfopitch (word arrays)
     lea     c_slide, a4
-    add.w   (a4,d3.w), d0                   ; total fnum delta = c_pfine + c_slide
+    add.w   (a4,d3.w), d0                   ; + L slide
+    lea     c_lfopitch, a4
+    add.w   (a4,d3.w), d0                   ; + LFO TUNE offset (total fnum delta)
     beq.s   .ffs_nofine
     move.w  d0, d3
     move.w  d1, d4
