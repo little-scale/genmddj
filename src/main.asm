@@ -223,8 +223,8 @@ c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override
 a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
 c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override (ticks/step; $FF = use instrument)
 c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
-c_slide    equ $00FFD414           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0)
-c_lrate    equ $00FFD428           ; L command: per-channel slide rate (period units/tick; 0 = no glide)
+c_slide    equ $00FFD650           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0). NOTE: a WORD array (NCH*2 bytes) -- kept in the free $D650+ block so it can't overrun the groove/sync/sram vars at $D420+ (the engine_play_reset clear spans c_slide+c_lrate = NCH*3 bytes)
+c_lrate    equ $00FFD664           ; L command: per-channel slide rate (byte array, immediately after c_slide so the clear covers both; 0 = no glide)
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -9501,13 +9501,16 @@ slide_arm:                                ; L command: arm portamento. In: a6=ch
     move.w  d3, (a1,d0.w)
     rts
 
-note_fnum11:                              ; d0.w = note (0-95) -> d1.w = 11-bit F-number. Preserves d0/d2/d4/a1.
+note_fnum_blk:                            ; d0.w = note (0-95) -> d1.w = 11-bit F-number, d3.w = block. Preserves d0/d2/d4/a1.
     movem.l d0/d2/d4/a1, -(sp)
     cmpi.w  #95, d0
     bls.s   .nf_ok
     moveq   #95, d0
 .nf_ok:
     bsr     fm_freq                         ; d1 = $A4 (block<<3 | fnum hi), d2 = $A0 (fnum lo)
+    move.w  d1, d3
+    lsr.w   #3, d3
+    andi.w  #7, d3                          ; block
     andi.w  #7, d1
     lsl.w   #8, d1
     andi.w  #$FF, d2
@@ -9515,34 +9518,53 @@ note_fnum11:                              ; d0.w = note (0-95) -> d1.w = 11-bit 
     movem.l (sp)+, d0/d2/d4/a1
     rts
 
-fm_slide_arm:                             ; FM L portamento (simple, within-octave). In: a6=ch, d2.b=new note,
-    movem.l d0-d4/a1, -(sp)                 ; d3.b=old note. c_slide = old_fnum - new_fnum (added to the fnum, ramps
-    cmpi.b  #1, c_type(a6)                 ; to 0 -> starts at old, glides to new). Preserves all regs.
-    bne.s   .fsa_x                          ; FM channels only
-    moveq   #0, d0
-    move.b  c_track(a6), d0
-    add.w   d0, d0                          ; c_slide index (word array)
+; FM L portamento (block-aware). In: a6=ch, d2.b=new note, d3.b=old note. Preserves all regs.
+; c_slide = (old fnum re-expressed in the NEW note's block) - new fnum, so the glide starts at
+; the old pitch and ramps to the new one regardless of a block (octave) boundary between them.
+; Descending slides beyond ~an octave saturate the 11-bit fnum (clamp); ascending is unlimited.
+fm_slide_arm:
+    movem.l d0-d6/a1, -(sp)
+    cmpi.b  #1, c_type(a6)                 ; FM channels only
+    bne     .fsa_x
+    moveq   #0, d6
+    move.b  c_track(a6), d6
+    add.w   d6, d6                          ; d6 = c_slide index (word array)
     lea     c_slide, a1
     tst.b   l_set
     beq.s   .fsa_clr                        ; no L this row -> stop any glide
+    move.b  d3, d5                          ; d5 = old note (save before clobber)
     moveq   #0, d0
-    move.b  d2, d0                          ; new note -> new fnum
-    bsr     note_fnum11
+    move.b  d2, d0                          ; new note -> new fnum (d4), new block (d2)
+    bsr     note_fnum_blk
     move.w  d1, d4                          ; d4 = new_fnum
+    move.w  d3, d2                          ; d2 = new_block
     moveq   #0, d0
-    move.b  d3, d0                          ; old note -> old fnum
-    bsr     note_fnum11                    ; d1 = old_fnum
-    sub.w   d4, d1                          ; old - new
-    moveq   #0, d0                          ; (note_fnum11 preserved regs, but d0 was reused above)
-    move.b  c_track(a6), d0
-    add.w   d0, d0
-    lea     c_slide, a1
-    move.w  d1, (a1,d0.w)
+    move.b  d5, d0                          ; old note -> old fnum (d1), old block (d3)
+    bsr     note_fnum_blk
+    sub.w   d2, d3                          ; d3 = old_block - new_block
+    beq.s   .fsa_set
+    bmi.s   .fsa_rsh
+.fsa_lsh:                                    ; old block higher -> scale old fnum up into the new block
+    add.w   d1, d1
+    cmpi.w  #2047, d1
+    bls.s   .fsa_lc
+    move.w  #2047, d1                        ; saturate (descending > ~octave)
+.fsa_lc:
+    subq.w  #1, d3
+    bne.s   .fsa_lsh
+    bra.s   .fsa_set
+.fsa_rsh:                                    ; old block lower -> scale old fnum down into the new block
+    lsr.w   #1, d1
+    addq.w  #1, d3
+    bne.s   .fsa_rsh
+.fsa_set:
+    sub.w   d4, d1                          ; c_slide = old(in new's block) - new
+    move.w  d1, (a1,d6.w)
     bra.s   .fsa_x
 .fsa_clr:
-    clr.w   (a1,d0.w)
+    clr.w   (a1,d6.w)
 .fsa_x:
-    movem.l (sp)+, d0-d4/a1
+    movem.l (sp)+, d0-d6/a1
     rts
 
 ; ---- advance the wave AHD envelope one frame (a6 = channel, a4 = WAVE instrument).
