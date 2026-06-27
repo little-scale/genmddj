@@ -183,7 +183,7 @@ env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connec
 env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
 env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
-opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN
+opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN 4=MIDI (note takeover; MIDI.md)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
@@ -10291,9 +10291,9 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
 .os:
     moveq   #0, d1
     move.b  opt_sync, d1
-    cmpi.w  #3, d1
+    cmpi.w  #4, d1
     bls.s   .osc
-    moveq   #3, d1
+    moveq   #4, d1
 .osc:
     lsl.w   #2, d1
     lea     sync_lbl, a1
@@ -10630,7 +10630,7 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     bra.s   .eo_apply
 .eo_sync:
     lea     opt_sync, a1
-    moveq   #3, d3
+    moveq   #4, d3                          ; OFF/OUT/PULSE/IN/MIDI
     moveq   #1, d4
 .eo_apply:
     bsr     adj_field
@@ -12424,11 +12424,12 @@ str_syn_o:  dc.b "OFF  ",0
 str_syn_i:  dc.b "IN   ",0
 str_syn_u:  dc.b "OUT  ",0
 str_syn_p:  dc.b "PULSE",0
+str_syn_m:  dc.b "MIDI ",0
 str_md_s:   dc.b "SONG",0
 str_md_live: dc.b "LIVE",0
     even
 vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
-sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i   ; OFF=0 OUT=1 PULSE=2 IN=3
+sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i, str_syn_m   ; OFF=0 OUT=1 PULSE=2 IN=3 MIDI=4
 pmode_lbl:  dc.l str_md_s, str_md_live
     even
 str_voice:  dc.b "VOICE:",0
