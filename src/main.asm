@@ -7061,6 +7061,8 @@ sync_in_delta:                            ; IN: -> d3.b = engine ticks to run th
 
 engine_tick:
     move.b  #0, patch_done                ; FM operator-patch budget: one per tick
+    cmpi.b  #4, opt_sync                  ; SYNC=MIDI -> takeover: no advance, compose held voices
+    beq     .midi
     tst.b   playing
     bne.s   .play
     ; stopped: silence all channels (compose emits the change once)
@@ -7182,6 +7184,12 @@ engine_tick:
 .nopush:
     bsr     wave_rebake                   ; re-arm the sounding wave each frame (sustain + live edits)
     rts
+.midi:                                    ; SYNC=MIDI takeover (MIDI.md §5): MIDI owns all 10 voices
+    bsr     midi_poll                     ; clock in events from the S3 wire + dispatch -> sets voice state
+    bra     .noadv                        ; compose held voices + push; the OUT/PULSE checks skip (opt_sync=4)
+
+midi_poll:                                ; STUB until the ESP32-S3 2-wire link exists (MIDI.md §3).
+    rts                                   ; the dispatch (midi_dispatch) is testable now by injecting events.
 
 ; ---- per-frame wave re-bake: re-push the sounding wave + re-arm (no phase reset on the
 ;      Z80 side, so it's seamless). a6/a1 set from wave_ch + its instrument. ----
@@ -7913,6 +7921,8 @@ load_step:                                ; a6 = channel; d1 = chain step
     rts
 
 is_live_silent:                           ; a6 = channel -> d0 = 1 if LIVE mode and this track is un-launched
+    cmpi.b  #4, opt_sync                  ; MIDI takeover: never LIVE-silence (MIDI owns the voices)
+    beq.s   .ils_no
     tst.b   proj_mode
     beq.s   .ils_no
     moveq   #0, d0
