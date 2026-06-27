@@ -7270,8 +7270,17 @@ midi_note_on:                             ; a6=channel, d1=MIDI note 0-127, d2=v
 .mn_notbl:
     move.b  #$FF, c_tbl(a6)
 .mn_trig:
+    move.w  d2, -(sp)                       ; save velocity across note_trigger (which clobbers d2)
     bsr     note_trigger                   ; key-on with the channel's current instrument
-    rts                                     ; (velocity -> volume comes with the CC/level work, step 2c)
+    move.w  (sp)+, d2
+    lsr.b   #3, d2                           ; velocity 1-127 -> carrier volume 0-15 (MIDI.md §4.1)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     lx_vol, a4
+    move.b  d2, (a4,d3.w)
+    lea     lx_dirty, a4
+    move.b  #1, (a4,d3.w)
+    rts
 
 midi_note_off:                            ; a6=channel -> release
     move.b  #0, c_keyon(a6)              ; FM key-off (release); PSG release refined later
@@ -7321,7 +7330,119 @@ midi_pgm:                                 ; a6=channel, d1=PC 0-95 (MIDI.md §4.
 .mp_done:
     rts
 
-midi_cc:                                   ; TODO step 2c (CC map, MIDI.md §4.3)
+midi_cc:                                   ; a6=channel, d1=CC#, d2=value 0-127 (MIDI.md §4.3)
+    moveq   #0, d3
+    move.b  c_track(a6), d3                ; d3 = track = override-array index
+    moveq   #0, d0
+    move.b  d1, d0                          ; CC number
+    cmpi.b  #1, d0
+    beq     .cc_fms
+    cmpi.b  #2, d0
+    beq     .cc_ams
+    cmpi.b  #3, d0
+    beq     .cc_lfo
+    cmpi.b  #10, d0
+    beq     .cc_pan
+    cmpi.b  #11, d0
+    beq     .cc_lvl
+    cmpi.b  #20, d0
+    beq     .cc_algo
+    cmpi.b  #21, d0
+    beq     .cc_fb
+    cmpi.b  #74, d0
+    beq     .cc_mtl
+    rts                                     ; unmapped CC -> ignore
+.cc_lvl:                                    ; CC11 -> carrier level (lx_vol 0-15)
+    lsr.b   #3, d2
+    lea     lx_vol, a4
+    move.b  d2, (a4,d3.w)
+    lea     lx_dirty, a4
+    move.b  #1, (a4,d3.w)
+    rts
+.cc_fms:                                    ; CC1 -> FMS (lo_b4 bits 0-2)
+    lsr.b   #4, d2
+    andi.b  #7, d2
+    lea     lo_b4, a4
+    move.b  (a4,d3.w), d0
+    andi.b  #$F8, d0
+    or.b    d2, d0
+    move.b  d0, (a4,d3.w)
+    bra.s   .cc_b4dirty
+.cc_ams:                                    ; CC2 -> AMS (lo_b4 bits 4-5)
+    lsr.b   #5, d2
+    andi.b  #3, d2
+    lsl.b   #4, d2
+    lea     lo_b4, a4
+    move.b  (a4,d3.w), d0
+    andi.b  #$CF, d0
+    or.b    d2, d0
+    move.b  d0, (a4,d3.w)
+    bra.s   .cc_b4dirty
+.cc_pan:                                    ; CC10 -> pan (lo_b4 bits 6-7): L / both / R
+    moveq   #$C0, d0                         ; 43-84 = both
+    cmpi.b  #43, d2
+    bcs.s   .cc_panl
+    cmpi.b  #85, d2
+    bcc.s   .cc_panr
+    bra.s   .cc_panset
+.cc_panl:
+    moveq   #$80, d0                         ; <43 = left (bit7)
+    bra.s   .cc_panset
+.cc_panr:
+    moveq   #$40, d0                         ; >=85 = right (bit6)
+.cc_panset:
+    lea     lo_b4, a4
+    move.b  (a4,d3.w), d1
+    andi.b  #$3F, d1
+    or.b    d0, d1
+    move.b  d1, (a4,d3.w)
+.cc_b4dirty:
+    lea     lo_dirty, a4
+    move.b  #1, (a4,d3.w)
+    rts
+.cc_algo:                                   ; CC20 -> ALGO (lq_b0 bits 0-2)
+    lsr.b   #4, d2
+    andi.b  #7, d2
+    lea     lq_b0, a4
+    move.b  (a4,d3.w), d0
+    andi.b  #$F8, d0
+    or.b    d2, d0
+    move.b  d0, (a4,d3.w)
+    bra.s   .cc_b0dirty
+.cc_fb:                                     ; CC21 -> feedback (lq_b0 bits 3-5)
+    lsr.b   #4, d2
+    andi.b  #7, d2
+    lsl.b   #3, d2
+    lea     lq_b0, a4
+    move.b  (a4,d3.w), d0
+    andi.b  #$C7, d0
+    or.b    d2, d0
+    move.b  d0, (a4,d3.w)
+.cc_b0dirty:
+    lea     lq_dirty, a4
+    move.b  #1, (a4,d3.w)
+    rts
+.cc_mtl:                                    ; CC74 -> modulator TL / brightness (lu_off, inverted)
+    moveq   #127, d0
+    sub.b   d2, d0                           ; brighter = lower TL
+    lea     lu_off, a4
+    move.b  d0, (a4,d3.w)
+    lea     lu_dirty, a4
+    move.b  #1, (a4,d3.w)
+    rts
+.cc_lfo:                                    ; CC3 -> global LFO rate+enable ($22 via g_lfo)
+    tst.b   d2
+    beq     .cc_lfooff
+    subq.b  #1, d2
+    lsr.b   #4, d2
+    andi.b  #7, d2
+    ori.b   #$08, d2                         ; LFO enable bit + rate 0-7
+    move.b  d2, g_lfo
+    bra.s   .cc_lfod
+.cc_lfooff:
+    move.b  #0, g_lfo
+.cc_lfod:
+    move.b  #1, g_lfo_dirty
     rts
 
 midi_bend:                                 ; a6=channel, d1=bend LSB7, d2=bend MSB7 (center 64) -> c_pfine
