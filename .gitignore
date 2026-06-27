@@ -27,6 +27,8 @@ tools/*_custom.bin
 #   TESTING.md  — internal QA checklist (references private dev ROMs)
 #   CLAUDE.md   — AI-assistant project context
 #   COMMANDS.md — internal command-set reconciliation / decision log (stale; not a user reference)
+#   MIDI.md     — MIDI-input design/build notes (parked; console side built, S3 wire pending)
 TESTING.md
 CLAUDE.md
 COMMANDS.md
+MIDI.md
