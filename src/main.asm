@@ -485,10 +485,10 @@ Start:
     move.w  (a1)+, VDP_DATA
     dbra    d0, .fa
 
-    move.l  #$C0000000, (a0)            ; palette 0
-    move.w  #$0E40, VDP_DATA            ; c0 sky blue (backdrop)
-    move.w  #$00EE, VDP_DATA            ; c1 star yellow (text/cursor block)
-    move.w  #$0E40, VDP_DATA            ; c2 sky blue (cursor glyph)
+    move.l  #$C0000000, (a0)            ; palette 0 = BLK (apply_palette re-loads it from pal_table at boot)
+    move.w  #$0000, VDP_DATA            ; c0 black (backdrop)
+    move.w  #$0EEE, VDP_DATA            ; c1 white (text/cursor block)
+    move.w  #$0000, VDP_DATA            ; c2 black (cursor glyph = bg)
 
     move.b  #$40, IO_CTRL1
 
