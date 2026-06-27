@@ -11504,12 +11504,12 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     lea     str_o_full, a1
     bsr     print_at
 .rf_nofull:
-    move.l  #$43000003, (a0)               ; --- divider (row 6): " SONGS NN " centred ---
+    move.l  #$44000003, (a0)               ; --- divider (row 8, below the map): " SONGS NN " centred ---
     moveq   #40-1, d3
 .rf_dash:
     move.w  #'-', VDP_DATA
     dbra    d3, .rf_dash
-    move.l  #$431E0003, (a0)
+    move.l  #$441E0003, (a0)
     move.w  #' ', VDP_DATA
     move.w  #'S', VDP_DATA
     move.w  #'O', VDP_DATA
@@ -11531,7 +11531,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     move.w  #' ', VDP_DATA
     cmpi.w  #16, d5
     bls.s   .rf_pgd
-    move.l  #$43420003, (a0)
+    move.l  #$44420003, (a0)
     move.w  #'P', VDP_DATA
     moveq   #0, d3
     move.b  opt_song, d3
@@ -11557,7 +11557,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     bmi.s   .rf_songs
     cmpi.w  #16, d6
     bcc.s   .rf_songs
-    addi.w  #7, d6
+    addi.w  #9, d6
     moveq   #0, d1
     cmp.w   d2, d7
     bne.s   .rf_e0
@@ -11609,7 +11609,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     bmi.s   .rf_ln2
     cmpi.w  #16, d6
     bcc.s   .rf_ln2
-    addi.w  #7, d6
+    addi.w  #9, d6
     moveq   #0, d1
     cmp.w   d2, d7
     bne.s   .rf_h0
@@ -11661,7 +11661,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     moveq   #0, d0
     move.b  opt_song, d0
     andi.w  #15, d0
-    addi.w  #7, d0
+    addi.w  #9, d0
     lsl.w   #6, d0
     addq.w  #3, d0
     moveq   #0, d1
