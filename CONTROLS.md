@@ -50,7 +50,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 | SONG (LIVE mode) | See **LIVE mode** below — launch / stop the cursor's track |
 | CHAIN | Solo this track's chain, from the cursor step |
 | PHRASE | Solo this phrase |
-| FILES | Open / close the SAVE / LOAD / CLEAR / DEMO / CANCEL sub-menu for the selected slot |
+| FILES | Open / close the SAVE / LOAD / CLEAR / CANCEL sub-menu for the selected slot |
 
 ## LIVE mode (SONG screen, `MODE = LIVE`)
 
@@ -79,7 +79,7 @@ Up to 32 songs. The action buttons live in a sub-menu (C+B), not on the screen.
 | **B-hold + Left / Right** | Move the name cursor (the inverted character) across the 8 name chars |
 | **B-hold + Up / Down** | Cycle the character under the cursor — the ring is `BLANK`-home: Up → A–Z then specials, Down → 0–9. Edits a saved slot rename it live; the `(EMPTY)` slot edits the working song's name |
 | **C-hold + B** tap | Open / close the action sub-menu for the selected slot |
-| *(menu)* **Up / Down + B** | Run **SAVE** (store the working song), **LOAD** (load the slot — or on `(EMPTY)`, start a fresh blank project), **CLEAR** (delete the slot), **DEMO** (load the built-in demo), or **CANCEL** (close) |
+| *(menu)* **Up / Down + B** | Run **SAVE** (store the working song), **LOAD** (load the slot — or on `(EMPTY)`, start a fresh blank project), **CLEAR** (delete the slot), or **CANCEL** (close) |
 
 The name is unified (`song_title`): it shows on PROJECT and on the SONG header, and is the slot
 name on save. Transport **stops automatically** on SAVE/LOAD. A refused save (directory or SRAM
@@ -91,7 +91,7 @@ fails its checksum blanks to a known state. OPTIONS holds just the display/sync 
 
 | Screen | Fields |
 |---|---|
-| **PROJECT** | TMPO / TSP / MODE / LFO. The song NAME is shown but **read-only** here — rename only on FILES. Save / load / new / demo moved to FILES. |
+| **PROJECT** | TMPO / TSP / MODE / LFO. The song NAME is shown but **read-only** here — rename only on FILES. Save / load moved to FILES. |
 | **OPTIONS** | VID / SYNC / PALETTE (the song library moved to its own FILES screen — C+Down from SONG) |
 | **WAVE** | plain Left/Right = wave-step cursor; B-hold + D-pad = sample level |
 | **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context |
