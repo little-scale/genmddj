@@ -7253,8 +7253,51 @@ midi_note_off:                            ; a6=channel -> release
     move.b  #0, c_keyon(a6)              ; FM key-off (release); PSG release refined later
     rts
 
+midi_pgm:                                 ; a6=channel, d1=PC 0-95 (MIDI.md §4.2): flat song/ROM/SRAM
+    moveq   #0, d0
+    move.b  d1, d0
+    cmpi.b  #NINSTR, d0
+    bcc.s   .mp_ext                        ; >=32 -> ROM/SRAM: copy into the channel's reserved slot
+    move.b  d0, c_instr(a6)                ; 0-31 song pool -> just point c_instr (non-destructive)
+    rts
+.mp_ext:
+    moveq   #0, d4                          ; reserved dest slot = NINSTR-NCH + track (22..31)
+    move.b  c_track(a6), d4
+    addi.w  #(NINSTR-NCH), d4
+    move.w  d4, d2
+    mulu.w  #INSTR_SIZE, d2
+    lea     instrum, a2
+    adda.l  d2, a2                          ; a2 = dest patch (survives sram_bank_setup)
+    cmpi.b  #64, d0
+    bcc.s   .mp_sram                        ; 64-95 SRAM library
+    subi.w  #NINSTR, d0                      ; 32-63 ROM factory: slot 0-31, RAM->RAM
+    mulu.w  #INSTR_SIZE, d0
+    lea     fm_factory, a0
+    adda.l  d0, a0
+    moveq   #INSTR_SIZE-1, d3
+.mp_rc:
+    move.b  (a0)+, (a2)+
+    dbra    d3, .mp_rc
+    move.b  d4, c_instr(a6)
+    rts
+.mp_sram:
+    subi.w  #64, d0                          ; SRAM slot 0-31
+    bsr     sram_bank_setup                 ; a1=phys, d5=stride (clobbers d0/d1/d3/d5/a1; a2/d4 safe)
+    beq.s   .mp_done                        ; no SRAM
+    cmpi.b  #$FF, (a1)                       ; never-saved slot -> leave channel's instrument as-is
+    beq.s   .mp_sunmap
+    moveq   #INSTR_SIZE-1, d3
+.mp_sr:
+    move.b  (a1), (a2)+
+    adda.l  d5, a1
+    dbra    d3, .mp_sr
+    move.b  d4, c_instr(a6)
+.mp_sunmap:
+    move.b  #0, $A130F1                      ; unmap SRAM
+.mp_done:
+    rts
+
 midi_cc:                                   ; TODO step 2c (CC map, MIDI.md §4.3)
-midi_pgm:                                  ; TODO step 2b (program change, MIDI.md §4.2)
 midi_bend:                                 ; TODO step 2d (pitch bend)
 midi_panic:                                ; TODO step 2d (all-notes-off)
     rts
