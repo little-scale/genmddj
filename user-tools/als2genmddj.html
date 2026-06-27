@@ -109,6 +109,8 @@ function toneInst(name){
 }
 
 // ---- Ableton Analog (UltraAnalog) -> PSG TONE record (rough: ADSR->AHD, LFO->vibrato/tremolo) ----
+// RULE: oscillator/voice 1 ONLY -- oscillator 2 is ignored. Analog repeats every param twice
+// (voice 1 then voice 2); we always take the first occurrence ([0] / mval's first match).
 // Verified vs a real Analog preset: device <UltraAnalog>; per voice two envelopes <Envelope.0>
 // (filter) + <Envelope.1> (amp/loudness); ADSR = AttackTime/DecayTime/SustainLevel/ReleaseTime
 // (all 0..1). LFO = LFOToggle/LFOSpeed; routing OscillatorLFOModPitch (->vibrato) and
@@ -118,7 +120,7 @@ function analogToTone(dev, name){
   const r=toneInst(name);                                   // start from the default TONE, then shape it
   const f=(el,tag)=>{ const v=parseFloat(mval(el,tag)); return isFinite(v)?v:0; };
   const cl=(x,lo,hi)=>Math.max(lo,Math.min(hi,Math.round(x)));
-  const env=dev.getElementsByTagName('Envelope.'+AMP_ENV)[0];   // first voice's amp envelope
+  const env=dev.getElementsByTagName('Envelope.'+AMP_ENV)[0];   // [0] = voice 1's amp envelope (osc 2 ignored)
   if(env){
     const atk=f(env,'AttackTime'), dec=f(env,'DecayTime'), sus=f(env,'SustainLevel'), rel=f(env,'ReleaseTime');
     r[8]=15;                                                 // ip_vol: AHD peaks at full
