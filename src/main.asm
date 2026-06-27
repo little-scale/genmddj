@@ -223,7 +223,7 @@ c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override
 a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
 c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override (ticks/step; $FF = use instrument)
 c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
-c_slide    equ $00FFD414           ; L command: per-channel portamento offset, word array (period units, ramps to 0)
+c_slide    equ $00FFD414           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0)
 c_lrate    equ $00FFD428           ; L command: per-channel slide rate (period units/tick; 0 = no glide)
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
@@ -7561,7 +7561,9 @@ advance_ch:                               ; a6 = channel
     bmi     nt_done                           ; cmpi flags -> would wrongly drop FM/KIT/WAVE)
     cmpi.w  #96, d2
     bhs     nt_done
+    move.b  c_note(a6), d3                ; old note (FM portamento reference) before overwriting
     move.b  d2, c_note(a6)
+    bsr     fm_slide_arm                  ; FM L: arm the fnum glide from the old note toward d2 (preserves all)
     movem.l d0/a0, -(sp)                    ; per-note state resets (d2 still holds the note this path needs):
     move.b  c_track(a6), d0                 ;   a new note clears C/F/P state unless that command is on its row,
     andi.w  #$00FF, d0                       ;   so chord/finetune/bend don't latch onto following notes
@@ -7945,7 +7947,7 @@ exec_cmd:
     beq     .cmd_v
     cmpi.b  #5, d2                          ; E xy = envelope re-slope (x=attack, y=decay; PSG/WAVE AHD)
     beq     .cmd_e
-    cmpi.b  #12, d2                         ; L xx = slide / portamento (PSG tone glide rate)
+    cmpi.b  #12, d2                         ; L xx = slide / portamento (PSG period + FM fnum glide rate)
     beq     .cmd_l
     rts                                    ; not a voice command (or no command)
 .cmd_q:
@@ -8183,7 +8185,7 @@ exec_cmd:
     lea     c_edcy, a4
     move.b  d2, (a4,d3.w)
     bra     .cmddone
-.cmd_l:                                   ; L xx = slide/portamento: glide rate (period units/tick); slide_arm sets the offset at note-on
+.cmd_l:                                   ; L xx = slide/portamento glide rate; note-on arms the offset (PSG: slide_arm in period units; FM: fm_slide_arm in fnum units, within-octave)
     move.b  (3,a1,d1.w), d2               ; xx = glide rate
     beq     .cmddone                        ; L00 = no slide (instant)
     moveq   #0, d3
@@ -8802,6 +8804,10 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     bne.s   .dofreqres
     lea     c_bend, a4
     tst.b   (a4,d0.w)
+    bne.s   .dofreqres
+    add.w   d0, d0                          ; track*2 -> c_slide (word): an L glide is active -> re-send too
+    lea     c_slide, a4
+    tst.w   (a4,d0.w)
     beq.s   .nofreqres
 .dofreqres:
     cmpi.w  #YM_CAP, d5                      ; SCB headroom -> drop this tick's re-send if full
@@ -9272,12 +9278,16 @@ fm_freq_send:
     moveq   #95, d0
 .ffs_chi:
     bsr     fm_freq                         ; d1=$A4, d2=$A0
-    moveq   #0, d3                          ; F command fine -> add to the 11-bit fnum
+    moveq   #0, d3                          ; F/P fine + L slide -> add to the 11-bit fnum
     move.b  c_track(a6), d3
     lea     c_pfine, a4
-    move.b  (a4,d3.w), d3
+    move.b  (a4,d3.w), d0
+    ext.w   d0
+    add.w   d3, d3                          ; track*2 -> c_slide (word array)
+    lea     c_slide, a4
+    add.w   (a4,d3.w), d0                   ; total fnum delta = c_pfine + c_slide
     beq.s   .ffs_nofine
-    ext.w   d3
+    move.w  d0, d3
     move.w  d1, d4
     andi.w  #7, d4
     lsl.w   #8, d4
@@ -9489,6 +9499,50 @@ slide_arm:                                ; L command: arm portamento. In: a6=ch
     add.w   d0, d0
     lea     c_slide, a1
     move.w  d3, (a1,d0.w)
+    rts
+
+note_fnum11:                              ; d0.w = note (0-95) -> d1.w = 11-bit F-number. Preserves d0/d2/d4/a1.
+    movem.l d0/d2/d4/a1, -(sp)
+    cmpi.w  #95, d0
+    bls.s   .nf_ok
+    moveq   #95, d0
+.nf_ok:
+    bsr     fm_freq                         ; d1 = $A4 (block<<3 | fnum hi), d2 = $A0 (fnum lo)
+    andi.w  #7, d1
+    lsl.w   #8, d1
+    andi.w  #$FF, d2
+    or.w    d2, d1                          ; 11-bit fnum
+    movem.l (sp)+, d0/d2/d4/a1
+    rts
+
+fm_slide_arm:                             ; FM L portamento (simple, within-octave). In: a6=ch, d2.b=new note,
+    movem.l d0-d4/a1, -(sp)                 ; d3.b=old note. c_slide = old_fnum - new_fnum (added to the fnum, ramps
+    cmpi.b  #1, c_type(a6)                 ; to 0 -> starts at old, glides to new). Preserves all regs.
+    bne.s   .fsa_x                          ; FM channels only
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    add.w   d0, d0                          ; c_slide index (word array)
+    lea     c_slide, a1
+    tst.b   l_set
+    beq.s   .fsa_clr                        ; no L this row -> stop any glide
+    moveq   #0, d0
+    move.b  d2, d0                          ; new note -> new fnum
+    bsr     note_fnum11
+    move.w  d1, d4                          ; d4 = new_fnum
+    moveq   #0, d0
+    move.b  d3, d0                          ; old note -> old fnum
+    bsr     note_fnum11                    ; d1 = old_fnum
+    sub.w   d4, d1                          ; old - new
+    moveq   #0, d0                          ; (note_fnum11 preserved regs, but d0 was reused above)
+    move.b  c_track(a6), d0
+    add.w   d0, d0
+    lea     c_slide, a1
+    move.w  d1, (a1,d0.w)
+    bra.s   .fsa_x
+.fsa_clr:
+    clr.w   (a1,d0.w)
+.fsa_x:
+    movem.l (sp)+, d0-d4/a1
     rts
 
 ; ---- advance the wave AHD envelope one frame (a6 = channel, a4 = WAVE instrument).
