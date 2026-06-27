@@ -271,6 +271,7 @@ opt_songcol equ $00FFD435           ; (vestigial)
 files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR sub-menu is open
 menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=CANCEL)
 files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
+new_named  equ $00FFD439            ; FILES: 1 once a name has been typed on the (empty) slot (else it reads "(EMPTY)"); reset on save/load/new
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -11572,19 +11573,11 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    cmp.w   d2, d7                            ; show the working-song name only when the (empty) slot is selected
+    tst.b   new_named                         ; show a name here only after one's been typed on this slot
+    bne     .rf_emname
+    cmp.w   d2, d7                            ; else "(EMPTY)", highlighted when the slot is selected
     bne.s   .rf_emptylbl
-    cmpi.b  #' ', song_title                 ; ...and only if it's actually named; else "(EMPTY)"
-    bls.s   .rf_emptylbl
-    lea     song_title, a3
-    moveq   #8-1, d0
-.rf_emn:
-    moveq   #0, d5
-    move.b  (a3)+, d5
-    add.w   d1, d5
-    move.w  d5, VDP_DATA
-    dbra    d0, .rf_emn
-    bra     .rf_songs
+    moveq   #$60, d1
 .rf_emptylbl:
     lea     str_o_empty, a3
 .rf_em:
@@ -11594,6 +11587,16 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     add.w   d1, d0
     move.w  d0, VDP_DATA
     bra.s   .rf_em
+.rf_emname:
+    lea     song_title, a3
+    moveq   #8-1, d0
+.rf_emn:
+    moveq   #0, d5
+    move.b  (a3)+, d5
+    add.w   d1, d5
+    move.w  d5, VDP_DATA
+    dbra    d0, .rf_emn
+    bra     .rf_songs
 .rf_songs:
     lea     dir_cache, a2
     moveq   #0, d7                          ; list position P
@@ -11648,7 +11651,12 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     dbra    d3, .rf_ll
     tst.b   files_menu
     bne     .rf_menu                        ; menu open -> draw the sub-menu
-    bsr     files_name_addr                  ; list mode -> inverted name-cursor on the selected slot
+    bsr     files_name_addr                  ; a1=buffer, d0=dir index (-1 = the (empty) slot)
+    tst.l   d0
+    bpl.s   .rf_curdraw                      ; real slot -> draw the cursor
+    tst.b   new_named
+    beq     .rf_done                         ; (empty) not yet named -> no char cursor (the (EMPTY) highlight shows it)
+.rf_curdraw:
     lea     VDP_CTRL, a0                      ; (dir helpers may have clobbered a0)
     moveq   #0, d0
     move.b  opt_song, d0
@@ -12139,6 +12147,7 @@ files_action:                             ; B-tap on FILES: run the selected sub
     clr.b   proj_armed
     bsr     files_stop                       ; transport stops for the SRAM op
     bsr     dir_save                         ; saves the working song under song_title
+    clr.b   new_named                        ; saved -> the (empty) slot resets to "(EMPTY)"
     bra     .oa_done
 .oa_load:
     bsr     files_stop
@@ -12152,6 +12161,7 @@ files_action:                             ; B-tap on FILES: run the selected sub
     tst.l   d0
     bmi     .oa_done
     bsr     dir_load
+    clr.b   new_named                        ; loaded a song -> the (empty) slot is "(EMPTY)" again
     bra     .oa_done
 .oa_newproj:
     bsr     clear_song                       ; LOAD the (empty) slot = a fresh blank project
@@ -12246,6 +12256,17 @@ files_name_edit:                          ; d2 = d-pad bits: B+L/R move the name
 .fne_cyc:
     bsr     files_name_addr                   ; a1 = name buffer (d1 = dir preserved), d0 = index or -1
     move.l  d0, d4                            ; d4 = dir index (survives fname_step)
+    bpl.s   .fne_haveidx                      ; real slot
+    tst.b   new_named                         ; (empty) slot: first keystroke starts a fresh blank name
+    bne.s   .fne_haveidx
+    move.l  a1, -(sp)                          ; blank song_title (a1 = song_title here)
+    moveq   #8-1, d0
+.fne_blank:
+    move.b  #' ', (a1)+
+    dbra    d0, .fne_blank
+    move.l  (sp)+, a1
+    move.b  #1, new_named
+.fne_haveidx:
     moveq   #0, d0
     move.b  files_namecol, d0
     adda.w  d0, a1
@@ -12280,6 +12301,7 @@ copy_factory_bank:                        ; fm_factory (ROM) -> instrum (RAM): a
     rts
 
 clear_song:                               ; blank project: phrases -> rests, chains + song empty ($FF)
+    clr.b   new_named                       ; a fresh project: the (empty) slot reads "(EMPTY)" again
     lea     phrases, a2
     move.w  #NPHRASES*16-1, d0
 .cz_p:
