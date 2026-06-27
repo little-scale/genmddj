@@ -12415,7 +12415,7 @@ krn_4:      dc.b "4X ",0
 ; OPTIONS / PROJECT page labels + enum tables (TSP/MODE reuse the FM/PSG strings)
 str_o_vid:  dc.b "VID",0
 str_o_sync: dc.b "SYNC",0
-str_o_pal:  dc.b "PALETTE",0
+str_o_pal:  dc.b "COLOUR",0
 str_o_sram: dc.b "SRAM",0
 str_sram_no: dc.b "NONE",0
 str_sram_od: dc.b "K ODD",0
