@@ -1,6 +1,6 @@
 # CONTROLS.md
 
-The genmddj button map, **as actually wired in `src/main.asm`** (snapshot 2026-06-23).
+The genmddj button map, **as actually wired in `src/main.asm`** (snapshot 2026-06-27).
 This supersedes DESIGN §3's table where they differ — §3 still describes the older scheme
 (Start = local-from-cursor, C+Start = full-song, B+C = cut). The core idea is unchanged:
 the **held modifier selects the context — no simultaneous-press timing windows** (only paste
@@ -19,12 +19,12 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 
 | Input | Action |
 |---|---|
-| **B** tap | Insert / edit / audition the cell under the cursor (repeats the last value). On PROJECT = trigger the action row |
+| **B** tap | Insert / edit / audition the cell under the cursor (repeats the last value). Grid/field screens only; field-only screens (PROJECT/OPTIONS/etc.) edit via B-hold+D-pad instead |
 | **B-hold + D-pad** | Adjust the value under the cursor — L/R = small step (±1 / ±1 semitone), U/D = big step (octave / ±$10) |
 | **B** double-tap | Paste (if a clipboard is armed for this screen). On reference cells (SONG chain#, CHAIN phrase#) with no clipboard: empty cell → mint the next free chain/phrase; populated → clone it |
 | **B-hold + A** tap | Copy the field to the clipboard |
 
-## Block select — grid screens (PHRASE / CHAIN / SONG / TABLE)
+## Block select — grid screens (PHRASE / CHAIN / SONG)
 
 | Input | Action |
 |---|---|
@@ -77,7 +77,7 @@ Up to 32 songs. The action buttons live in a sub-menu (C+B), not on the screen.
 |---|---|
 | **Up / Down** | Move between slots (songs, then the `(EMPTY)` slot) |
 | **B-hold + Left / Right** | Move the name cursor (the inverted character) across the 8 name chars |
-| **B-hold + Up / Down** | Cycle the character under the cursor — the ring is `BLANK`-home: Up → A–Z then specials, Down → 0–9. Edits a saved slot rename it live; the `(EMPTY)` slot edits the working song's name |
+| **B-hold + Up / Down** | Cycle the character under the cursor — the ring is `BLANK`-home: Up → A–Z then specials, Down → 0–9. On a saved slot this renames it live; the `(EMPTY)` slot reads `(EMPTY)` until your first keystroke (which starts a fresh name), becoming the new song's name on SAVE |
 | **C-hold + B** tap | Open / close the action sub-menu for the selected slot |
 | *(menu)* **Up / Down + B** | Run **SAVE** (store the working song), **LOAD** (load the slot — or on `(EMPTY)`, start a fresh blank project), **CLEAR** (delete the slot), or **CANCEL** (close) |
 
