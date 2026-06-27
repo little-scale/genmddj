@@ -272,6 +272,7 @@ files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the
 menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=CANCEL)
 files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
 new_named  equ $00FFD439            ; FILES: 1 once a name has been typed on the (empty) slot (else it reads "(EMPTY)"); reset on save/load/new
+sync_shadow equ $00FFD43A           ; engine_tick: last-seen opt_sync, to detect MIDI takeover entry/exit (MIDI.md §5)
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -555,6 +556,7 @@ Start:
     move.b  #0, repatch
     move.b  #2, opt_vid                   ; OPTIONS defaults: region AUTO
     move.b  #0, opt_sync                  ;   sync OFF
+    move.b  #0, sync_shadow                ;   MIDI-takeover change detector matches (no spurious entry at boot)
     move.b  #0, opt_pal                   ;   UI palette 0
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
@@ -7061,6 +7063,18 @@ sync_in_delta:                            ; IN: -> d3.b = engine ticks to run th
 
 engine_tick:
     move.b  #0, patch_done                ; FM operator-patch budget: one per tick
+    move.b  opt_sync, d0                  ; detect MIDI-takeover entry/exit (silence + pin reconfig)
+    cmp.b   sync_shadow, d0
+    beq.s   .smc_done
+    move.b  sync_shadow, d1
+    move.b  d0, sync_shadow
+    cmpi.b  #4, d0                         ; entering MIDI?
+    beq.s   .smc_act
+    cmpi.b  #4, d1                         ; ...or leaving MIDI?
+    bne.s   .smc_done                      ; a change between non-MIDI modes -> leave to play-start
+.smc_act:
+    bsr     midi_mode_change
+.smc_done:
     cmpi.b  #4, opt_sync                  ; SYNC=MIDI -> takeover: no advance, compose held voices
     beq     .midi
     tst.b   playing
@@ -7187,6 +7201,16 @@ engine_tick:
 .midi:                                    ; SYNC=MIDI takeover (MIDI.md §5): MIDI owns all 10 voices
     bsr     midi_poll                     ; clock in events from the S3 wire + dispatch -> sets voice state
     bra     .noadv                        ; compose held voices + push; the OUT/PULSE checks skip (opt_sync=4)
+
+midi_mode_change:                          ; SYNC mode entered/left MIDI -> silence + port-2 pin reconfig
+    bsr     midi_panic                      ; all-notes-off (clean slate on entry and on exit)
+    cmpi.b  #4, opt_sync
+    bne.s   .mmc_off
+    move.b  #$20, $00A1000B               ; MIDI: TR(5)=CLK output, TH(6)=DAT input (HW-unverified, MIDI.md §3.1)
+    rts
+.mmc_off:
+    move.b  #0, $00A1000B                 ; left MIDI -> release the lines; play-start re-sets per mode
+    rts
 
 midi_poll:                                ; STUB until the ESP32-S3 2-wire link exists (MIDI.md §3).
     rts                                   ; the wire feeds midi_dispatch; dispatch is testable now by injection.
