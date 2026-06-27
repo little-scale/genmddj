@@ -6,7 +6,12 @@ EMU   := mednafen
 
 SRCS  := src/main.asm
 
-all: $(ROM)
+# version (from ver_str in the source) + short git hash (+ for a dirty tree) -> stamped ROM name
+VER     := $(shell sed -nE 's/^ver_str:.*"([^"]+)".*/\1/p' src/main.asm)
+HASH    := $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo 0000000)$(shell test -n "$$(git status --porcelain 2>/dev/null)" && printf '+')
+STAMPED := $(BUILD)/genmddj-$(VER)-$(HASH).bin
+
+all: $(ROM) $(STAMPED)
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -68,6 +73,12 @@ $(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVE
 
 $(ROM): $(RAW) tools/fixheader.py
 	python3 tools/fixheader.py $(RAW) $(ROM)
+
+# a stamped copy for flashing/distribution: build/genmddj-V0.01-<hash>.bin (keeps only the latest)
+$(STAMPED): $(ROM)
+	@rm -f $(BUILD)/genmddj-*.bin
+	cp $(ROM) $(STAMPED)
+	@echo "wrote $(STAMPED)"
 
 run: $(ROM)
 	$(EMU) $(ROM)
