@@ -925,12 +925,14 @@ VBlankInt:
     moveq   #$5C, d0                          ; PULSE -> clock-pulse glyph
     bra.s   .si_w
 .si_i:
-    cmpi.b  #3, d1                           ; IN / IN24 -> ◀ (receiving)
-    beq.s   .si_in
-    cmpi.b  #5, d1
-    bne.s   .si_w
-.si_in:
+    cmpi.b  #3, d1                           ; IN -> ◀ (solid left, receiving)
+    bne.s   .si_i24
     moveq   #$40, d0
+    bra.s   .si_w
+.si_i24:
+    cmpi.b  #5, d1                           ; IN24 -> « (double-left chevron, 24-PPQN receive)
+    bne.s   .si_w
+    moveq   #$5E, d0
 .si_w:
     move.l  #$41CE0003, VDP_CTRL            ; row 3, col 39 (just right of STOP/PLAY/WAIT)
     move.w  d0, VDP_DATA

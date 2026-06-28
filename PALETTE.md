@@ -101,6 +101,7 @@ these by default (offer an "edit system glyphs" advanced mode):
 | `$3C` | `<` | live-queue marker (hollow ▶) |
 | `$3E` | `>` | live-queue marker (solid ▶) |
 | `$40` | `@` | SYNC IN (◀) |
+| `$5E` | `^` | SYNC IN24 (« double-left chevron) — was the caret, repurposed |
 | `$5C` | `\` | SYNC PULSE (clock pulse) |
 | `$60` | `` ` `` | θ phase (FM-LFO column header) |
 | `$7B` | `{` | **toggle box OFF** (hollow) |
