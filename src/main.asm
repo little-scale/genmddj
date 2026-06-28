@@ -164,6 +164,8 @@ proj_groove equ $00FFD423          ; song default groove (active at play-start; 
 sync_cnt   equ $00FFD424           ; SYNC OUT: 2-bit tick counter driven on port-2 TR+TH
 sync_last  equ $00FFD425           ; SYNC IN: counter value read last frame
 sync_wait  equ $00FFD426           ; SYNC IN: armed (1) -> waiting for the first external clock
+sync_acc   equ $00FFD43B           ; SYNC OUT: Bresenham accumulator for the tempo-locked 24-PPQN clock
+sync_rowticks equ $00FFD43C        ; SYNC OUT: this row's frame span (groove/W) -> spread 6 clocks over it
 sram_layout equ $00FFD427          ; SRAM probe: 0 none, 1 odd-byte (8-bit), 2 linear
 sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64; 0 = none)
 sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 for 8/16/32/64 KB)
@@ -6482,6 +6484,7 @@ engine_play_reset:
     move.b  proj_groove, groove_sel       ; ...from the song default (G switches it live)
     move.b  #0, sync_cnt                   ; sync transport: set the port + arm a slave
     move.b  #0, sync_wait
+    move.b  #0, sync_acc                    ; SYNC OUT: restart the 24-PPQN clock accumulator
     cmpi.b  #1, opt_sync                  ; OUT -> drive TR+TH 2-bit counter (control bits 5,6 = output)
     bne.s   .epr_syncp
     move.b  #$60, $00A1000B               ; port 2 control: TR(5) + TH(6) output
@@ -7015,12 +7018,27 @@ sync_read:                                ; -> d0.b = the 2-bit counter on TR+TH
     andi.b  #3, d0
     rts
 
-sync_out:                                 ; OUT: bump the counter and drive it on TR+TH
+sync_out:                                 ; OUT: tempo-locked 24-PPQN clock = 6 counts per row,
+    moveq   #0, d1                          ;   spread (Bresenham) over the row's frames, driven on TR+TH.
+    move.b  sync_rowticks, d1              ; frames this row spans (groove/W); set each frame in .nowait
+    beq.s   .so_drive                      ; guard against /0 (row span not set yet)
+    moveq   #0, d0
+    move.b  sync_acc, d0
+    addq.b  #6, d0                          ; += 6 pulses-per-row (24 PPQN at 16th-note rows)
+    move.b  sync_cnt, d2
+.so_emit:
+    cmp.b   d1, d0                          ; while acc >= rowticks: emit one clock edge
+    blo.s   .so_acc
+    sub.b   d1, d0
+    addq.b  #1, d2
+    bra.s   .so_emit
+.so_acc:
+    move.b  d0, sync_acc
+    andi.b  #3, d2
+    move.b  d2, sync_cnt
+.so_drive:
     moveq   #0, d0
     move.b  sync_cnt, d0
-    addq.b  #1, d0
-    andi.b  #3, d0
-    move.b  d0, sync_cnt
     lsl.b   #5, d0                          ; counter -> data bits 5,6
     move.b  d0, $00A10005
     rts
@@ -7115,6 +7133,7 @@ engine_tick:
     moveq   #0, d0
     move.b  g_wait, d0
 .nowait:
+    move.b  d0, sync_rowticks              ; SYNC OUT: this row's frame span for the 24-PPQN clock
     cmp.b   g_gctr, d0
     bhi     .noadv                         ; not enough ticks elapsed yet
     move.b  #0, g_gctr
