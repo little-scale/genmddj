@@ -21,7 +21,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 |---|---|
 | **B** tap | Insert / edit / audition the cell under the cursor (repeats the last value). Grid/field screens only; field-only screens (PROJECT/OPTIONS/etc.) edit via B-hold+D-pad instead |
 | **B-hold + D-pad** | Adjust the value under the cursor — L/R = small step (±1 / ±1 semitone), U/D = big step (octave / ±$10) |
-| **B** double-tap | Paste (if a clipboard is armed for this screen). On reference cells (SONG chain#, CHAIN phrase#) with no clipboard: empty cell → mint the next free chain/phrase; populated → clone it |
+| **B** double-tap | Paste (if a clipboard is armed for this screen). On reference cells (SONG chain#, CHAIN phrase#) with no clipboard: empty cell → mint the next free chain/phrase; populated → clone it (a SONG chain clone obeys OPTIONS **CLON**: SLIM shares its phrases, DEEP copies them) |
 | **B-hold + A** tap | Copy the field to the clipboard |
 
 ## Block select — grid screens (PHRASE / CHAIN / SONG)
@@ -92,7 +92,7 @@ fails its checksum blanks to a known state. OPTIONS holds just the display/sync 
 | Screen | Fields |
 |---|---|
 | **PROJECT** | TMPO / TSP / MODE / LFO. The song NAME is shown but **read-only** here — rename only on FILES. Save / load moved to FILES. |
-| **OPTIONS** | VID / SYNC / PALETTE (the song library moved to its own FILES screen — C+Down from SONG) |
+| **OPTIONS** | VID / SYNC / PALETTE / **CLON** (clone depth: SLIM = share phrases, DEEP = copy them). The song library moved to its own FILES screen — C+Down from SONG |
 | **WAVE** | plain Left/Right = wave-step cursor; B-hold + D-pad = sample level |
 | **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context |
 | **TABLE / GROOVE / ECHO / LFO** | their respective fields |

@@ -185,6 +185,7 @@ env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp);
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
 opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI(unimpl, HIDDEN from the field) 5=IN24 (2-bit 24PPQN, ESP bridge)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
+opt_clon   equ $00FFE3E7           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases)
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
@@ -558,6 +559,7 @@ Start:
     move.b  #0, opt_sync                  ;   sync OFF
     move.b  #0, sync_shadow                ;   MIDI-takeover change detector matches (no spurious entry at boot)
     move.b  #0, opt_pal                   ;   UI palette 0
+    move.b  #0, opt_clon                   ;   clone depth = SLIM
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
     moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
@@ -1946,7 +1948,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1
     rts
 .rmopts:
-    moveq   #2, d1                          ; OPTIONS: VID SYNC PALETTE
+    moveq   #3, d1                          ; OPTIONS: VID SYNC PALETTE CLON
     rts
 .rmfiles:
     tst.b   sram_layout
@@ -3078,9 +3080,9 @@ do_insert:
     cmpi.b  #SCR_SONG, cur_screen           ; SONG B-tap -> allocate a new (empty) chain
     beq.s   .song_ins
     cmpi.b  #SCR_CHAIN, cur_screen           ; CHAIN B-tap -> allocate a new (empty) phrase
-    beq.s   .chain_ins
+    beq.w   .chain_ins
     move.b  cur_col, d0
-    beq     .ins_note                      ; col 0 = NOT -> insert/audition note
+    beq.w   .ins_note                      ; col 0 = NOT -> insert/audition note
     cmpi.b  #2, d0                          ; col 2 = C (PHRASE command column)
     bne.s   .ret
     tst.b   cur_screen                      ; PHRASE only
@@ -3104,9 +3106,22 @@ do_insert:
     bhs     .ret                            ; no free chain -> no-op
     cmpi.b  #$FF, d3                         ; empty cell -> mint a blank chain
     beq.s   .song_place
-    lea     chains, a0                       ; populated -> SLIM clone: copy the chain (phrases shared)
+    tst.b   opt_clon                         ; DEEP? pre-check free phrases >= the chain's non-$FF steps
+    beq.s   .song_slim                       ;   (all-or-nothing fail, like SMSGGDJ)
+    move.l  d0, -(sp)                         ; save the dest chain across the counts
+    bsr     chain_phrase_count               ; d1 = non-$FF steps in source chain d3
+    move.b  d1, d4
+    bsr     count_free_phrases               ; d1 = free phrases (preserves d3/d4)
+    move.l  (sp)+, d0                         ; restore dest chain (before the compare -- move clears C)
+    cmp.b   d4, d1                            ; free - needed
+    bcs     .ret                             ; free < needed -> no-op
+.song_slim:
+    lea     chains, a0                       ; copy the chain record (SLIM -- phrases shared)
     moveq   #CHAIN_SIZE, d1
     bsr     clone_rec
+    tst.b   opt_clon
+    beq.s   .song_place
+    bsr     deep_chain_phrases               ; DEEP: give the new chain its own phrase copies
 .song_place:
     move.b  d0, (a1)
     move.b  d0, last_chain
@@ -3211,6 +3226,77 @@ clone_rec:
     move.b  (a0)+, (a1)+
     dbra    d1, .cr_loop
     movem.l (sp)+, d1-d2/a0-a1
+    rts
+
+; --- DEEP chain clone (CLON = DEEP): give a cloned chain its own copies of every phrase ---
+chain_phrase_count:                       ; d3 = chain index -> d1 = count of non-$FF phrase steps. preserves d3.
+    movem.l d2/a2, -(sp)
+    lea     chains, a2
+    moveq   #0, d2
+    move.b  d3, d2
+    mulu.w  #CHAIN_SIZE, d2
+    adda.w  d2, a2                          ; a2 = chain base
+    moveq   #0, d1
+    moveq   #15, d2
+.cpc:
+    cmpi.b  #$FF, (a2)
+    beq.s   .cpc_n
+    addq.w  #1, d1
+.cpc_n:
+    addq.l  #2, a2                          ; next step (phrase#, transpose)
+    dbra    d2, .cpc
+    movem.l (sp)+, d2/a2
+    rts
+
+count_free_phrases:                       ; -> d1 = number of empty phrases. preserves d3/d4.
+    movem.l d2/d3/d4/d5/a2, -(sp)
+    moveq   #0, d4                          ; running count
+    moveq   #0, d2                          ; phrase index
+.cfp:
+    lea     phrases, a2
+    move.w  d2, d3
+    lsl.w   #6, d3                          ; * PHRASE_SIZE
+    adda.w  d3, a2
+    moveq   #15, d5                         ; 16 rows
+.cfp_scan:
+    cmpi.b  #$FF, (a2)                      ; a note -> not empty
+    bne.s   .cfp_used
+    tst.b   (2,a2)                          ; a command -> not empty
+    bne.s   .cfp_used
+    addq.l  #4, a2
+    dbra    d5, .cfp_scan
+    addq.w  #1, d4                          ; all 16 rows empty -> a free phrase
+.cfp_used:
+    addq.w  #1, d2
+    cmpi.w  #NPHRASES, d2
+    blo.s   .cfp
+    move.w  d4, d1
+    movem.l (sp)+, d2/d3/d4/d5/a2
+    rts
+
+deep_chain_phrases:                       ; d0 = chain index -> copy each non-$FF step's phrase + repoint. preserves d0.
+    movem.l d0/d1/d3/d7/a0/a2/a3, -(sp)
+    lea     chains, a3
+    moveq   #0, d3
+    move.b  d0, d3
+    mulu.w  #CHAIN_SIZE, d3
+    adda.w  d3, a3                          ; a3 = new chain base (a2 is clobbered by find_free_phrase)
+    moveq   #15, d7
+.dcp:
+    cmpi.b  #$FF, (a3)
+    beq.s   .dcp_n
+    move.b  (a3), d3                        ; d3 = src phrase (this step's shared ref)
+    bsr     find_free_phrase               ; d0 = a free phrase (pre-check guarantees enough)
+    cmpi.b  #NPHRASES, d0
+    bhs.s   .dcp_n                          ; safety: none free -> leave it shared
+    lea     phrases, a0
+    moveq   #PHRASE_SIZE, d1
+    bsr     clone_rec                       ; copy phrases[d3] -> phrases[d0]
+    move.b  d0, (a3)                        ; repoint the step to the fresh copy
+.dcp_n:
+    addq.l  #2, a3
+    dbra    d7, .dcp
+    movem.l (sp)+, d0/d1/d3/d7/a0/a2/a3
     rts
 
 chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this is a 2nd B-tap on the
@@ -10645,7 +10731,25 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #$60, d4
 .op:
     bsr     draw_hex1
-    rts                                     ; OPTIONS = VID / SYNC / PALETTE (SRAM/FREE + the song library moved to FILES)
+    moveq   #8, d3                          ; CLON (cur_row 3) at row 8
+    moveq   #1, d4
+    lea     str_o_clon, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #3, cur_row
+    bne.s   .ocl
+    moveq   #$60, d2
+.ocl:
+    moveq   #0, d1
+    move.b  opt_clon, d1
+    andi.w  #1, d1
+    lsl.w   #2, d1
+    lea     clon_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #8, d3
+    moveq   #9, d4
+    bsr     print_hl
+    rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON (SRAM/FREE moved to FILES)
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     moveq   #5, d3                          ; MODE (cur_row 0)
@@ -10951,8 +11055,15 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     beq.s   .eo_vid
     cmpi.b  #1, d0
     beq.s   .eo_sync
-    lea     opt_pal, a1                     ; PAL 0..7
+    cmpi.b  #2, d0
+    bne.s   .eo_clon
+    lea     opt_pal, a1                     ; PAL 0..7 (cur_row 2)
     moveq   #7, d3
+    moveq   #1, d4
+    bra.s   .eo_apply
+.eo_clon:
+    lea     opt_clon, a1                    ; CLON SLIM/DEEP (cur_row 3)
+    moveq   #1, d3
     moveq   #1, d4
     bra.s   .eo_apply
 .eo_vid:
@@ -11017,6 +11128,7 @@ save_config:
     move.b  opt_pal, (2,a1)
     move.b  opt_vid, (4,a1)
     move.b  opt_sync, (6,a1)
+    move.b  opt_clon, (8,a1)
     move.b  #0, $A130F1                     ; unmap (protect)
     rts
 load_config:
@@ -11027,6 +11139,11 @@ load_config:
     move.b  (2,a1), opt_pal
     move.b  (4,a1), opt_vid
     move.b  (6,a1), opt_sync
+    move.b  (8,a1), opt_clon
+    cmpi.b  #1, opt_clon                    ; clamp a stale/garbage clone-depth byte to SLIM
+    bls.s   .lcclok
+    move.b  #0, opt_clon
+.lcclok:
     cmpi.b  #4, opt_sync                    ; MIDI is unimplemented + hidden -> heal a stale config to IN
     bne.s   .lcdone
     move.b  #3, opt_sync
@@ -12746,6 +12863,9 @@ krn_4:      dc.b "4X ",0
 str_o_vid:  dc.b "VID",0
 str_o_sync: dc.b "SYNC",0
 str_o_pal:  dc.b "COLOUR",0
+str_o_clon: dc.b "CLON",0
+str_slim:   dc.b "SLIM ",0
+str_deep:   dc.b "DEEP ",0
 str_o_sram: dc.b "SRAM",0
 str_sram_no: dc.b "NONE",0
 str_sram_od: dc.b "K ODD",0
@@ -12781,6 +12901,7 @@ str_md_s:   dc.b "SONG",0
 str_md_live: dc.b "LIVE",0
     even
 vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
+clon_lbl:   dc.l str_slim, str_deep
 sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i, str_syn_m, str_syn_2   ; OFF=0 OUT=1 PULSE=2 IN=3 MIDI=4 IN24=5
 pmode_lbl:  dc.l str_md_s, str_md_live
     even
