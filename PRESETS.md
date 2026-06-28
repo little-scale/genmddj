@@ -33,7 +33,7 @@ One row per preset. Values decimal unless noted. Ranges are validated by the bak
 | `name` | ≤8 ASCII | (sidecar) | display name |
 | `algo` | 0–7 | `i_algo` | FM algorithm |
 | `fb` | 0–7 | `i_fb` | feedback (op1 self-mod) |
-| `pan` | 0–3 | `i_pan` | 0 off / 1 R / 2 L / 3 L+R |
+| `pan` | 0–3 | `i_pan` | 0 off / 1 R / 2 L / 3 L+R — **forced to 3 when loaded from the ROM factory bank** (rom_load_instr + the NEW dump); SRAM/song loads keep the stored value |
 | `ams` | 0–3 | `i_ams` | LFO amplitude-mod sensitivity |
 | `fms` | 0–7 | `i_fms` | LFO freq-mod (vibrato) sensitivity |
 | `hld` | 0–15 | `i_hld` | gate ticks×2; 15 = hold |

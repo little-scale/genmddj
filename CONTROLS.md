@@ -13,7 +13,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 | **D-pad** | Move cursor (key-repeat) |
 | **C-hold + D-pad** | Navigate the screen map, context-following (e.g. from PHRASE, C+← → the CHAIN holding it, again → that SONG cell; C+→ → that note's INSTR) |
 | **Start** | Transport toggle. SONG mode = play the full song from the top; LIVE mode = launch the cursor row. Press again = stop |
-| **B + Start** | SYNC = IN → arm **WAIT** for the incoming clock; otherwise = a plain Start |
+| **B + Start** | SYNC = IN/IN24 → arm **WAIT** for the incoming clock; otherwise = a plain Start |
 
 ## Editing — grid screens (PHRASE / CHAIN / SONG) and field screens
 
@@ -61,7 +61,7 @@ The SONG grid becomes a clip-launcher; the screen title reads **LIVE**.
 | **C + B** on a populated cell | **Launch** that track from there. Quantized: transport stopped → starts now; running + that track silent → next master 16-row bar; running + that track playing → at the current chain's end (HOP-aware) |
 | **C + B** on an empty cell *or* the track's currently-playing cell | **Quantized stop** (plays out the current chain, then silent) |
 | **Start** | Launch every populated track on the cursor row |
-| **B + Start** (SYNC = IN) | Arm WAIT for the incoming clock |
+| **B + Start** (SYNC = IN/IN24) | Arm WAIT for the incoming clock |
 | **A-hold + Up / Down** | Page the 240-row view (one 16-row page at a time) |
 
 A launched track plays its chain, advances down its column, and on an empty cell loops the top of that

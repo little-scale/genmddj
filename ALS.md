@@ -1,8 +1,10 @@
 # Ableton → genmddj converters
 
 **Plan doc — 2026-06-21.** Two related tools, sharing the FM-adaptation core:
-- **`.als` → genmddj song** — MIDI clips (up to 10 tracks) repackaged as chains/phrases, and the
-  first six tracks' **Operator** (4-op FM) instruments adapted to the YM2612.
+- **`.als` → genmddj song** — MIDI clips (up to 10 tracks) repackaged as chains/phrases, the
+  first six tracks' **Operator** (4-op FM) instruments adapted to the YM2612, and (built
+  2026-06-28) the PSG tracks' **Analog** (`UltraAnalog`) instruments roughly adapted to the
+  TONE voice (see §2.7).
 - **`.adv` → genmddj instrument** — a single Operator preset adapted to one instrument record.
 
 Both emit the **`PRESETS.md` instrument CSV** for their FM voices, so `.adv` is the FM core
@@ -95,6 +97,17 @@ table is small, static, and the thing to validate by ear first.
 Non-sine waveforms (harmonics lost), the filter, built-in FX, unison/voices, the global pitch
 envelope, fine-cent ratios, and — under note-on-only — Release. Operator's LFO partially maps to
 `AMS`/`FMS` + the global `$22` LFO if present; otherwise dropped.
+
+### 2.7 Analog (`UltraAnalog`) → PSG TONE  *(built 2026-06-28, rough)*
+The **PSG** tracks (S1–S3) with an Ableton **Analog** device get a rough TONE patch instead of a
+bare default (`analogToTone` in `als2genmddj.html`). **Oscillator/voice 1 only** — Analog repeats
+every param per voice; we always take the first occurrence and ignore osc 2. The **amp envelope**
+(`<Envelope.1>` — the loudness one; `AMP_ENV` constant, flip to 0 if inverted) ADSR maps to the
+TONE **AHD** envelope: `AttackTime → ip_atk`, `SustainLevel → ip_hld` (high sustain = long/∞ hold),
+`Decay`/`Release → ip_dcy`, peak `ip_vol = 15` — all the 0–1 Analog values scaled to tick counts.
+The **LFO** (when `LFOToggle` is on) maps `OscillatorLFOModPitch → vibrato (ip_vib)` and
+`AmplifierLFOAmpMod → tremolo (ip_trm)`, with `LFOSpeed → the speed nibble`. No Analog device →
+the old default TONE. Filter, the 2nd osc, FX, and sub-row detail are dropped.
 
 ## 3. The `.als` song conversion
 
