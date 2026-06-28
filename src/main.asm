@@ -183,7 +183,7 @@ env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connec
 env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
 env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
-opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN 4=MIDI (note takeover; MIDI.md)
+opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI 5=IN24 (2-bit 24PPQN, ESP bridge)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
@@ -824,8 +824,11 @@ VBlankInt:
     move.l  #$40400003, (a0)
     move.b  sync_cnt, d3                  ; OUT/PULSE: the counter we drive
     cmpi.b  #3, opt_sync
+    beq.s   .syrd
+    cmpi.b  #5, opt_sync
     bne.s   .syind
-    move.b  sync_last, d3                  ; IN: the counter read from the wire
+.syrd:
+    move.b  sync_last, d3                  ; IN / IN24: the counter read from the wire
 .syind:
     moveq   #0, d4
     bsr     draw_hex2
@@ -6261,9 +6264,12 @@ toggle_play:
 .tp:
     rts
 
-start_sync_wait:                          ; B+Start: SYNC IN -> start the transport armed to wait for the clock
+start_sync_wait:                          ; B+Start: SYNC IN/IN24 -> start the transport armed to wait for the clock
     cmpi.b  #3, opt_sync
-    bne     toggle_play                    ; not SYNC IN -> behave as a plain Start
+    beq.s   .ssw_in
+    cmpi.b  #5, opt_sync
+    bne     toggle_play                    ; not a SYNC IN mode -> behave as a plain Start
+.ssw_in:
     tst.b   playing
     bne.s   .ssw_x                         ; already running -> leave it
     move.b  #1, playing
@@ -6494,8 +6500,11 @@ engine_play_reset:
     move.b  #0, $00A10005                 ; pulse line starts low
     bra.s   .epr_syncd
 .epr_synci:
-    cmpi.b  #3, opt_sync                  ; IN -> inputs; arm + latch (stale levels must not count)
+    cmpi.b  #3, opt_sync                  ; IN / IN24 -> inputs; arm + latch (stale levels must not count)
+    beq.s   .epr_doin
+    cmpi.b  #5, opt_sync
     bne.s   .epr_syncoff
+.epr_doin:
     move.b  #0, $00A1000B                 ; port 2 control: all input
     bsr     sync_read
     move.b  d0, sync_last
@@ -7105,7 +7114,9 @@ engine_tick:
     bsr     wave_silence                  ; stopped -> park any sounding wave
     rts
 .play:
-    cmpi.b  #3, opt_sync                  ; SYNC IN -> external counter drives the tick (slave)
+    cmpi.b  #3, opt_sync                  ; SYNC IN / IN24 -> external counter drives the tick (slave)
+    beq.s   .play_slave
+    cmpi.b  #5, opt_sync
     beq.s   .play_slave
     ; row advance is groove-driven: row lasts active-groove[groove_pos] ticks (1 tick = 1 frame)
     addq.b  #1, g_gctr
@@ -7126,7 +7137,11 @@ engine_tick:
     bsr     sync_in_delta                 ; d3 = clocks received this frame (0-3)
     tst.b   sync_wait                      ; still armed (no clock yet)? hold silently -- don't play row 0 early
     bne.s   .noadv
-    moveq   #1, d0                          ; SLAVE: advance one row per received clock (master sends 1/row)
+    moveq   #1, d0                          ; SLAVE: IN = 1 clock/row; IN24 = ÷6 (2-bit 24 PPQN, ESP bridge)
+    cmpi.b  #5, opt_sync
+    bne.s   .slv_div
+    moveq   #6, d0
+.slv_div:
     add.b   d3, g_gctr
     cmp.b   g_gctr, d0
     bhi.s   .noadv                         ; no clock yet -> hold
@@ -10576,9 +10591,9 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
 .os:
     moveq   #0, d1
     move.b  opt_sync, d1
-    cmpi.w  #4, d1
+    cmpi.w  #5, d1
     bls.s   .osc
-    moveq   #4, d1
+    moveq   #5, d1
 .osc:
     lsl.w   #2, d1
     lea     sync_lbl, a1
@@ -10915,7 +10930,7 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     bra.s   .eo_apply
 .eo_sync:
     lea     opt_sync, a1
-    moveq   #4, d3                          ; OFF/OUT/PULSE/IN/MIDI
+    moveq   #5, d3                          ; OFF/OUT/PULSE/IN/MIDI/IN24
     moveq   #1, d4
 .eo_apply:
     bsr     adj_field
@@ -12713,11 +12728,12 @@ str_syn_i:  dc.b "IN   ",0
 str_syn_u:  dc.b "OUT  ",0
 str_syn_p:  dc.b "PULSE",0
 str_syn_m:  dc.b "MIDI ",0
+str_syn_2:  dc.b "IN24 ",0
 str_md_s:   dc.b "SONG",0
 str_md_live: dc.b "LIVE",0
     even
 vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
-sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i, str_syn_m   ; OFF=0 OUT=1 PULSE=2 IN=3 MIDI=4
+sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i, str_syn_m, str_syn_2   ; OFF=0 OUT=1 PULSE=2 IN=3 MIDI=4 IN24=5
 pmode_lbl:  dc.l str_md_s, str_md_live
     even
 str_voice:  dc.b "VOICE:",0
