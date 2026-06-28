@@ -6509,7 +6509,13 @@ engine_play_reset:
     bsr     sync_read
     move.b  d0, sync_last
     move.b  #1, sync_wait                  ; armed: wait for the first external clock
-    bra.s   .epr_syncd
+    moveq   #0, d0                          ; row-clock head-start = divisor-1 so the FIRST clock plays
+    cmpi.b  #5, opt_sync                  ;   row 0 with no startup race: IN(÷1)->0, IN24(÷6)->5.
+    bne.s   .epr_inhs                      ;   (the slave SUBTRACTS the divisor, unlike the master which
+    moveq   #5, d0                          ;    resets to 0 -- so g_gctr=GROOVE would drain GROOVE rows fast)
+.epr_inhs:
+    move.b  d0, g_gctr
+    bra     .epr_syncd
 .epr_syncoff:
     move.b  #0, $00A1000B                 ; OFF -> release the lines (inputs)
 .epr_syncd:
