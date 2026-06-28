@@ -183,7 +183,7 @@ env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connec
 env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
 env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
-opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI 5=IN24 (2-bit 24PPQN, ESP bridge)
+opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI(unimpl, HIDDEN from the field) 5=IN24 (2-bit 24PPQN, ESP bridge)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
@@ -10941,6 +10941,19 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     moveq   #1, d4
 .eo_apply:
     bsr     adj_field
+    cmpi.b  #1, cur_row                   ; SYNC field: skip the unimplemented MIDI mode (4)
+    bne.s   .eo_done
+    cmpi.b  #4, opt_sync
+    bne.s   .eo_done
+    btst    #3, d2                          ; Right or Up = stepping up -> IN24 (5); else -> IN (3)
+    bne.s   .eo_skup
+    btst    #0, d2
+    bne.s   .eo_skup
+    move.b  #3, opt_sync
+    bra.s   .eo_done
+.eo_skup:
+    move.b  #5, opt_sync
+.eo_done:
     bsr     apply_palette                   ; re-apply UI palette (harmless for VID/SYNC)
     bsr     save_config                     ; persist OPTIONS to SRAM
     rts
@@ -10989,6 +11002,9 @@ load_config:
     move.b  (2,a1), opt_pal
     move.b  (4,a1), opt_vid
     move.b  (6,a1), opt_sync
+    cmpi.b  #4, opt_sync                    ; MIDI is unimplemented + hidden -> heal a stale config to IN
+    bne.s   .lcdone
+    move.b  #3, opt_sync
 .lcdone:
     move.b  #0, $A130F1
     rts
