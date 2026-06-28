@@ -911,6 +911,29 @@ VBlankInt:
     moveq   #3, d3
     moveq   #35, d4
     bsr     print_at
+    ; sync-mode icon next to the transport (row3 col39): OUT ▶ / IN+IN24 ◀ / PULSE pulse / OFF blank
+    moveq   #$20, d0                          ; OFF/MIDI -> space (blank)
+    moveq   #0, d1
+    move.b  opt_sync, d1
+    cmpi.b  #1, d1
+    bne.s   .si_p
+    moveq   #$3E, d0                          ; OUT -> solid ▶ (sending)
+    bra.s   .si_w
+.si_p:
+    cmpi.b  #2, d1
+    bne.s   .si_i
+    moveq   #$5C, d0                          ; PULSE -> clock-pulse glyph
+    bra.s   .si_w
+.si_i:
+    cmpi.b  #3, d1                           ; IN / IN24 -> ◀ (receiving)
+    beq.s   .si_in
+    cmpi.b  #5, d1
+    bne.s   .si_w
+.si_in:
+    moveq   #$40, d0
+.si_w:
+    move.l  #$41CE0003, VDP_CTRL            ; row 3, col 39 (just right of STOP/PLAY/WAIT)
+    move.w  d0, VDP_DATA
     bsr     draw_map                      ; map at row5 col35
 ;    bsr     draw_meters                   ; DISABLED: ~50 cells/frame overruns VBlank on the SONG redraw (accurate VDP / hardware). Re-enable after an incremental rework (redraw a bar only on level change).
     bsr     amp_refresh                   ; smooth per-frame AMP bars (LFO screen + playing)
