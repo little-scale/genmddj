@@ -12863,7 +12863,7 @@ krn_4:      dc.b "4X ",0
 str_o_vid:  dc.b "VID",0
 str_o_sync: dc.b "SYNC",0
 str_o_pal:  dc.b "COLOUR",0
-str_o_clon: dc.b "CLON",0
+str_o_clon: dc.b "CLONE",0
 str_slim:   dc.b "SLIM ",0
 str_deep:   dc.b "DEEP ",0
 str_o_sram: dc.b "SRAM",0

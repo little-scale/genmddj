@@ -21,7 +21,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 |---|---|
 | **B** tap | Insert / edit / audition the cell under the cursor (repeats the last value). Grid/field screens only; field-only screens (PROJECT/OPTIONS/etc.) edit via B-hold+D-pad instead |
 | **B-hold + D-pad** | Adjust the value under the cursor — L/R = small step (±1 / ±1 semitone), U/D = big step (octave / ±$10) |
-| **B** double-tap | Paste (if a clipboard is armed for this screen). On reference cells (SONG chain#, CHAIN phrase#) with no clipboard: empty cell → mint the next free chain/phrase; populated → clone it (a SONG chain clone obeys OPTIONS **CLON**: SLIM shares its phrases, DEEP copies them) |
+| **B** double-tap | Paste (if a clipboard is armed for this screen). On reference cells (SONG chain#, CHAIN phrase#) with no clipboard: empty cell → mint the next free chain/phrase; populated → clone it (a SONG chain clone obeys OPTIONS **CLONE**: SLIM shares its phrases, DEEP copies them) |
 | **B-hold + A** tap | Copy the field to the clipboard |
 
 ## Block select — grid screens (PHRASE / CHAIN / SONG)
@@ -84,15 +84,15 @@ Up to 32 songs. The action buttons live in a sub-menu (C+B), not on the screen.
 The name is unified (`song_title`): it shows on PROJECT and on the SONG header, and is the slot
 name on save. Transport **stops automatically** on SAVE/LOAD. A refused save (directory or SRAM
 full) shows **FULL** by the FREE meter; a fresh cart is formatted on first boot; a load that
-fails its checksum blanks to a known state. OPTIONS holds just the display/sync settings
-(VID / SYNC / PALETTE).
+fails its checksum blanks to a known state. OPTIONS holds just the display/sync/clone settings
+(VID / SYNC / PALETTE / CLONE).
 
 ## Per-screen field edits (B-hold + D-pad)
 
 | Screen | Fields |
 |---|---|
 | **PROJECT** | TMPO / TSP / MODE / LFO. The song NAME is shown but **read-only** here — rename only on FILES. Save / load moved to FILES. |
-| **OPTIONS** | VID / SYNC / PALETTE / **CLON** (clone depth: SLIM = share phrases, DEEP = copy them). The song library moved to its own FILES screen — C+Down from SONG |
+| **OPTIONS** | VID / SYNC / PALETTE / **CLONE** (clone depth: SLIM = share phrases, DEEP = copy them). The song library moved to its own FILES screen — C+Down from SONG |
 | **WAVE** | plain Left/Right = wave-step cursor; B-hold + D-pad = sample level |
 | **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context |
 | **TABLE / GROOVE / ECHO / LFO** | their respective fields |
