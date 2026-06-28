@@ -7777,10 +7777,11 @@ advance_ch:                               ; a6 = channel
     addq.b  #1, hop_ctr                    ; runaway guard: H->H->... can't hang the tick
     cmpi.b  #32, hop_ctr
     bhs     .cmddone                       ; too many hops this advance -> bail, play the row
-    moveq   #0, d0
-    move.b  (3,a1,d1.w), d0               ; param = destination row (low nibble)
-    andi.b  #$0F, d0
-    bra     .gotrow                        ; jump there NOW -- the H row plays no sixteenth
+    bsr     advance_chain                 ; PHRASE H = simple hop: end the phrase, step the chain
+    cmpi.b  #$FF, c_chain(a6)             ;   (-> next phrase, or loop/continue per the song). Param ignored.
+    beq     nt_done                        ; chain became inactive -> stop this track
+    moveq   #0, d0                          ; play row 0 of the served phrase THIS tick (H costs no step)
+    bra     .gotrow
 .cmd_t:
     moveq   #0, d2                          ; T xx = flat tempo: set the ACTIVE groove flat at xx BPM
     move.b  (3,a1,d1.w), d2               ;   (= 1250/xx ticks every row; flattens the swing)
