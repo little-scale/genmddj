@@ -3139,6 +3139,8 @@ do_insert:
     beq.w   .chain_ins
     move.b  cur_col, d0
     beq.w   .ins_note                      ; col 0 = NOT -> insert/audition note
+    cmpi.b  #1, d0                          ; col 1 = INSTRUMENT -> audition the row (its note + this instr)
+    beq.s   .ins_iaud
     cmpi.b  #2, d0                          ; col 2 = C (PHRASE command column)
     bne.s   .ret
     tst.b   cur_screen                      ; PHRASE only
@@ -3147,6 +3149,19 @@ do_insert:
     bne.s   .ret
     move.b  last_cmd, (a1)                  ; B-tap repeats the last command entered
 .ret:
+    rts
+.ins_iaud:
+    tst.b   cur_screen                      ; PHRASE only (a1 = the instr cell; note is the byte before)
+    bne.s   .ret
+    tst.b   opt_audit
+    beq.s   .ret
+    moveq   #0, d1
+    move.b  (-1,a1), d1                     ; the row's note (col 0)
+    cmpi.b  #$FF, d1
+    beq.s   .ret                            ; rest row -> nothing to audition
+    moveq   #0, d2
+    move.b  (a1), d2                        ; the row's instrument (this cell)
+    bsr     audit_voice
     rts
 .song_ins:
     tst.b   d2                               ; double B-tap (set in do_insert) -> new/clone chain

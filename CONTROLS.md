@@ -19,7 +19,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 
 | Input | Action |
 |---|---|
-| **B** tap | Insert / edit / audition the cell under the cursor (repeats the last value). Grid/field screens only; field-only screens (PROJECT/OPTIONS/etc.) edit via B-hold+D-pad instead. On PHRASE (transport stopped) inserting **or** scrubbing a note's pitch **auditions it** on that track — gated by OPTIONS **AUDITION** (default ON) |
+| **B** tap | Insert / edit / audition the cell under the cursor (repeats the last value). Grid/field screens only; field-only screens (PROJECT/OPTIONS/etc.) edit via B-hold+D-pad instead. On PHRASE (transport stopped) inserting/scrubbing a note's pitch — **or B-tapping the instrument column** — **auditions the row** (its note + instrument) on that track, gated by OPTIONS **AUDITION** (default ON) |
 | **B-hold + D-pad** | Adjust the value under the cursor — L/R = small step (±1 / ±1 semitone), U/D = big step (octave / ±$10) |
 | **B** double-tap | Paste (if a clipboard is armed for this screen). On reference cells (SONG chain#, CHAIN phrase#) with no clipboard: empty cell → mint the next free chain/phrase; populated → clone it (a SONG chain clone obeys OPTIONS **CLONE**: SLIM shares its phrases, DEEP copies them) |
 | **B-hold + A** tap | Copy the field to the clipboard |
