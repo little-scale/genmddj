@@ -6418,8 +6418,13 @@ play_context:                             ; C+B: toggle audition of the current 
     bra.s   .pc_go
 .pc_ph:
     cmpi.b  #SCR_PHRASE, d0
-    bne.s   .pc_done                      ; INSTRUMENT: nothing to audition
-    move.b  #2, play_mode                 ; PHRASE: solo this track's phrase
+    beq.s   .pc_phsolo
+    cmpi.b  #SCR_INSTR, d0                ; INSTR/FM (e.g. entered via C+-> from a phrase note):
+    beq.s   .pc_phsolo                    ;   replay the phrase/track we came from -- cur_phrase +
+    cmpi.b  #SCR_FM, d0                   ;   cur_chan persist across the jump (INSTR edits cur_instr)
+    bne.s   .pc_done                      ; other screens: nothing to audition
+.pc_phsolo:
+    move.b  #2, play_mode                 ; PHRASE/INSTR: solo this track's phrase
 .pc_go:
     move.b  #1, playing
     bsr     clear_live_patch              ; fresh A/V override state each audition

@@ -50,6 +50,7 @@ uses a double-tap). Pad: 3-button baseline (**A B C Start**); 6-button extras ar
 | SONG (LIVE mode) | See **LIVE mode** below — launch / stop the cursor's track |
 | CHAIN | Solo this track's chain, from the cursor step |
 | PHRASE | Solo this phrase |
+| INSTR / FM | Solo the phrase/track you arrived from (replays the last PHRASE context — `cur_phrase`/`cur_chan`, e.g. after C+→ from a note) |
 | FILES | Open / close the SAVE / LOAD / CLEAR / CANCEL sub-menu for the selected slot |
 
 ## LIVE mode (SONG screen, `MODE = LIVE`)
