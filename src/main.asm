@@ -6684,6 +6684,11 @@ engine_play_reset:
 .rlb:
     move.b  #0, (a0)+
     dbra    d0, .rlb
+    lea     c_rtvol, a0                   ; clear the R decay state (c_rtvol + c_rtdrop, contiguous)
+    moveq   #(2*NCH)-1, d0
+.rlrt:
+    clr.b   (a0)+
+    dbra    d0, .rlrt
     lea     live_on, a0                   ; LIVE: clear all per-track launch state (on/bar/q/when)
     move.w  #(live_when+NCH)-live_on-1, d0
 .rlive:
@@ -7786,6 +7791,10 @@ hold_tick:                                ; a6 = channel
     move.b  d3, (a1,d0.w)
     lea     lx_dirty, a1                   ; FM: force the carrier-TL recompute with the new drop
     move.b  #1, (a1,d0.w)
+    cmpi.b  #15, d3                        ; decayed to silence -> stop retriggering (until a new note)
+    bne.s   .hrt_nv
+    lea     c_rtper, a1
+    clr.b   (a1,d0.w)
 .hrt_nv:
     movem.l (sp)+, d0/d3/a1                ; restore (a1 = c_rtctr for .hrtset)
 .hrtset:
@@ -7918,12 +7927,15 @@ advance_ch:                               ; a6 = channel
     move.b  #0, a_set                      ; A command: clear this row's table-switch flag
     move.b  #0, l_set                      ; L command: clear this row's slide flag
     move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
-    moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
-    move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
+    cmpi.b  #$FF, (a1,d1.w)               ; R persists across empty rows: only a NEW NOTE here stops it
+    beq.s   .rt_keep                       ;   (decay-to-silence in the fire is the other stop). rest -> keep
+    moveq   #0, d2
+    move.b  c_track(a6), d2
     lea     c_rtper, a2
-    clr.b   (a2,d2.w)
-    lea     c_rtdrop, a2                   ; ...and clear the decay so the volume restores next row
-    clr.b   (a2,d2.w)
+    clr.b   (a2,d2.w)                       ; new note -> stop the old retrigger (re-set if this row has R)
+    lea     c_rtdrop, a2
+    clr.b   (a2,d2.w)                       ; ...and reset the decay
+.rt_keep:
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row (phrase-structural, stays here)
     beq     .cmd_hop
