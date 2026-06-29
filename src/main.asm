@@ -2504,6 +2504,19 @@ edit_fm:
 .ie_inc:
     addq.b  #1, d0
 .ie_w:
+    btst    #0, d2                          ; Up -> +4 (big step, clamp)
+    beq.s   .ie_nu
+    addq.b  #4, d0
+    cmpi.b  #NINSTR_ED, d0
+    bls.s   .ie_nu
+    moveq   #NINSTR_ED, d0
+.ie_nu:
+    btst    #1, d2                          ; Down -> -4 (big step, clamp)
+    beq.s   .ie_nd
+    subq.b  #4, d0
+    bcc.s   .ie_nd
+    moveq   #0, d0
+.ie_nd:
     move.b  d0, cur_instr
     move.b  #1, need_clear                  ; re-render the whole instrument page
     move.b  #1, env_dirty                   ; new instrument -> re-rasterise envelopes
@@ -2515,7 +2528,7 @@ edit_fm:
     lea     rom_slot, a1
 .iel_w:
     moveq   #NUBANK-1, d3
-    moveq   #1, d4
+    moveq   #4, d4                           ; B+Up/Down = big step (4) across the library slots
     bra     adj_field
 .opedit:
     moveq   #0, d0                         ; op grid: i_op + (row-(NVOICE+2))*10 + col
@@ -2574,6 +2587,19 @@ edit_psg:
 .ep_iinc:
     addq.b  #1, d0
 .ep_iw:
+    btst    #0, d2                          ; Up -> +4 (big step, clamp)
+    beq.s   .ep_inu
+    addq.b  #4, d0
+    cmpi.b  #NINSTR_ED, d0
+    bls.s   .ep_inu
+    moveq   #NINSTR_ED, d0
+.ep_inu:
+    btst    #1, d2                          ; Down -> -4 (big step, clamp)
+    beq.s   .ep_ind
+    subq.b  #4, d0
+    bcc.s   .ep_ind
+    moveq   #0, d0
+.ep_ind:
     move.b  d0, cur_instr
     move.b  #1, need_clear
     rts
