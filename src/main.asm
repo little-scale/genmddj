@@ -227,6 +227,8 @@ c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override 
 c_slide    equ $00FFD650           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0). NOTE: a WORD array (NCH*2 bytes) -- kept in the free $D650+ block so it can't overrun the groove/sync/sram vars at $D420+ (the engine_play_reset clear spans c_slide+c_lrate = NCH*3 bytes)
 c_lrate    equ $00FFD664           ; L command: per-channel slide rate (byte array, immediately after c_slide so the clear covers both; 0 = no glide)
 c_lfopitch equ $00FFD66E           ; FM LFO TUNE target: per-channel pitch (fnum) offset, word array (right after c_lrate; cleared each tick by fmlfo_tick + by engine_play_reset)
+c_rtvol    equ $00FFD682           ; R command: per-channel volume drop per retrigger (x nibble; 0 = no decay), NCH bytes
+c_rtdrop   equ $00FFD68C           ; R command: per-channel accumulated retrigger attenuation (0-15), reset each row, NCH bytes
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -524,6 +526,11 @@ Start:
     move.b  #$FF, perc_ld                 ; PERC: no live cluster loaded yet
     move.l  #$FFFFFFFF, perc_note         ; PERC: all 4 display notes = off
     move.b  #0, perc_repatch             ; PERC: no live re-patch pending
+    lea     c_rtvol, a0                   ; R command: clear the retrigger-decay arrays (c_rtvol + c_rtdrop)
+    moveq   #(2*NCH)-1, d0
+.bclr_rt:
+    clr.b   (a0)+
+    dbra    d0, .bclr_rt
     move.b  #0, echo_mode                 ; ECHO off; sensible tap/reduction defaults
     move.b  #2, echo_tap1
     move.b  #4, echo_tap2
@@ -7101,6 +7108,26 @@ echo_psg_rd:
 .epr_ret:
     rts
 
+; R retrigger decay (PSG) -- runs in the .ch loop after the envelope sets c_vol (FM rides lx_vol via
+; compose_fm instead). Drop c_vol by c_rtdrop[track], the accumulated per-re-strike attenuation.
+retrig_psg_rd:
+    cmpi.b  #1, c_type(a6)                  ; FM target -> handled in the carrier-TL path, skip
+    beq.s   .rpr_ret
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    lea     c_rtdrop, a1
+    move.b  (a1,d0.w), d1
+    beq.s   .rpr_ret                        ; no decay
+    moveq   #0, d2
+    move.b  c_vol(a6), d2
+    sub.b   d1, d2
+    bpl.s   .rpr_w
+    moveq   #0, d2
+.rpr_w:
+    move.b  d2, c_vol(a6)
+.rpr_ret:
+    rts
+
 ; --- Groove clock (Phase 1) -----------------------------------------------------------------------
 ; Grooves are the clock: each song row lasts active-groove[groove_pos] ticks (1 tick = 1 VBlank
 ; frame); groove_pos cycles through the groove (wraps at 16 or on a 0 entry = short groove). A flat
@@ -7328,6 +7355,7 @@ engine_tick:
     bsr     table_cmd                     ; run the active table row's CMD column once per row entry
     bsr     hold_tick
     bsr     echo_psg_rd                   ; PSG echo target: attenuate by RD (after the envelope set c_vol)
+    bsr     retrig_psg_rd                 ; PSG: R-command retrigger volume decay (also post-envelope)
 .ch_compose:
     bsr     compose_ch
     lea     CHSIZE(a6), a6
@@ -7734,6 +7762,21 @@ hold_tick:                                ; a6 = channel
     move.b  #1, c_trig(a6)                  ; FM: re-key
     move.b  #1, c_estate(a6)               ; PSG: restart the envelope attack
     move.b  #0, c_ectr(a6)
+    movem.l d0/d3/a1, -(sp)                ; --- R decay: c_rtdrop += c_rtvol (clamp 15) ---
+    lea     c_rtvol, a1
+    move.b  (a1,d0.w), d3                   ; x = volume drop per re-strike
+    beq.s   .hrt_nv                         ; x=0 -> plain retrigger, no decay
+    lea     c_rtdrop, a1
+    add.b   (a1,d0.w), d3
+    cmpi.b  #15, d3
+    bls.s   .hrt_cl
+    moveq   #15, d3                          ; clamp to full attenuation
+.hrt_cl:
+    move.b  d3, (a1,d0.w)
+    lea     lx_dirty, a1                   ; FM: force the carrier-TL recompute with the new drop
+    move.b  #1, (a1,d0.w)
+.hrt_nv:
+    movem.l (sp)+, d0/d3/a1                ; restore (a1 = c_rtctr for .hrtset)
 .hrtset:
     move.b  d2, (a1,d0.w)
 .hnort:
@@ -7867,6 +7910,8 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d2                          ; R is a one-row command: clear the retrigger on row entry
     move.b  c_track(a6), d2                 ;   so it stops at the next row/note (re-set if this row has R)
     lea     c_rtper, a2
+    clr.b   (a2,d2.w)
+    lea     c_rtdrop, a2                   ; ...and clear the decay so the volume restores next row
     clr.b   (a2,d2.w)
     move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row (phrase-structural, stays here)
@@ -8520,13 +8565,20 @@ exec_cmd:
     move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_r:
-    move.b  (3,a1,d1.w), d2               ; R xx = retrigger every xx ticks
+    move.b  (3,a1,d1.w), d2               ; R xy = retrigger every y ticks; x = volume drop/re-strike
     moveq   #0, d3
     move.b  c_track(a6), d3
+    move.b  d2, d4                          ; x (high nibble) = cumulative volume drop per retrigger
+    lsr.b   #4, d4
+    lea     c_rtvol, a4
+    move.b  d4, (a4,d3.w)
+    lea     c_rtdrop, a4                   ; restate R -> restart the decay from full
+    clr.b   (a4,d3.w)
+    andi.b  #$0F, d2                        ; y (low nibble) = retrigger period in ticks
     lea     c_rtper, a4
     move.b  d2, (a4,d3.w)
     lea     c_rtctr, a4
-    move.b  d2, (a4,d3.w)                 ; first retrig xx ticks from now
+    move.b  d2, (a4,d3.w)                 ; first retrig y ticks from now
     bra     .cmddone
 .cmd_y:
     cmpi.b  #1, c_type(a6)                ; FM channels only
@@ -9158,6 +9210,11 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  #0, (a4,d0.w)
     lea     lx_vol, a4
     move.b  (a4,d0.w), d1
+    lea     c_rtdrop, a4                   ; R decay: extra carrier attenuation (cumulative per re-strike)
+    sub.b   (a4,d0.w), d1
+    bpl.s   .cf_xtl
+    moveq   #0, d1
+.cf_xtl:
     bsr     emit_x_tl
 .cf_nox:
     move.b  c_tvol(a6), d1                ; table VOL column -> carrier TL (overrides X; per tick)
