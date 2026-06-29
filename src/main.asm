@@ -185,8 +185,8 @@ env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp);
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
 opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI(unimpl, HIDDEN from the field) 5=IN24 (2-bit 24PPQN, ESP bridge)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
-opt_clon   equ $00FFE3E7           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases)
-opt_audit  equ $00FFE3E8           ; OPTIONS: note-entry audition (prelisten) 0=OFF 1=ON (default ON)
+opt_clon   equ $00FFD759           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases) -- relocated off $E3E7 (collided with proj_tmpo!)
+opt_audit  equ $00FFD75A           ; OPTIONS: note-entry audition (prelisten) 0=OFF 1=ON (default ON) -- was $E3E8 (collided with proj_tsp!)
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
@@ -10952,9 +10952,9 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     audit_lbl, a1
     move.l  (a1,d1.w), a1
     moveq   #9, d3
-    moveq   #9, d4
+    moveq   #10, d4                          ; AUDITION is 8 chars -> value at col 10 (one-col gap)
     bsr     print_hl
-    rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDIT (SRAM/FREE moved to FILES)
+    rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDITION (SRAM/FREE moved to FILES)
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     moveq   #5, d3                          ; MODE (cur_row 0)
@@ -13265,7 +13265,7 @@ str_o_pal:  dc.b "COLOUR",0
 str_o_clon: dc.b "CLONE",0
 str_slim:   dc.b "SLIM ",0
 str_deep:   dc.b "DEEP ",0
-str_o_audit: dc.b "AUDIT",0
+str_o_audit: dc.b "AUDITION",0
 str_aud_off: dc.b "OFF",0
 str_aud_on:  dc.b "ON ",0
 str_o_sram: dc.b "SRAM",0
