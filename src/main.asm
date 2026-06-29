@@ -9702,7 +9702,10 @@ perc_freq_send:
     lea     instrum, a1
     adda.w  d0, a1
     tst.b   (i_pmode,a1)
-    beq.s   .pfs_emit                       ; FIXED mode -> leave perc_keys (all four) untouched
+    bne.s   .pfs_pitched                    ; PITCHED -> derive op4 below
+    move.b  #$0F, perc_keys                 ; FIXED: re-assert all four every emit so an R retrigger
+    bra.s   .pfs_emit                       ;   (which re-keys via c_trig -> here) re-strikes all 4 ops
+.pfs_pitched:
     cmpi.b  #$FF, (i_tbl,a1)               ; PITCHED: 4th voice needs a table...
     beq.s   .pfs_no4
     tst.b   (i_tbs,a1)                      ; ...with TBS=0 (per-note step)...
