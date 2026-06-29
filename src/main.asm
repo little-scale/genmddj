@@ -230,6 +230,8 @@ c_lfopitch equ $00FFD66E           ; FM LFO TUNE target: per-channel pitch (fnum
 c_rtvol    equ $00FFD682           ; R command: per-channel volume drop per retrigger (x nibble; 0 = no decay), NCH bytes
 c_rtdrop   equ $00FFD68C           ; R command: per-channel accumulated retrigger attenuation (0-15), reset each row, NCH bytes
 audit_ctr  equ $00FFD696           ; INSTR B-tap audition: frames left to keep the voice sounding while stopped (0 = none), word
+purge_used equ $00FFD698           ; FILES purge: transient used-set (192 B; chains use 0..127, phrases 0..191)
+purge_freed equ $00FFD758          ; FILES purge: last freed count for the readout ($FF = none/hide)
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -1725,9 +1727,9 @@ files_nav:                                 ; FILES: list mode = slots 0..count; 
     subq.b  #1, menu_row
     rts
 .fn_mdn:
-    btst    #1, d2                            ; sub-menu: Down = next action (0-3, last = CANCEL)
+    btst    #1, d2                            ; sub-menu: Down = next action (0-5, last = CANCEL)
     beq.s   .fn_x
-    cmpi.b  #3, menu_row
+    cmpi.b  #5, menu_row
     bhs.s   .fn_x
     addq.b  #1, menu_row
     rts
@@ -12317,15 +12319,55 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm2:
     lea     str_o_clr, a1
     bsr     print_hl
-    moveq   #13, d3                         ; CANCEL (menu_row 3)
+    moveq   #13, d3                         ; PURGE PH (menu_row 3) -- working-song, not the slot
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #3, menu_row
+    bne.s   .rf_sm3
+    moveq   #$60, d2
+.rf_sm3:
+    lea     str_purge_ph, a1
+    bsr     print_hl
+    moveq   #14, d3                         ; PURGE CH (menu_row 4)
+    moveq   #22, d4
+    moveq   #0, d2
+    cmpi.b  #4, menu_row
+    bne.s   .rf_sm3b
+    moveq   #$60, d2
+.rf_sm3b:
+    lea     str_purge_ch, a1
+    bsr     print_hl
+    moveq   #15, d3                         ; CANCEL (menu_row 5)
+    moveq   #22, d4
+    moveq   #0, d2
+    cmpi.b  #5, menu_row
     bne.s   .rf_sm4
     moveq   #$60, d2
 .rf_sm4:
     lea     str_o_cancel, a1
     bsr     print_hl
+    move.b  proj_armed, d0                  ; status line: SURE? while a purge is armed, else FREED nn
+    cmpi.b  #$13, d0
+    beq.s   .rf_sure
+    cmpi.b  #$14, d0
+    bne.s   .rf_freed
+.rf_sure:
+    moveq   #16, d3
+    moveq   #22, d4
+    lea     str_sure, a1
+    bsr     print_at
+    bra.s   .rf_done
+.rf_freed:
+    move.b  purge_freed, d0
+    cmpi.b  #$FF, d0
+    beq.s   .rf_done
+    moveq   #16, d3
+    moveq   #22, d4
+    lea     str_freed, a1                   ; "FREED " (6 ch) -> VDP auto-advances to col 28
+    bsr     print_at
+    move.b  purge_freed, d3
+    moveq   #0, d4
+    bsr     draw_hex2                        ; the count, right after
 .rf_done:
     movem.l (sp)+, d0-d7/a0-a3
 .rf_x:
@@ -12758,7 +12800,11 @@ files_action:                             ; B-tap on FILES: run the selected sub
     beq     .oa_load
     cmpi.b  #2, d0
     beq     .oa_clear
-    bra     .oa_done                         ; menu_row 3 = CANCEL -> just close the menu
+    cmpi.b  #3, d0
+    beq     .oa_purge_ph
+    cmpi.b  #4, d0
+    beq     .oa_purge_ch
+    bra     .oa_done                         ; menu_row 5 = CANCEL -> just close the menu
 .oa_save:
     clr.b   proj_armed
     bsr     files_stop                       ; transport stops for the SRAM op
@@ -12794,10 +12840,27 @@ files_action:                             ; B-tap on FILES: run the selected sub
     bmi     .oa_done
     bsr     dir_delete
     bra     .oa_done
+.oa_purge_ph:
+    move.b  #$13, d0                          ; FILES purge-confirm id (distinct from PROJECT cur_rows)
+    bsr     proj_confirm
+    bne.s   .oa_keepopen                      ; 1st tap -> armed (SURE? shows); menu stays open
+    bsr     purge_phrases
+    move.b  d0, purge_freed
+    bra.s   .oa_keepopen
+.oa_purge_ch:
+    move.b  #$14, d0
+    bsr     proj_confirm
+    bne.s   .oa_keepopen
+    bsr     purge_chains
+    move.b  d0, purge_freed
+.oa_keepopen:
+    move.b  #1, need_clear                   ; redraw (SURE? / FREED nn); keep the menu open
+    rts
 .oa_ret:
     rts
 .oa_done:
     clr.b   proj_armed
+    move.b  #$FF, purge_freed                ; clear the purge readout when the menu closes
     clr.b   files_menu                       ; the action ran (or was a no-op) -> close the menu
     move.b  #1, need_clear
     rts
@@ -12809,6 +12872,120 @@ files_stop:                                ; stop the transport (clean stop path
 .fst_x:
     rts
 
+; --- FILES purge: clear unused records (clear-only, no renumber) so they vanish from the RLE save ---
+purge_chains:                              ; clear chains not placed in the SONG -> d0.b = chains freed
+    lea     purge_used, a0                  ; used-set <- 0
+    move.w  #NCHAINS-1, d1
+.puc_z:
+    clr.b   (a0)+
+    dbra    d1, .puc_z
+    lea     song, a0                        ; mark every chain referenced by a SONG cell
+    move.w  #(NSONGROWS*NCH)-1, d1
+.puc_scan:
+    moveq   #0, d2
+    move.b  (a0)+, d2
+    cmpi.b  #$FF, d2
+    beq.s   .puc_sn
+    lea     purge_used, a1
+    st      (a1,d2.w)
+.puc_sn:
+    dbra    d1, .puc_scan
+    moveq   #0, d0                           ; freed count
+    moveq   #0, d3                           ; chain index
+.puc_each:
+    lea     purge_used, a1
+    tst.b   (a1,d3.w)
+    bne.s   .puc_next                        ; used -> keep
+    lea     chains, a1                       ; unused: non-empty? (a placed phrase in any step)
+    move.w  d3, d2
+    mulu.w  #CHAIN_SIZE, d2
+    adda.w  d2, a1                           ; a1 = chain base
+    move.l  a1, a0
+    moveq   #16-1, d2
+.puc_ne:
+    cmpi.b  #$FF, (a0)
+    bne.s   .puc_clear
+    addq.l  #2, a0
+    dbra    d2, .puc_ne
+    bra.s   .puc_next                        ; already empty -> nothing to free
+.puc_clear:
+    moveq   #CHAIN_SIZE-1, d2
+.puc_cl:
+    move.b  #$FF, (a1)+
+    dbra    d2, .puc_cl
+    addq.b  #1, d0
+.puc_next:
+    addq.w  #1, d3
+    cmpi.w  #NCHAINS, d3
+    blo.s   .puc_each
+    rts
+
+purge_phrases:                             ; clear phrases not reachable from the SONG (song->chain->step) -> d0.b = freed
+    lea     purge_used, a0
+    move.w  #NPHRASES-1, d1
+.pup_z:
+    clr.b   (a0)+
+    dbra    d1, .pup_z
+    lea     song, a0                         ; walk song -> each used chain's steps -> mark phrases
+    move.w  #(NSONGROWS*NCH)-1, d1
+.pup_scan:
+    moveq   #0, d2
+    move.b  (a0)+, d2
+    cmpi.b  #$FF, d2
+    beq.s   .pup_sn
+    movem.l d1/a0, -(sp)                     ; preserve the song scan over the chain-step inner loop
+    lea     chains, a1
+    mulu.w  #CHAIN_SIZE, d2
+    adda.w  d2, a1                           ; a1 = chain base
+    moveq   #16-1, d3
+.pup_step:
+    moveq   #0, d4
+    move.b  (a1), d4
+    cmpi.b  #$FF, d4
+    beq.s   .pup_st_n
+    lea     purge_used, a0
+    st      (a0,d4.w)
+.pup_st_n:
+    addq.l  #2, a1
+    dbra    d3, .pup_step
+    movem.l (sp)+, d1/a0
+.pup_sn:
+    dbra    d1, .pup_scan
+    moveq   #0, d0                           ; freed count
+    moveq   #0, d3                           ; phrase index
+.pup_each:
+    lea     purge_used, a1
+    tst.b   (a1,d3.w)
+    bne.s   .pup_next
+    lea     phrases, a1                       ; unused: non-empty? (note != $FF or cmd != 0 in any row)
+    move.w  d3, d2
+    lsl.w   #6, d2
+    adda.w  d2, a1                           ; a1 = phrase base
+    move.l  a1, a0
+    moveq   #16-1, d2
+.pup_ne:
+    cmpi.b  #$FF, (a0)
+    bne.s   .pup_clear
+    tst.b   (2,a0)
+    bne.s   .pup_clear
+    addq.l  #4, a0
+    dbra    d2, .pup_ne
+    bra.s   .pup_next                        ; already empty -> skip
+.pup_clear:
+    moveq   #16-1, d2                         ; 16 rows -> $FF,0,0,0 (the empty-phrase pattern)
+.pup_cl:
+    move.b  #$FF, (a1)+
+    clr.b   (a1)+
+    clr.b   (a1)+
+    clr.b   (a1)+
+    dbra    d2, .pup_cl
+    addq.b  #1, d0
+.pup_next:
+    addq.w  #1, d3
+    cmpi.w  #NPHRASES, d3
+    blo.s   .pup_each
+    rts
+
 files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD/CLEAR sub-menu
     tst.b   sram_layout
     beq.s   .fmt_x                           ; no SRAM -> no menu
@@ -12816,6 +12993,8 @@ files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD
     bne.s   .fmt_close
     move.b  cur_row, opt_song                ; freeze the selected slot
     clr.b   menu_row
+    move.b  #$FF, purge_freed                ; no purge readout until a purge runs this session
+    clr.b   proj_armed                       ; no stale confirm carried into the menu
     move.b  #1, files_menu
     move.b  #1, need_clear
     rts
@@ -13025,6 +13204,9 @@ str_o_empty: dc.b "(EMPTY)",0
 str_o_del:   dc.b "DELETE",0
 str_o_clr:   dc.b "CLEAR",0
 str_o_cancel: dc.b "CANCEL",0
+str_purge_ph: dc.b "PURGE PH",0
+str_purge_ch: dc.b "PURGE CH",0
+str_freed:   dc.b "FREED ",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_slot: dc.b "SLOT",0

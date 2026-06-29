@@ -80,7 +80,7 @@ Up to 32 songs. The action buttons live in a sub-menu (C+B), not on the screen.
 | **B-hold + Left / Right** | Move the name cursor (the inverted character) across the 8 name chars |
 | **B-hold + Up / Down** | Cycle the character under the cursor — the ring is `BLANK`-home: Up → A–Z then specials, Down → 0–9. On a saved slot this renames it live; the `(EMPTY)` slot reads `(EMPTY)` until your first keystroke (which starts a fresh name), becoming the new song's name on SAVE |
 | **C-hold + B** tap | Open / close the action sub-menu for the selected slot |
-| *(menu)* **Up / Down + B** | Run **SAVE** (store the working song), **LOAD** (load the slot — or on `(EMPTY)`, start a fresh blank project), **CLEAR** (delete the slot), or **CANCEL** (close) |
+| *(menu)* **Up / Down + B** | Run **SAVE** (store the working song), **LOAD** (load the slot — or on `(EMPTY)`, start a fresh blank project), **CLEAR** (delete the slot), **PURGE PH** / **PURGE CH** (working song: blank phrases/chains not reachable from the SONG so they drop out of the next save — tap twice to confirm, shows `FREED nn`), or **CANCEL** (close) |
 
 The name is unified (`song_title`): it shows on PROJECT and on the SONG header, and is the slot
 name on save. Transport **stops automatically** on SAVE/LOAD. A refused save (directory or SRAM
