@@ -95,7 +95,7 @@ fails its checksum blanks to a known state. OPTIONS holds just the display/sync/
 | **PROJECT** | TMPO / TSP / MODE / LFO. The song NAME is shown but **read-only** here — rename only on FILES. Save / load moved to FILES. |
 | **OPTIONS** | VID / SYNC / PALETTE / **CLONE** (clone depth: SLIM = share phrases, DEEP = copy them). The song library moved to its own FILES screen — C+Down from SONG |
 | **WAVE** | plain Left/Right = wave-step cursor; B-hold + D-pad = sample level |
-| **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context |
+| **INSTR / FM** | operator + voice parameters; A-hold + L/R also switches the instrument context. **B-tap auditions C-4 of the current instrument** on the track you came from — only while the transport is stopped (library buttons on row 1 still LOAD/SAVE) |
 | **TABLE / GROOVE / ECHO / LFO** | their respective fields |
 
 ## Not yet wired (free for the taking)

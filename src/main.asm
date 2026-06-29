@@ -229,6 +229,7 @@ c_lrate    equ $00FFD664           ; L command: per-channel slide rate (byte arr
 c_lfopitch equ $00FFD66E           ; FM LFO TUNE target: per-channel pitch (fnum) offset, word array (right after c_lrate; cleared each tick by fmlfo_tick + by engine_play_reset)
 c_rtvol    equ $00FFD682           ; R command: per-channel volume drop per retrigger (x nibble; 0 = no decay), NCH bytes
 c_rtdrop   equ $00FFD68C           ; R command: per-channel accumulated retrigger attenuation (0-15), reset each row, NCH bytes
+audit_ctr  equ $00FFD696           ; INSTR B-tap audition: frames left to keep the voice sounding while stopped (0 = none), word
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
 CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
@@ -526,8 +527,8 @@ Start:
     move.b  #$FF, perc_ld                 ; PERC: no live cluster loaded yet
     move.l  #$FFFFFFFF, perc_note         ; PERC: all 4 display notes = off
     move.b  #0, perc_repatch             ; PERC: no live re-patch pending
-    lea     c_rtvol, a0                   ; R command: clear the retrigger-decay arrays (c_rtvol + c_rtdrop)
-    moveq   #(2*NCH)-1, d0
+    lea     c_rtvol, a0                   ; R command: clear the retrigger-decay arrays (c_rtvol + c_rtdrop) + audit_ctr
+    moveq   #(2*NCH)+1, d0
 .bclr_rt:
     clr.b   (a0)+
     dbra    d0, .bclr_rt
@@ -3086,13 +3087,19 @@ do_insert:
     bne.s   .di_nb
 .di_bank:                                  ; bank buttons on row 1: col 2 LOAD, col 3 SAVE, col 5 ROM LOAD (cols 1,4 = slots)
     cmpi.b  #1, cur_row
-    bne.s   .di_nb
+    bne.s   .di_audit
     move.b  cur_col, d0
     cmpi.b  #2, d0                            ; cols 0 (TYPE), 1 (SRAM slot) aren't buttons
-    blo.s   .di_nb
+    blo.s   .di_audit
     cmpi.b  #4, d0                            ; col 4 (ROM slot) isn't a button
-    beq.s   .di_nb
+    beq.s   .di_audit
     bra     do_bank_action
+.di_audit:                                  ; INSTR/FM B-tap that isn't a library button -> audition a note (stopped only)
+    tst.b   playing
+    bne.s   .di_aud_ret
+    bsr     audit_note
+.di_aud_ret:
+    rts
 .di_nb:
     cmpi.b  #SCR_ECHO, cur_screen          ; other placeholder screens have no fields
     blo.s   .di_go
@@ -3196,6 +3203,18 @@ do_insert:
     bne.s   .audit
     move.b  last_instr, 1(a1)
 .audit:
+    rts
+
+audit_note:                               ; B-tap on INSTR/FM while stopped: play C-4 of cur_instr on cur_chan
+    moveq   #0, d0
+    move.b  cur_chan, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6                          ; a6 = the current track's channel state
+    move.b  #48, c_note(a6)                ; C-4 (note%12=0, octave 4)
+    move.b  cur_instr, c_instr(a6)
+    bsr     note_trigger                   ; key-on (note_trigger dispatches by the channel's voice type)
+    move.w  #90, audit_ctr                 ; ~1.5 s: keep engine_tick voicing it while the transport is stopped
     rts
 
 find_free_chain:                          ; d0.b = lowest EMPTY chain (no placed phrases); NCHAINS if none
@@ -6710,8 +6729,8 @@ engine_play_reset:
 .rlb:
     move.b  #0, (a0)+
     dbra    d0, .rlb
-    lea     c_rtvol, a0                   ; clear the R decay state (c_rtvol + c_rtdrop, contiguous)
-    moveq   #(2*NCH)-1, d0
+    lea     c_rtvol, a0                   ; clear the R decay state (c_rtvol + c_rtdrop) + any audition timer
+    moveq   #(2*NCH)+1, d0
 .rlrt:
     clr.b   (a0)+
     dbra    d0, .rlrt
@@ -7289,6 +7308,11 @@ engine_tick:
     beq     .midi
     tst.b   playing
     bne.s   .play
+    tst.w   audit_ctr                     ; stopped: an INSTR audition running -> voice the channels (no advance)
+    beq.s   .sil_start
+    subq.w  #1, audit_ctr
+    bra     .noadv
+.sil_start:
     ; stopped: silence all channels (compose emits the change once)
     lea     scb_data, a3
     moveq   #0, d6
