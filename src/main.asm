@@ -4679,7 +4679,17 @@ edit_perc_field:                          ; a3 = PERC record; row 2 = BASE, rows
     lsl.w   #3, d0                          ; block << 11
     andi.w  #$7FF, d1
     or.w    d1, d0
-    move.w  d0, (a2)
+    move.w  d0, (a2)                        ; store -> p_fnum
+    move.b  cur_instr, d1                   ; live sync: if this instrument's cluster is loaded, mirror
+    cmp.b   perc_ld, d1                     ;   the new F-number into perc_live[op] so the FIXED display
+    bne.s   .epq_ret                        ;   stops snapping back while playing and .pfs_emit picks it up
+    moveq   #0, d1
+    move.b  cur_row, d1
+    subi.b  #9, d1                          ; op index 0-3
+    add.w   d1, d1                          ; word offset
+    lea     perc_live, a1
+    move.w  d0, (a1,d1.w)
+.epq_ret:
     rts
 
 ; placeholder for KIT until its editor lands
