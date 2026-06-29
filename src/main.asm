@@ -289,6 +289,7 @@ NUBANK     equ 32                  ; SRAM cross-song instrument bank: 32 slots (
 SRAM_BANK  equ 256                 ; bank base (logical): just after the 256-B config block
 SRAM_SLOT0 equ SRAM_BANK+NUBANK*64 ; song slots start after config + bank (= logical 2304)
 DIR_SIG    equ 8                   ; SRAM logical offset of the 4-byte "directory initialised" signature ("GMD1")
+CONFIG_OFS equ 16                  ; OPTIONS config logical offset within the 256-B config block -- CLEAR of DIR_SIG (8-11)
 DIR_BASE   equ SRAM_SLOT0          ; compressed-song directory (replaces the fixed numbered slots)
 DIR_ENT    equ 16                  ; entry: valid(1,$A5) raw(1) offset(2,BE) len(2,BE) name(8) csum(2,BE)
 DIR_N      equ 32                  ; max stored songs
@@ -574,6 +575,7 @@ Start:
     move.b  #1, opt_audit                   ;   note-entry audition ON by default
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
+    bsr     load_config                   ; restore saved OPTIONS over the boot defaults (was never called -> didn't persist)
     moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
     move.b  sram_size, d0
     beq.s   .sl_none
@@ -11331,46 +11333,68 @@ apply_palette:                            ; load pal_table[opt_pal] into CRAM co
     move.w  (a1)+, VDP_DATA
     rts
 
-; ---- config block in cart SRAM (odd-byte, $A130F1-gated). Persists the OPTIONS across power.
-; Layout: byte0 magic $A5, 1 opt_pal, 2 opt_vid, 3 opt_sync (each at $200001 + i*2). ----
+; ---- config block in cart SRAM ($A130F1-gated). Persists the OPTIONS across power.
+; Uses sram_at (stride-aware, like the directory/songs) at logical CONFIG_OFS, CLEAR of the
+; directory signature (DIR_SIG=8). Fields step by d5: magic, pal, vid, sync, clon, audit, marker.
+; (Was at hardcoded $200001+i, which collided with DIR_SIG on a linear cart -> wiped the song dir.)
 save_config:
-    move.b  #1, $A130F1                     ; map SRAM (writable)
-    lea     $200001, a1
-    move.b  #$A5, (a1)
-    move.b  opt_pal, (2,a1)
-    move.b  opt_vid, (4,a1)
-    move.b  opt_sync, (6,a1)
-    move.b  opt_clon, (8,a1)
-    move.b  opt_audit, (10,a1)
-    move.b  #$5A, (12,a1)                   ; extended-config marker: offset-10+ fields are present
-    move.b  #0, $A130F1                     ; unmap (protect)
+    movem.l d0-d5/a1, -(sp)
+    moveq   #CONFIG_OFS, d0
+    bsr     sram_at
+    beq.s   .sc_x                            ; no SRAM -> nothing to do
+    move.b  #$A5, (a1)                       ; magic
+    adda.l  d5, a1
+    move.b  opt_pal, (a1)
+    adda.l  d5, a1
+    move.b  opt_vid, (a1)
+    adda.l  d5, a1
+    move.b  opt_sync, (a1)
+    adda.l  d5, a1
+    move.b  opt_clon, (a1)
+    adda.l  d5, a1
+    move.b  opt_audit, (a1)
+    adda.l  d5, a1
+    move.b  #$5A, (a1)                       ; extended-config marker (offset-clon+ fields present)
+    move.b  #0, $A130F1                      ; unmap (protect)
+.sc_x:
+    movem.l (sp)+, d0-d5/a1
     rts
-load_config:
-    move.b  #1, $A130F1
-    lea     $200001, a1
+load_config:                               ; called at boot (after sram_init) + after every OPTIONS edit
+    movem.l d0-d5/a1, -(sp)
+    moveq   #CONFIG_OFS, d0
+    bsr     sram_at
+    beq.s   .lcdone                          ; no SRAM -> keep boot defaults
     cmpi.b  #$A5, (a1)                       ; valid config?
-    bne.s   .lcdone
-    move.b  (2,a1), opt_pal
-    move.b  (4,a1), opt_vid
-    move.b  (6,a1), opt_sync
-    move.b  (8,a1), opt_clon
+    bne.s   .lcunmap
+    adda.l  d5, a1
+    move.b  (a1), opt_pal
+    adda.l  d5, a1
+    move.b  (a1), opt_vid
+    adda.l  d5, a1
+    move.b  (a1), opt_sync
+    adda.l  d5, a1
+    move.b  (a1), opt_clon
     cmpi.b  #1, opt_clon                    ; clamp a stale/garbage clone-depth byte to SLIM
     bls.s   .lcclok
     move.b  #0, opt_clon
 .lcclok:
-    cmpi.b  #$5A, (12,a1)                   ; extended-config present? (pre-audit configs lack it)
+    adda.l  d5, a1                           ; -> opt_audit
+    move.b  (a1), opt_audit
+    adda.l  d5, a1                           ; -> extended-config marker
+    cmpi.b  #$5A, (a1)                       ; marker present? (pre-audit configs lack it)
     bne.s   .lcauon                          ;   absent -> default AUDIT ON (user's chosen default)
-    move.b  (10,a1), opt_audit
     cmpi.b  #1, opt_audit                   ; clamp a stale/garbage audition byte to ON
     bls.s   .lcauok
 .lcauon:
     move.b  #1, opt_audit
 .lcauok:
     cmpi.b  #4, opt_sync                    ; MIDI is unimplemented + hidden -> heal a stale config to IN
-    bne.s   .lcdone
+    bne.s   .lcunmap
     move.b  #3, opt_sync
-.lcdone:
+.lcunmap:
     move.b  #0, $A130F1
+.lcdone:
+    movem.l (sp)+, d0-d5/a1
     rts
 
 ; SRAM probe: detect layout (odd-byte 8-bit vs linear) + size (mirror walk). Saves/restores the
