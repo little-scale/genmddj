@@ -8107,7 +8107,7 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
 .fm_dacw:
     btst    #0, Z80_BUSREQ
     bne.s   .fm_dacw
-    addq.b  #1, Z80_RAM+$1FF4            ; bump WV_OFF -> Z80 wave_off disables ch6 DAC
+    addq.b  #1, Z80_RAM+$1FCE            ; bump DAC_FM -> Z80 dac_to_fm disables ch6 DAC ($2B off)
     move.w  #$0000, Z80_BUSREQ
 .fm_nodac:
     ; on an FM note-on, revert each live override (Q/X/O/U) to the instrument's value -- unless

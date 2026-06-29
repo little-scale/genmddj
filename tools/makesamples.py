@@ -53,12 +53,8 @@ def load_wav_8bit(path):
         v = v.reshape(-1, 2).mean(1)
     m = max(1, int(round(len(v) / rate * DAC_RATE)))         # resample to DAC_RATE
     v = np.interp(np.linspace(0, len(v) - 1, m), np.arange(len(v)), v)
-    loud = np.where(np.abs(v) > 0.02)[0]                      # trim trailing silence
-    if len(loud):
-        v = v[:loud[-1] + 1]
-    nf = min(24, len(v) // 2)                                 # ~4.5 ms fade to CENTRE (0 -> 0x80) so the
-    if nf > 1:                                                #   sample ends at the DAC rest value -> no
-        v[-nf:] = v[-nf:] * np.linspace(1.0, 0.0, nf)        #   end-of-sample click (was DESIGN.md Q5)
+    # No auto-trim / auto-fade: bake the WAV exactly as authored. The source already ends on its own
+    # trailing silence (-> 0x80) so it stops cleanly; hand-trim/fade the WAV if you want it shorter/tapered.
     b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned (0x80 = silence)
     return bytes(b)
 

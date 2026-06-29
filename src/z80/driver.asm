@@ -67,6 +67,8 @@ BANKS 1
 .DEFINE WV_OFF    $1FF4     ; 68k bumps this to stop the wave (park DAC, leave wave mode)
 .DEFINE WV_OLAST  $1FF5     ; last wave-off processed
 .DEFINE CH3_SPC   $1FF6     ; PERC: 1 = CH3 special mode (68k sets; Z80 ORs bit6 into $27)
+.DEFINE DAC_FM    $1FCE     ; 68k bumps to switch F6 DAC->FM: park + DISABLE $2B (the ONLY $2B-off path)
+.DEFINE DAC_FMLAST $1FCF    ; last DAC_FM processed
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -89,6 +91,8 @@ start:
     ld   (WV_OFF), a
     ld   (WV_OLAST), a
     ld   (CH3_SPC), a           ; CH3 special mode off at boot
+    ld   (DAC_FM), a            ; no DAC->FM (disable) request pending
+    ld   (DAC_FMLAST), a
     ld   b, a                   ; b = last SCB seq processed
     ld   d, a                   ; d = last dac trigger
 
@@ -137,12 +141,19 @@ mn_wtrig:
     ld   (hl), a
     call wave_arm
 mn_woff:
-    ld   a, (WV_OFF)            ; wave stop requested?
+    ld   a, (WV_OFF)            ; sample/wave stop requested? (park only -- DAC stays enabled)
     ld   hl, WV_OLAST
+    cp   (hl)
+    jr   z, mn_dfm
+    ld   (hl), a
+    call wave_off
+mn_dfm:
+    ld   a, (DAC_FM)           ; F6 DAC->FM switch? (the ONLY path that disables $2B)
+    ld   hl, DAC_FMLAST
     cp   (hl)
     jr   z, mn_dac
     ld   (hl), a
-    call wave_off
+    call dac_to_fm
 mn_dac:
     ld   a, (YM_A0)             ; Timer A overflow -> time to feed one DAC sample
     bit  0, a
@@ -204,8 +215,22 @@ wave_arm:
     ld   (D_PLAY), a
     ret
 
-; ---- stop the wave: park the DAC at centre, drop out of wave mode ----
+; ---- stop a sample/wave but LEAVE the DAC enabled, parked at centre ($80). No $2B toggle => no
+;      click. $80 is silence (its DC offset is inaudible / AC-coupled). Used for every sample stop,
+;      retrigger and natural end, so drum hits never pop. Only dac_to_fm ever disables $2B. ----
 wave_off:
+    xor  a
+    ld   (D_PLAY), a
+    ld   (D_WMODE), a
+    ld   a, $2A                 ; park ch6 DAC at centre -- DAC stays ENABLED (no $2B write)
+    ld   (YM_A0), a
+    ld   a, $80
+    ld   (YM_D0), a
+    ret
+
+; ---- F6 needs FM: park the DAC, then DISABLE ch6 DAC ($2B) so the FM voice sounds. The one and
+;      only $2B-off path -- one click, only on a sample->FM switch on F6, never per drum hit. ----
+dac_to_fm:
     xor  a
     ld   (D_PLAY), a
     ld   (D_WMODE), a
@@ -213,8 +238,8 @@ wave_off:
     ld   (YM_A0), a
     ld   a, $80
     ld   (YM_D0), a
-    ld   a, $2B                 ; disable ch6 DAC -> back to FM (so F6 can play FM).
-    ld   (YM_A0), a             ; centre->FM-idle is centre->centre (voice keyed off) = no click
+    ld   a, $2B                 ; disable ch6 DAC -> FM (so F6 can play FM)
+    ld   (YM_A0), a
     xor  a
     ld   (YM_D0), a
     ret
@@ -274,14 +299,10 @@ df_rem:
     jr   nz, df_pace
 df_end:
     xor  a
-    ld   (D_PLAY), a           ; finished -> park at centre, then drop ch6 out of DAC mode so
-    ld   a, $2A                 ; F6 can play FM and idle ch6 sits at true zero (no half-rail DC)
+    ld   (D_PLAY), a           ; finished -> park at centre, LEAVE the DAC enabled (no $2B toggle =>
+    ld   a, $2A                 ; no click). Next hit just re-streams; F6->FM disables $2B via dac_to_fm.
     ld   (YM_A0), a
     ld   a, $80
-    ld   (YM_D0), a
-    ld   a, $2B                 ; disable ch6 DAC -> FM mode (centre->FM-idle = no click)
-    ld   (YM_A0), a
-    xor  a
     ld   (YM_D0), a
 df_pace:
     ret                        ; Timer A paces the feed now; no busy-wait needed
