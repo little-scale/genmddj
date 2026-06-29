@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build the genmddj sample pool (kit directory + 8-bit PCM) from samples/kit NN/*.wav.
+"""Build the genmddj sample pool (kit directory + 8-bit PCM) from samples/<kit folder>/*.wav.
+Kit folders are taken in sorted name order -> kit slots 0,1,2,... (any naming: "kit 00", "01 808", ...).
 
 Pool layout (big-endian, 68k-native), labelled `sample_pool` in ROM. The 8-byte
 magic lets the browser kit-patcher locate and rewrite the pool in a built ROM.
@@ -72,10 +73,10 @@ def main():
     samples_dir, out = sys.argv[1], sys.argv[2]
     members = [[None] * NPADS for _ in range(NKITS)]
     pcm = bytearray()
-    for k in range(NKITS):
-        kdir = os.path.join(samples_dir, 'kit %02d' % k)
-        if not os.path.isdir(kdir):
-            continue
+    # kit folders -> slots 0,1,2,... in sorted name order (any folder name; a leading "NN " or
+    # "kit NN" just sets the order). Pads = the *.wav in each, sorted by name (their leading "NN ").
+    kitdirs = sorted(d for d in glob.glob(os.path.join(samples_dir, '*')) if os.path.isdir(d))
+    for k, kdir in enumerate(kitdirs[:NKITS]):
         for i, wpath in enumerate(sorted(glob.glob(os.path.join(kdir, '*.wav')))[:NPADS]):
             data = load_wav_8bit(wpath)
             if len(data) & 1:
@@ -94,9 +95,10 @@ def main():
 
     print('samples: pool=%d bytes (hdr+dir %d + pcm %d)' % (len(out_b), POOL_BASE, len(pcm)))
     for k in range(NKITS):
-        row = [(members[k][i][2] if members[k][i] else '-') for i in range(NPADS)]
         if any(members[k]):
-            print('  kit %d:' % k, row)
+            row = [(members[k][i][2] if members[k][i] else '-') for i in range(NPADS)]
+            label = os.path.basename(kitdirs[k]) if k < len(kitdirs) else '?'
+            print('  kit %d <- %s:' % (k, label), row)
 
 
 if __name__ == '__main__':
