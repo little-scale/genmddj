@@ -186,6 +186,7 @@ opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
 opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI(unimpl, HIDDEN from the field) 5=IN24 (2-bit 24PPQN, ESP bridge)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 opt_clon   equ $00FFE3E7           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases)
+opt_audit  equ $00FFE3E8           ; OPTIONS: note-entry audition (prelisten) 0=OFF 1=ON (default ON)
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
@@ -570,6 +571,7 @@ Start:
     move.b  #0, sync_shadow                ;   MIDI-takeover change detector matches (no spurious entry at boot)
     move.b  #0, opt_pal                   ;   UI palette 0
     move.b  #0, opt_clon                   ;   clone depth = SLIM
+    move.b  #1, opt_audit                   ;   note-entry audition ON by default
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
     moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
@@ -1958,7 +1960,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1
     rts
 .rmopts:
-    moveq   #3, d1                          ; OPTIONS: VID SYNC PALETTE CLON
+    moveq   #4, d1                          ; OPTIONS: VID SYNC PALETTE CLON AUDIT
     rts
 .rmfiles:
     tst.b   sram_layout
@@ -3055,6 +3057,16 @@ edit_value:
 .nhi:
     move.b  d0, (a1)
     move.b  d0, last_note
+    tst.b   opt_audit                       ; AUDIT toggle: prelisten the note as you scrub the pitch (PHRASE, stopped)
+    beq.s   .ne_x
+    tst.b   cur_screen
+    bne.s   .ne_x
+    moveq   #0, d1
+    move.b  d0, d1                           ; the new note
+    moveq   #0, d2
+    move.b  (1,a1), d2                       ; the cell's instrument
+    bsr     audit_voice
+.ne_x:
     rts
 
 ; INSTRUMENT: L/R cycles the field's value (type 0..NITYPE-1)
@@ -3205,18 +3217,43 @@ do_insert:
     bne.s   .audit
     move.b  last_instr, 1(a1)
 .audit:
+    tst.b   opt_audit                       ; AUDIT toggle: prelisten the placed note (PHRASE, stopped)
+    beq.s   .audit_x
+    tst.b   cur_screen                      ; PHRASE only (cur_screen 0)
+    bne.s   .audit_x
+    moveq   #0, d1
+    move.b  (a1), d1                        ; the note just placed/kept
+    cmpi.b  #$FF, d1
+    beq.s   .audit_x                        ; rest cell -> nothing to audition
+    moveq   #0, d2
+    move.b  (1,a1), d2                      ; the cell's instrument
+    bsr     audit_voice
+.audit_x:
     rts
 
-audit_note:                               ; B-tap on INSTR/FM while stopped: play C-4 of cur_instr on cur_chan
+audit_note:                               ; B-tap on INSTR/FM (stopped): play C-4 of cur_instr -- explicit, ignores AUDIT
+    moveq   #48, d1                          ; C-4 (note%12 = 0, octave 4)
+    move.b  cur_instr, d2
+    ; fall through
+audit_voice:                              ; d1.b = note, d2.b = instrument -> audition on cur_chan if STOPPED
+    tst.b   playing                          ;   ($FF instrument -> last_instr). Preserves all caller registers.
+    bne.s   .av_ret
+    movem.l d0-d7/a0-a6, -(sp)
+    cmpi.b  #$FF, d2
+    bne.s   .av_inst
+    move.b  last_instr, d2
+.av_inst:
     moveq   #0, d0
     move.b  cur_chan, d0
     mulu.w  #CHSIZE, d0
     lea     ch_state, a6
     adda.w  d0, a6                          ; a6 = the current track's channel state
-    move.b  #48, c_note(a6)                ; C-4 (note%12=0, octave 4)
-    move.b  cur_instr, c_instr(a6)
-    bsr     note_trigger                   ; key-on (note_trigger dispatches by the channel's voice type)
-    move.w  #90, audit_ctr                 ; ~1.5 s: keep engine_tick voicing it while the transport is stopped
+    move.b  d1, c_note(a6)
+    move.b  d2, c_instr(a6)
+    bsr     note_trigger                   ; key-on (dispatches by the channel's voice type)
+    move.w  #90, audit_ctr                 ; ~1.5 s: keep engine_tick voicing it while stopped
+    movem.l (sp)+, d0-d7/a0-a6
+.av_ret:
     rts
 
 find_free_chain:                          ; d0.b = lowest EMPTY chain (no placed phrases); NCHAINS if none
@@ -10899,7 +10936,25 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #8, d3
     moveq   #9, d4
     bsr     print_hl
-    rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON (SRAM/FREE moved to FILES)
+    moveq   #9, d3                          ; AUDIT (cur_row 4) at row 9
+    moveq   #1, d4
+    lea     str_o_audit, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #4, cur_row
+    bne.s   .oau
+    moveq   #$60, d2
+.oau:
+    moveq   #0, d1
+    move.b  opt_audit, d1
+    andi.w  #1, d1
+    lsl.w   #2, d1
+    lea     audit_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #9, d3
+    moveq   #9, d4
+    bsr     print_hl
+    rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDIT (SRAM/FREE moved to FILES)
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     moveq   #5, d3                          ; MODE (cur_row 0)
@@ -11206,13 +11261,20 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     cmpi.b  #1, d0
     beq.s   .eo_sync
     cmpi.b  #2, d0
-    bne.s   .eo_clon
+    bne.s   .eo_n2
     lea     opt_pal, a1                     ; PAL 0..7 (cur_row 2)
     moveq   #7, d3
     moveq   #1, d4
     bra.s   .eo_apply
-.eo_clon:
+.eo_n2:
+    cmpi.b  #3, d0
+    bne.s   .eo_audit
     lea     opt_clon, a1                    ; CLON SLIM/DEEP (cur_row 3)
+    moveq   #1, d3
+    moveq   #1, d4
+    bra.s   .eo_apply
+.eo_audit:
+    lea     opt_audit, a1                   ; AUDIT ON/OFF (cur_row 4)
     moveq   #1, d3
     moveq   #1, d4
     bra.s   .eo_apply
@@ -11279,6 +11341,8 @@ save_config:
     move.b  opt_vid, (4,a1)
     move.b  opt_sync, (6,a1)
     move.b  opt_clon, (8,a1)
+    move.b  opt_audit, (10,a1)
+    move.b  #$5A, (12,a1)                   ; extended-config marker: offset-10+ fields are present
     move.b  #0, $A130F1                     ; unmap (protect)
     rts
 load_config:
@@ -11294,6 +11358,14 @@ load_config:
     bls.s   .lcclok
     move.b  #0, opt_clon
 .lcclok:
+    cmpi.b  #$5A, (12,a1)                   ; extended-config present? (pre-audit configs lack it)
+    bne.s   .lcauon                          ;   absent -> default AUDIT ON (user's chosen default)
+    move.b  (10,a1), opt_audit
+    cmpi.b  #1, opt_audit                   ; clamp a stale/garbage audition byte to ON
+    bls.s   .lcauok
+.lcauon:
+    move.b  #1, opt_audit
+.lcauok:
     cmpi.b  #4, opt_sync                    ; MIDI is unimplemented + hidden -> heal a stale config to IN
     bne.s   .lcdone
     move.b  #3, opt_sync
@@ -13193,6 +13265,9 @@ str_o_pal:  dc.b "COLOUR",0
 str_o_clon: dc.b "CLONE",0
 str_slim:   dc.b "SLIM ",0
 str_deep:   dc.b "DEEP ",0
+str_o_audit: dc.b "AUDIT",0
+str_aud_off: dc.b "OFF",0
+str_aud_on:  dc.b "ON ",0
 str_o_sram: dc.b "SRAM",0
 str_sram_no: dc.b "NONE",0
 str_sram_od: dc.b "K ODD",0
@@ -13232,6 +13307,7 @@ str_md_live: dc.b "LIVE",0
     even
 vid_lbl:    dc.l str_vid_n, str_vid_p, str_vid_a
 clon_lbl:   dc.l str_slim, str_deep
+audit_lbl:  dc.l str_aud_off, str_aud_on
 sync_lbl:   dc.l str_syn_o, str_syn_u, str_syn_p, str_syn_i, str_syn_m, str_syn_2   ; OFF=0 OUT=1 PULSE=2 IN=3 MIDI=4 IN24=5
 pmode_lbl:  dc.l str_md_s, str_md_live
     even
