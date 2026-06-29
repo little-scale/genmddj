@@ -56,10 +56,11 @@ def load_wav_8bit(path):
     loud = np.where(np.abs(v) > 0.02)[0]                      # trim trailing silence
     if len(loud):
         v = v[:loud[-1] + 1]
-    b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned
+    nf = min(24, len(v) // 2)                                 # ~4.5 ms fade to CENTRE (0 -> 0x80) so the
+    if nf > 1:                                                #   sample ends at the DAC rest value -> no
+        v[-nf:] = v[-nf:] * np.linspace(1.0, 0.0, nf)        #   end-of-sample click (was DESIGN.md Q5)
+    b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned (0x80 = silence)
     return bytes(b)
-    # NB: no end-of-sample declick (DESIGN.md Q5) -- samples that end mid-waveform click
-    # on stop; deferred until the runtime autofade can be validated on hardware.
 
 
 def pad_name(path):
