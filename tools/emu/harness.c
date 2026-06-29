@@ -187,6 +187,18 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* optional 68k work-RAM dump: RETROSHOT_RAM_OUT=<path> writes SYSTEM_RAM after the run */
+    {
+        const char *outp = getenv("RETROSHOT_RAM_OUT");
+        void  *ram   = retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+        size_t ramsz = retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+        if (outp && ram && ramsz) {
+            FILE *of = fopen(outp, "wb");
+            if (of) { fwrite(ram, 1, ramsz, of); fclose(of);
+                fprintf(stderr, "RAM: dumped %zu bytes to %s\n", ramsz, outp); }
+        }
+    }
+
     if (!g_w || !g_h) { fprintf(stderr, "no frame captured\n"); return 5; }
     FILE *o = fopen(argv[3], "wb");
     fprintf(o, "P6\n%u %u\n255\n", g_w, g_h);
