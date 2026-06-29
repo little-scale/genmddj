@@ -53,9 +53,14 @@ def load_wav_8bit(path):
         v = v.reshape(-1, 2).mean(1)
     m = max(1, int(round(len(v) / rate * DAC_RATE)))         # resample to DAC_RATE
     v = np.interp(np.linspace(0, len(v) - 1, m), np.arange(len(v)), v)
-    # No auto-trim / auto-fade: bake the WAV exactly as authored. The source already ends on its own
-    # trailing silence (-> 0x80) so it stops cleanly; hand-trim/fade the WAV if you want it shorter/tapered.
     b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned (0x80 = silence)
+    # Trim the trailing digital silence (the zero pad) to reclaim ROM, but keep ONE 0x80 terminator
+    # so each sample still ENDS on the DAC rest value. The declick lives in the driver's lazy $2B
+    # (it never disables per hit); df_end parks ch6 at 0x80, a no-op step against this terminator ->
+    # still clickless. No taper/trim of audible content -- just the pad.
+    nz = np.where(b != 0x80)[0]
+    b = b[:nz[-1] + 1] if len(nz) else b[:0]
+    b = np.append(b, np.uint8(0x80))
     return bytes(b)
 
 
