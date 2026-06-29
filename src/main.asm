@@ -12804,7 +12804,7 @@ Exception:
 ; data
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
-ver_str:    dc.b "V0.01",0
+ver_str:    dc.b "V0.1",0                    ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, ...)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
