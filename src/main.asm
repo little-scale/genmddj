@@ -4790,9 +4790,20 @@ render_lfo:                                ; a0 = VDP_CTRL
     beq     .lfdir
     cmpi.w  #8, d7                          ; col 8 AMP -> live bar tile
     beq     .lfamp
+    cmpi.w  #1, d7                          ; col 1 CH -> F1..F6 (FM voice name, not 0-5)
+    beq     .lfch
     move.b  d2, d3                          ; else a single hex digit
     move.b  d1, d4
     bsr     draw_hex1
+    bra     .lfcn
+.lfch:
+    moveq   #'F', d3                         ; CH -> "F" + (chan+1): F1..F6
+    add.w   d1, d3                           ; + highlight
+    move.w  d3, VDP_DATA                     ; col 6: 'F' (auto-advances to col 7)
+    move.b  d2, d3
+    addq.b  #1, d3                           ; chan 0-5 -> voice 1-6
+    move.b  d1, d4
+    bsr     draw_hex1                        ; col 7: the voice digit
     bra     .lfcn
 .lfon:
     move.w  d2, d3                          ; 0/1 -> $7B off-box / $7D on-box
