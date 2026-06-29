@@ -25,7 +25,7 @@ SAMPLES  := $(BUILD)/samples.bin
 WAVES    := $(BUILD)/wave_bank.bin
 
 $(SAMPLES): tools/makesamples.py | $(BUILD)
-	python3 tools/makesamples.py samples $(SAMPLES)
+	python3 tools/makesamples.py samples $(SAMPLES) $(SAMPLEFLAGS)
 
 # FORCE (like the factory bank): so adding/changing/removing tools/font_custom.bin always re-bakes the font.
 $(FONT): tools/makefont.py FORCE | $(BUILD)

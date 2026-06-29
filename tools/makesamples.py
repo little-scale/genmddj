@@ -22,8 +22,14 @@ ROM pointer + length in the SCB DAC command; the Z80 streams it to YM2612 reg $2
 
     makesamples.py samples/ build/samples.bin
 """
-import sys, os, re, glob, wave, struct
+import sys, os, re, glob, wave, struct, argparse
 import numpy as np
+
+# Per-sample build-time conditioning (overridable via flags; see main()). Default chain:
+# per-sample peak NORMALISE -> 2x GAIN -> TANH soft-clip.
+NORMALIZE = True
+GAIN      = 2.0
+USE_TANH  = True
 
 MAGIC = b'GMDJKIT1'
 NKITS = 16
@@ -53,6 +59,13 @@ def load_wav_8bit(path):
         v = v.reshape(-1, 2).mean(1)
     m = max(1, int(round(len(v) / rate * DAC_RATE)))         # resample to DAC_RATE
     v = np.interp(np.linspace(0, len(v) - 1, m), np.arange(len(v)), v)
+    if NORMALIZE:                                            # per-sample peak normalise to full scale
+        peak = float(np.max(np.abs(v))) if len(v) else 0.0
+        if peak > 1e-6:
+            v = v / peak
+    v = v * GAIN                                             # gain (default 2x)
+    if USE_TANH:
+        v = np.tanh(v)                                       # soft-clip / saturate into tanh
     b = np.clip(np.round(v * 127) + 128, 0, 255).astype(np.uint8)   # 8-bit unsigned (0x80 = silence)
     # Trim the trailing digital silence (the zero pad) to reclaim ROM, but keep ONE 0x80 terminator
     # so each sample still ENDS on the DAC rest value. The declick lives in the driver's lazy $2B
@@ -72,7 +85,20 @@ def pad_name(path):
 
 
 def main():
-    samples_dir, out = sys.argv[1], sys.argv[2]
+    ap = argparse.ArgumentParser(description='Build the genmddj sample pool.')
+    ap.add_argument('samples_dir')
+    ap.add_argument('out')
+    ap.add_argument('--no-normalize', dest='normalize', action='store_false',
+                    help='disable per-sample peak normalise (default: on)')
+    ap.add_argument('--gain', type=float, default=2.0,
+                    help='linear gain applied after normalise (default: 2.0)')
+    ap.add_argument('--no-tanh', dest='tanh', action='store_false',
+                    help='disable the tanh soft-clip after gain (default: on)')
+    args = ap.parse_args()
+    global NORMALIZE, GAIN, USE_TANH
+    NORMALIZE, GAIN, USE_TANH = args.normalize, args.gain, args.tanh
+    samples_dir, out = args.samples_dir, args.out
+    print('samples: normalize=%s gain=%.2f tanh=%s' % (NORMALIZE, GAIN, USE_TANH))
     members = [[None] * NPADS for _ in range(NKITS)]
     pcm = bytearray()
     # kit folders -> slots 0,1,2,... in sorted name order (any folder name; a leading "NN " or
