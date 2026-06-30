@@ -27,8 +27,8 @@ tools/*_custom.bin
 # local-only docs (kept on disk, not in the public repo; re-add later with `git add -f`)
 #   TESTING.md     — internal QA checklist (references private dev ROMs)
 #   CLAUDE.md      — AI-assistant project context
-#   COMMANDS.md    — internal command-set reconciliation / decision log (stale; not a user reference)
 #   MIDI.md        — MIDI-input design/build notes (parked; console side built, S3 wire pending)
+# (CONTROLS.md + COMMANDS.md retired 2026-06-30 — consolidated into MANUAL.md)
 #   HWTEST.md      — internal hardware test checklist (references dev ROMs; open-bug TODOs)
 #   M1.md          — M1 boot milestone dev note
 #   PURGE.md       — purge-logic spec / note-to-self for the SMSGGDJ port
@@ -40,7 +40,6 @@ tools/*_custom.bin
 # (public docs kept tracked: MANUAL.md, CONTROLS.md, PALETTE.md, PRESETS.md)
 TESTING.md
 CLAUDE.md
-COMMANDS.md
 MIDI.md
 HWTEST.md
 M1.md

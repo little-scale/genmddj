@@ -68,11 +68,8 @@ save-file tool, and **`als2genmddj`** — convert Ableton Live `.als`, Standard 
 
 | Doc | What |
 |---|---|
-| [DESIGN.md](DESIGN.md) | The design contract — hardware, data model, the 68k/Z80 split, screens, commands, save format. |
-| [PLAN.md](PLAN.md) | Vision + the M1–M12 milestone build order. |
-| [SAVEFORMAT.md](SAVEFORMAT.md) | The SRAM / `.srm` / `.gmdj` save format. |
-| [CONTROLS.md](CONTROLS.md) · [MANUAL.md](MANUAL.md) | The controller map and the user manual. |
-| [MEGADRIVE.md](MEGADRIVE.md) · [PALETTE.md](PALETTE.md) · [PRESETS.md](PRESETS.md) · [ALS.md](ALS.md) | Hardware notes, the palette set, factory presets, and the Ableton path. |
+| [MANUAL.md](MANUAL.md) | The full user manual — controls, the screens, making a song, the instrument types, the FM editor, the A–Z command set, save/load, and sync. |
+| [PALETTE.md](PALETTE.md) · [PRESETS.md](PRESETS.md) · [ALS.md](ALS.md) | The palette set, the factory presets, and the Ableton path. |
 
 ## Related projects
 
