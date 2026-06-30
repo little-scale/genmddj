@@ -1,7 +1,7 @@
 # genmddj manual (working notes)
 
-User-facing reference, built up as features are confirmed. (Engineering detail lives in
-`DESIGN.md` / `COMMANDS.md`; this is the "how do I use it" side.)
+User-facing reference, built up as features are confirmed. (Engineering/design detail lives
+in the project's internal design notes; this is the "how do I use it" side.)
 
 ## Command: `I xy` — Iteration (deterministic variation)
 

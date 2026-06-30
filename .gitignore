@@ -18,6 +18,7 @@ tools/__pycache__/
 *.srm
 *.sav
 *.xlsx
+~$*          # Office temp/lock files (e.g. ~$foo.xlsx)
 current goal.txt
 
 # browser-tool custom bakes (generated; makefont.py/makewaves.py pick them up if present)

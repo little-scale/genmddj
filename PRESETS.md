@@ -2,11 +2,11 @@
 
 **Plan doc — 2026-06-21.** A factory bank of FM instrument presets baked in ROM, plus a
 browser editor for them and an extractor that pulls patches out of real Sega games. Companion
-to `DESIGN.md §6` (the three-tier instrument model) — the factory tier is exactly this bank.
+to the three-tier instrument model — the factory tier is exactly this bank.
 
 ## 1. The factory preset bank
 
-`DESIGN.md §6`'s instrument model is three tiers: **factory (ROM)** → user library (SRAM) →
+The instrument model is three tiers: **factory (ROM)** → user library (SRAM) →
 per-song pool. This is the factory tier made real: **32 FM presets baked in ROM**, browseable
 on-console, `LOAD`-copied into a song's instrument pool. 32 × 64 B = 2 KB — trivial in a 2 MB
 ROM, and it matches `NINSTR=32` so a bank can fully populate a song. Each preset carries an
