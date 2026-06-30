@@ -49,8 +49,8 @@
     <div class="row"><span class="k">Size</span><span class="v" id="r_size">&mdash;</span></div>
     <div class="row"><span class="k">Even bytes all $00</span><span class="v" id="r_odd">&mdash;</span></div>
     <div class="row"><span class="k">Looks like</span><span class="v" id="r_kind">&mdash;</span></div>
-    <div class="row"><span class="k">genmddj config ($A5 @ logical 0)</span><span class="v" id="r_cfg">&mdash;</span></div>
-    <div class="row"><span class="k">Slot 0 magic (GMDDJ @ logical 256)</span><span class="v" id="r_slot">&mdash;</span></div>
+    <div class="row"><span class="k">genmddj config ($A5 @ logical 16)</span><span class="v" id="r_cfg">&mdash;</span></div>
+    <div class="row"><span class="k">Directory signature (GMD1 @ logical 8)</span><span class="v" id="r_slot">&mdash;</span></div>
 
     <div class="btns">
       <button id="deint" disabled>De-interleave &rarr; logical<span class="s">odd bytes only, halves the size</span></button>
@@ -70,11 +70,10 @@ const $ = s => document.querySelector(s);
 let u8 = null, name = '';
 
 function isLogicalGenmddj(log){            // log = Uint8Array logical image
-  const gm = [0x47,0x4D,0x44,0x4A,0x4A]; // (only first 4 distinct; check GMDDJ properly below)
-  const magic = [0x47,0x4D,0x44,0x44,0x4A];
-  let slot = log.length>=256+5;
-  if(slot) for(let j=0;j<5;j++) if(log[256+j]!==magic[j]){ slot=false; break; }
-  return { cfg: log.length>0 && log[0]===0xA5, slot };
+  const gmd1 = b => log[b]===0x47 && log[b+1]===0x4D && log[b+2]===0x44 && log[b+3]===0x31;  // "GMD1"
+  const sig = log.length>=24 && (gmd1(8) || gmd1(9));               // directory sig @ logical DIR_SIG (or +1 lead-in)
+  const cfg = log.length>=24 && (log[16]===0xA5 || log[17]===0xA5); // config magic @ logical CONFIG_OFS
+  return { cfg, sig };
 }
 function deinterleave(a){ const o=new Uint8Array(a.length>>1); for(let i=0;i<o.length;i++) o[i]=a[i*2+1]; return o; }
 function interleave(a){ const o=new Uint8Array(a.length<<1); for(let i=0;i<a.length;i++) o[i*2+1]=a[i]; return o; }
@@ -109,7 +108,7 @@ function analyze(){
   const log = isOdd ? deinterleave(u8) : u8;
   const g = isLogicalGenmddj(log);
   $("#r_cfg").innerHTML  = g.cfg  ? '<span class="ok">found</span>'  : '<span class="warn">not found</span>';
-  $("#r_slot").innerHTML = g.slot ? '<span class="ok">found</span>'  : '<span class="warn">none (empty slot)</span>';
+  $("#r_slot").innerHTML = g.sig  ? '<span class="ok">found</span>'  : '<span class="warn">not found</span>';
 
   $("#deint").disabled = false; $("#int").disabled = false;
   $("#deint").classList.toggle('rec', isOdd);
