@@ -129,10 +129,10 @@
 
 <script>
 // ---- MD colour helpers: a channel level is 0..7; stored nibble = level*2 (0,2,..,E). word = $0BGR
-const NAMES0 = ["KIDD","BLK","WHT","AMBR","CYAN","PINK","NEON","MINT"];
-// defaults from src/main.asm pal_table (each = [c0,c1,c2] words)
+const NAMES0 = ["BLK","WHT","KIDD","AMBR","CYAN","PINK","NEON","MINT"];
+// defaults + order MUST match src/main.asm pal_table (the build is the source of truth; each = [c0,c1,c2] words)
 const DEF = [
-  [0x0E40,0x00EE,0x0E40],[0x0000,0x0EEE,0x0000],[0x0EEE,0x0000,0x0EEE],[0x0002,0x00AE,0x0002],
+  [0x0000,0x0EEE,0x0000],[0x0EEE,0x0000,0x0EEE],[0x0E40,0x00EE,0x0E40],[0x0002,0x00AE,0x0002],
   [0x0400,0x0EE0,0x0400],[0x0404,0x0E0E,0x0404],[0x0EA4,0x0A0E,0x0EA4],[0x0440,0x0AE4,0x0440]
 ];
 // hardware-ish 3-bit -> 8-bit ramp
