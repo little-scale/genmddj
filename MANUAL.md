@@ -83,8 +83,10 @@ back on its own column type, so nothing gets scrambled.
 There are two ways to start sound, and they differ from SMSGGDJ:
 
 - **Start** plays the **whole song from the top** (all ten tracks) — your master transport.
-- **C + B** plays **from where you are** (a solo preview), so you can audition while you work:
-  - **SONG** — the full song from the **cursor row**.
+- **C + B** plays **from where you are**, so you can audition a section while you work:
+  - **SONG** — plays the cursor's **contiguous block**, snapped to its **top** and **looping**
+    it. (A *block* is a run of rows with no fully-empty row in it — see §4. So with the cursor
+    anywhere in a rows-2–4 block it plays from row 2 and loops 2–4.)
   - **CHAIN** — solos that track's chain from the cursor step.
   - **PHRASE** — solos that phrase.
   - **INSTR** — replays the phrase/track you arrived from (handy after drilling in from a note).
@@ -152,9 +154,13 @@ genmddj is built in layers, smallest first — the LSDJ idea:
 **Switching which track you're editing:** on CHAIN or PHRASE, **A-hold + Left/Right**
 flips between the ten voices' chains/phrases.
 
-**How a column plays:** each track plays its chains down the SONG column and **loops back
-to the top** when it hits an empty cell. Tracks loop independently, so columns of
-different lengths create polymeters. (In **LIVE** mode this becomes a clip launcher — §9.)
+**How a column plays:** each track plays its chains down the SONG column and, when it hits
+an empty cell, **loops back to the top of its current contiguous block** (the run of filled
+cells it's in). So a gap-free column plays whole and loops; an empty cell is a section break,
+and the blocks above/below it loop separately. Tracks loop independently, so columns of
+different lengths create polymeters. **Start** begins every column at the very top (row 0);
+**C+B** begins at the cursor's block (§2). (In **LIVE** mode the SONG grid is a clip
+launcher — §9.)
 
 ### Quick duplicates and cloning
 
