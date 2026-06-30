@@ -206,7 +206,7 @@ to a note in a PHRASE to play that note with that sound. The six types:
 - **WAVE** — a **wavetable** voice on the DAC (F6). Pick one of the 16 user waves you draw
   on the WAVE screen; pitched melodically.
 - **PERC** — YM2612 **CH3 special-mode percussion**: F3's four operators tuned
-  independently for metallic/noise percussion. (Advanced; verify on hardware.)
+  independently for metallic/inharmonic percussion. (Advanced; hardware-verified.)
 
 A new song's instruments come from the **factory bank**. You can edit any of the 32 song
 instruments freely; **LOAD** pulls a factory or user-bank instrument into a song slot, and
