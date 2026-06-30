@@ -6536,8 +6536,14 @@ play_context:                             ; C+B: toggle audition of the current 
     move.b  cur_screen, d0
     cmpi.b  #SCR_SONG, d0
     bne.s   .pc_ch
-    move.b  #0, play_mode                 ; SONG: full song from the cursor row
-    move.b  cur_row, play_from
+    move.b  #0, play_mode                 ; SONG: from the cursor's contiguous block (snapped to its top)
+    moveq   #0, d1                         ;   play_from = song_page*16 + cur_row (absolute song row)
+    move.b  song_page, d1
+    lsl.w   #4, d1
+    moveq   #0, d0
+    move.b  cur_row, d0
+    add.w   d0, d1
+    move.b  d1, play_from
     bra.s   .pc_go
 .pc_ch:
     cmpi.b  #SCR_CHAIN, d0
@@ -6816,15 +6822,37 @@ engine_play_reset:
     bne     .mute
     tst.b   play_mode
     bne.s   .solo
-    move.b  play_from, c_songpos(a6)      ; full song: chain = song[play_from][track]
-    lea     song, a2
-    moveq   #0, d0
-    move.b  play_from, d0
+    lea     song, a2                       ; full song: snap this track UP to the top of its contiguous
+    moveq   #0, d1                          ;   block at play_from, then loop it (Start uses 0 -> no-op;
+    move.b  c_track(a6), d1                ;   C+B snaps to the cursor's block top). Empty there = silent.
+    moveq   #0, d2
+    move.b  play_from, d2
+    move.w  d2, d0
     mulu.w  #NCH, d0
-    moveq   #0, d1
-    move.b  c_track(a6), d1
+    add.w   d1, d0
+    cmpi.b  #$FF, (a2,d0.w)               ; no content at the start row -> no block, stay + silent
+    beq.s   .epr_silent
+.epr_btop:
+    tst.b   d2
+    beq.s   .epr_load                      ; row 0 -> top
+    move.w  d2, d0
+    subq.w  #1, d0
+    mulu.w  #NCH, d0
+    add.w   d1, d0
+    cmpi.b  #$FF, (a2,d0.w)               ; cell above empty -> d2 is the block top
+    beq.s   .epr_load
+    subq.b  #1, d2
+    bra.s   .epr_btop
+.epr_load:
+    move.b  d2, c_songpos(a6)
+    move.w  d2, d0
+    mulu.w  #NCH, d0
     add.w   d1, d0
     move.b  (a2,d0.w), c_chain(a6)
+    bra.s   .next
+.epr_silent:
+    move.b  play_from, c_songpos(a6)
+    move.b  #$FF, c_chain(a6)
     bra.s   .next
 .solo:
     move.b  c_track(a6), d0               ; solo: only cur_chan is active
@@ -8468,9 +8496,7 @@ advance_song:                             ; a6 = channel
     move.b  (a2,d4.w), d2                 ; chain# at new row
     cmpi.b  #$FF, d2
     bne.s   .ok
-    tst.b   proj_mode                     ; empty cell: SONG loops to row 0, LIVE to the group top
-    beq.s   .as_row0
-    move.b  c_songpos(a6), d3             ; LIVE: walk up from the last populated row to the group top
+    move.b  c_songpos(a6), d3             ; empty cell: walk up to the contiguous block top + loop it (SONG + LIVE)
 .as_up:
     tst.b   d3
     beq.s   .as_top
@@ -8487,10 +8513,6 @@ advance_song:                             ; a6 = channel
     mulu.w  #NCH, d4
     add.w   d0, d4
     move.b  (a2,d4.w), d2
-    bra.s   .ok
-.as_row0:
-    moveq   #0, d3                        ; song end -> loop to row 0
-    move.b  (a2,d0.w), d2                 ; song[0][track]
 .ok:
     move.b  d3, c_songpos(a6)
     move.b  d2, c_chain(a6)
