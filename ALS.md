@@ -1,15 +1,18 @@
-# Ableton → genmddj converters
+# Ableton / MIDI / MML ↔ genmddj converters
 
-**Plan doc — 2026-06-21.** Two related tools, sharing the FM-adaptation core:
-- **`.als` → genmddj song** — MIDI clips (up to 10 tracks) repackaged as chains/phrases, the
-  first six tracks' **Operator** (4-op FM) instruments adapted to the YM2612, and (built
-  2026-06-28) the PSG tracks' **Analog** (`UltraAnalog`) instruments roughly adapted to the
-  TONE voice (see §2.7).
-- **`.adv` → genmddj instrument** — a single Operator preset adapted to one instrument record.
+**Built — `user-tools/als2genmddj.html`.** A browser tool that gets music into (and back out
+of) genmddj three ways, sharing one FM-adaptation core:
+- **`.als` / `.mid` → `.gmdj` song** (and **`.gmdj` → `.als`** back) — Ableton Live sets and
+  Standard MIDI files repackaged as chains/phrases. FM tracks' **Operator** (4-op FM) devices
+  are adapted to YM2612 patches; PSG tracks' **Analog** (`UltraAnalog`) devices get a rough
+  TONE patch (built 2026-06-28, §2.7).
+- **`.adv` ↔ genmddj instrument** — a single Ableton Operator preset adapted to one instrument
+  record (the FM core standalone; the same `.adv` map ships in the instrument patcher,
+  `PRESETS.md` §3).
+- **MML text ↔ `.gmdj`** — one line per channel, classic note notation (§4.1).
 
-Both emit the **`PRESETS.md` instrument CSV** for their FM voices, so `.adv` is the FM core
-standalone and a fourth front-end to the preset pipeline (alongside SMPS / VGM). `.als` adds the
-song-structure layer on top. Build `.adv` first — it validates the FM map in isolation.
+FM voices are emitted as the genmddj **`.gmi`** instrument record (`PRESETS.md` §2), so the
+`.adv` path doubles as a front-end to the FM bank tooling. A song **viewer** shows the result.
 
 ## 1. Scope (locked)
 
@@ -28,7 +31,8 @@ Deliberately narrowed to the tractable, high-value path:
 ## 2. The FM adaptation — Operator → YM2612
 
 Both are 4-op FM, so this is a parameter re-map, not a re-synthesis. Output is the `PRESETS.md`
-FM record. Operator ops **A,B,C,D** map to the YM2612's four operators; feedback lives on A → op1.
+`.gmi` FM record. Operator ops **A,B,C,D** map to the YM2612's four operators; feedback lives on
+A → op1.
 
 ### 2.1 Level → TL  *(quantise operator levels to TL)*
 YM2612 `TL` is 0–127, **inverted** (0 = loudest) at ~**0.75 dB/step** (≈96 dB range). Operator's
@@ -114,9 +118,10 @@ the old default TONE. Filter, the 2nd osc, FX, and sub-row detail are dropped.
 `.als` is gzipped XML → parse tracks, clips, devices, tempo.
 
 ### 3.1 Track → channel routing
-10 channels: F1–F6 (FM), T1–T3 (PSG square), NO (noise). The **first six FM-eligible tracks** (those
-with an Operator device) → F1–F6 with §2 adaptation; simple melodic tracks → the PSG squares;
-drum/perc → NO + the DAC kit. A track without a usable instrument maps notes only (default voice).
+9 channels: **F1–F6 (FM) + S1–S3 (PSG square TONE).** The **first six FM-eligible tracks** (those
+with an Operator device) → F1–F6 with §2 adaptation; the remaining melodic tracks → the PSG
+squares (S1–S3), with an Analog device adapted to TONE (§2.7). A track without a usable
+instrument maps notes only (default voice). (Noise / DAC-kit routing isn't wired yet.)
 
 ### 3.2 Clip → phrases → chain
 1 phrase = 1 bar = 16 sixteenths. A clip's bars become phrases; the run of bars becomes a chain.
@@ -136,26 +141,38 @@ true pads ring for the whole gap (acceptable, and authentic to how mono chip voi
 
 ### 3.5 Arrangement → SONG
 The arrangement timeline (clip order over time, per track) → the SONG matrix rows (each channel's
-column = its sequence of chains). Tempo → `proj_tmpo`. Swing/sub-16th → `W`/grooves (lossy, later).
+column = its sequence of chains). Contiguous clip runs fill chains; an empty scene starts a new
+chain. Tempo maps to the **groove** (grooves are genmddj's clock — `proj_tmpo` was retired);
+swing / sub-16th detail is lossy (later).
 
 ## 4. The `.adv` instrument conversion
 
-`.adv` = one Ableton device preset (gzipped XML, a single Operator). Parse → §2 → **one `PRESETS.md`
-CSV row**. No song layer. This is the cleanest tool and the right first build: it isolates and
-proves the FM map, and it drops a converted patch straight into the preset bank (→ baker → ROM) or
-the browser editor for A/B against the original via the shared JS YM2612 core.
+`.adv` = one Ableton device preset (gzipped XML, a single Operator). Parse → §2 → **one `.gmi`
+record**. No song layer. It isolates and proves the FM map, drops a converted patch straight into
+the FM bank (via the instrument patcher / baker, `PRESETS.md`), and round-trips back out as a valid
+Operator preset for A/B against the original through the shared JS YM2612 core.
 
-## 5. Build order & open questions
+## 4.1 MML ↔ `.gmdj`
 
-- **Order:** `.adv` (FM core, → CSV) → validate the §2 tables by ear → `.als` (add §3 song layer).
-- **Calibrate §2.1 (level curve) and §2.3 (time→rate) once**, against a few known Operator patches
-  A/B'd in the browser editor — these two tables are where fidelity lives.
-- **§2.5 algo table** — pin and ear-test before batch runs (the §2.2.2-style silent-wrong risk).
-- **Velocity curve** — `>>3` linear, or a softer perceptual curve? (flag-gated either way.)
-- **Track-routing heuristic** — auto (detect Operator → FM) vs an explicit per-track map in a
-  sidecar; auto first, manual override later.
-- **Ring-until-retrigger (§3.4)** — offer an optional auto-`K` (cut after N empty rows) for users
-  who want shorter notes without true note-off handling? Out of scope for v1.
+A plain-text alternative to `.als`/`.mid`: **one line per channel** (`F1`–`F6` / `S1`–`S3`), so a
+tune can be written or pasted as text. The dialect: classic `cdefgab` + `#`/`-` accidentals ·
+`o` / `<` / `>` octave · `l` / dotted / `&` tie for length · `r` rest · `@` instrument · `v` → the
+`X` volume command · `;` comment. `t` (tempo) is an annotation only — tempo is the groove. Converts
+both ways (`.gmdj` → MML for export and editing).
 
-*The §2 FM map is shared by both tools and emits the `PRESETS.md` schema — that schema is still the
-spine; this doc just adds Ableton as a source and the song-structure layer.*
+## 5. Calibration & open questions
+
+The §2 FM map and the §3 song layer are built; what's left is tuning fidelity:
+
+- **Calibrate §2.1 (level curve) and §2.3 (time→rate)** against a few known Operator patches
+  A/B'd in the instrument patcher's OPN2 audition — these two tables are where fidelity lives.
+- **§2.5 algo table** — keep ear-testing the 11→8 mapping (the §2.2 silent-wrong risk).
+- **Velocity curve** — `>>3` linear vs a softer perceptual curve (flag-gated either way).
+- **Track-routing heuristic** — currently auto (detect Operator → FM); an explicit per-track map
+  in a sidecar could override it later.
+- **Ring-until-retrigger (§3.4)** — an optional auto-`K` (cut after N empty rows) for shorter
+  notes without true note-off handling? Out of scope for now.
+- **Noise / DAC-kit routing** — not wired in the converter yet (§3.1).
+
+*The §2 FM map emits the `.gmi` record (`PRESETS.md` §2) — the same format the bank tooling and
+extractors target; this doc adds Ableton / MIDI / MML as sources and the song-structure layer.*
