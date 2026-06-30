@@ -102,6 +102,8 @@ const SLOT0 = BANK_BASE+BANK_SIZE;      // 2304
 const DIR_BASE = SLOT0;                 // compressed-song directory (replaces fixed slots)
 const DIR_ENT = 16, DIR_N = 32;         // entry: valid raw off(2) len(2) name(8) csum(2); 32 songs
 const HEAP_BASE = DIR_BASE+DIR_N*DIR_ENT;  // 2816 -- compressed (or raw) blobs packed from here
+const CONFIG_OFS = 16;                  // OPTIONS config block: logical offset within the 256-B config region
+                                        // (sram_at-mapped, CONSECUTIVE: magic,pal,vid,sync,clon,audit,marker -- matches src/main.asm)
 const RLE_UNIT = 4;                     // 4-byte-unit RLE (row-aligned); matches the cart + tools/rletest.py
 // data-block pools (offset,len) within the 23904 block:
 const POOL = {
@@ -118,7 +120,7 @@ const $ = id => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder("latin1");
 let sram = null;        // de-interleaved logical bytes (Uint8Array) or null
 let songs = [];         // [{title, data:Uint8Array(20832)|null, valid, src}]
-let config = {pal:0, vid:0, sync:0};
+let config = {pal:0, vid:0, sync:0, clon:0, audit:1};
 let bank = null;        // Uint8Array(2048) preserved instrument bank
 let usedDeint = false;
 
@@ -158,7 +160,7 @@ function rleDecompress(stream, outLen){
 // ---------- load ----------
 function looksLikeSram(u8){
   if (u8.length < SLOT0+SLOT_HDR) return false;
-  if (u8[0]===0xA5) return true;                       // config magic
+  if (u8[CONFIG_OFS]===0xA5 || u8[1+CONFIG_OFS]===0xA5) return true;   // config magic (logical, or +1 linear lead-in)
   return findStr(u8, SLOT_MAGIC, SLOT0-4) >= 0;        // any slot
 }
 // Detect the physical .sav layout and return the logical contiguous image (config@0-3,
@@ -167,18 +169,14 @@ function looksLikeSram(u8){
 // hardware (everything at 2*offset+1, e.g. EverDrive), and the legacy pure-logical layout.
 function toLogical(raw){
   const p = findStr(raw, SLOT_MAGIC, 0);
-  if (p === SLOT0+1){                                  // emulator-linear (slot magic at 2305)
-    const lg = raw.slice(1);
-    lg[1]=raw[3]; lg[2]=raw[5]; lg[3]=raw[7];          // collapse the stride-2 config
-    return {logical:lg, fmt:"emulator"};
-  }
+  if (p === SLOT0+1) return {logical:raw.slice(1), fmt:"emulator"};  // emulator-linear (slot magic at 2305); logical = file shifted by the 1-byte lead-in
   if (p === SLOT0) return {logical:raw, fmt:"logical"};            // legacy contiguous
   const di = deinterleave(raw);
   if (findStr(di, SLOT_MAGIC, 0) === SLOT0) return {logical:di, fmt:"odd-byte"};
-  // config-only saves (no valid slot): decide by the config-magic position
-  if (raw[1]===0xA5){ const lg=raw.slice(1); lg[1]=raw[3]; lg[2]=raw[5]; lg[3]=raw[7]; return {logical:lg, fmt:"emulator"}; }
-  if (raw[0]===0xA5) return {logical:raw, fmt:"logical"};
-  if (di[0]===0xA5) return {logical:di, fmt:"odd-byte"};
+  // config-only saves (no valid slot): decide by the config-magic position (logical CONFIG_OFS)
+  if (raw[1+CONFIG_OFS]===0xA5) return {logical:raw.slice(1), fmt:"emulator"};
+  if (raw[CONFIG_OFS]===0xA5) return {logical:raw, fmt:"logical"};
+  if (di[CONFIG_OFS]===0xA5) return {logical:di, fmt:"odd-byte"};
   return {logical:raw, fmt:"unknown"};
 }
 function loadSram(raw, forceDeint){
@@ -186,7 +184,11 @@ function loadSram(raw, forceDeint){
   const u8 = det.logical;
   usedDeint = det.fmt==="odd-byte";
   sram = u8;
-  if (u8[0]===0xA5){ config = {pal:u8[1], vid:u8[2], sync:u8[3]}; }
+  if (u8[CONFIG_OFS]===0xA5){                           // config block at logical CONFIG_OFS (consecutive)
+    const ext = u8[CONFIG_OFS+6]===0x5A;               // extended-config marker -> clon/audit present (else defaults)
+    config = {pal:u8[CONFIG_OFS+1], vid:u8[CONFIG_OFS+2], sync:u8[CONFIG_OFS+3],
+              clon:ext?u8[CONFIG_OFS+4]:0, audit:ext?u8[CONFIG_OFS+5]:1};
+  }
   bank = u8.slice(BANK_BASE, BANK_BASE+BANK_SIZE);
   songs = [];                                  // parse the compressed-song directory
   for (let i=0;i<DIR_N;i++){
@@ -220,12 +222,14 @@ function addGmdj(raw, name){
 function buildSav(){
   // Physical cart/emulator layout (verified against a ROM-written .sav). The ROM's SRAM
   // base is the ODD byte $200001, and a linear-SRAM emulator maps $200000 -> file[0], so
-  // logical byte 0 lands at file[1] (a 1-byte even lead-in). Bank + slots run +1 and
-  // contiguous; the config block is stride-2 (the ROM hardcodes $200001 + i*2).
+  // logical byte 0 lands at file[1] (a 1-byte even lead-in). Bank, slots, AND the config
+  // block all run consecutively from there (the ROM reads the config via sram_at, same stride).
   const LEAD=1;
   const kb=+$("size").value, out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
-  out[LEAD]=0xA5; out[LEAD+2]=config.pal&7; out[LEAD+4]=config.vid; out[LEAD+6]=config.sync;  // config (stride 2)
   out[LEAD+8]=0x47; out[LEAD+9]=0x4D; out[LEAD+10]=0x44; out[LEAD+11]=0x31;       // "GMD1" dir signature (logical 8) so the cart won't re-format it
+  const co=LEAD+CONFIG_OFS;                                                       // config block at logical CONFIG_OFS (consecutive; matches load_config)
+  out[co]=0xA5; out[co+1]=config.pal&7; out[co+2]=config.vid; out[co+3]=config.sync;
+  out[co+4]=config.clon||0; out[co+5]=(config.audit==null?1:config.audit); out[co+6]=0x5A;  // clon, audit, extended-config marker
   if (bank) out.set(bank.subarray(0,BANK_SIZE), LEAD+BANK_BASE);                 // bank (+1)
   let heapOff=0, ne=0;                                                           // directory + compressed heap
   for (const s of songs){
