@@ -116,6 +116,8 @@ See [MANUAL.md](MANUAL.md) for how to use it.
 - **[ares-link-sync](https://github.com/little-scale/ares-link-sync)** — an **ares**
   emulator fork that follows an Ableton Link clock in-emulator (frame-PLL'd, bar-quantized
   launch) — for testing Link sync without hardware.
+- **[tri-pixel-editor](https://github.com/little-scale/tri-pixel-editor)** — the
+  triangular-grid pixel-art editor the genmddj **logo / wordmark** was designed in.
 
 ## License
 
