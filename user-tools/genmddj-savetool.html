@@ -91,9 +91,9 @@
 <script>
 "use strict";
 // ---- genmddj save format (authoritative, from src/main.asm) ----
-const SLOT_MAGIC = "GMDDJ", SAVE_VER = 1;
 const DATA_SIZE = 23904;            // SAVE_DATA $5D60 (phrases 192, chains 128)
-const SLOT_HDR  = 16;               // magic5+ver1+csum2+title8 (legacy slot header; still used by format detection)
+const MIN_SRAM  = 2320;             // sanity min length (config + bank + one dir entry)
+const DIR_SIG_STR = "GMD1";         // "directory initialised" signature the cart writes (and won't re-format over)
 const CONFIG_SZ = 256;
 const NUBANK = 32, BANK_REC = 64;
 const BANK_BASE = CONFIG_SZ;            // 256
@@ -102,6 +102,7 @@ const SLOT0 = BANK_BASE+BANK_SIZE;      // 2304
 const DIR_BASE = SLOT0;                 // compressed-song directory (replaces fixed slots)
 const DIR_ENT = 16, DIR_N = 32;         // entry: valid raw off(2) len(2) name(8) csum(2); 32 songs
 const HEAP_BASE = DIR_BASE+DIR_N*DIR_ENT;  // 2816 -- compressed (or raw) blobs packed from here
+const DIR_SIG = 8;                      // logical offset of the "GMD1" directory signature (src/main.asm DIR_SIG)
 const CONFIG_OFS = 16;                  // OPTIONS config block: logical offset within the 256-B config region
                                         // (sram_at-mapped, CONSECUTIVE: magic,pal,vid,sync,clon,audit,marker -- matches src/main.asm)
 const RLE_UNIT = 4;                     // 4-byte-unit RLE (row-aligned); matches the cart + tools/rletest.py
@@ -159,24 +160,26 @@ function rleDecompress(stream, outLen){
 
 // ---------- load ----------
 function looksLikeSram(u8){
-  if (u8.length < SLOT0+SLOT_HDR) return false;
-  if (u8[CONFIG_OFS]===0xA5 || u8[1+CONFIG_OFS]===0xA5) return true;   // config magic (logical, or +1 linear lead-in)
-  return findStr(u8, SLOT_MAGIC, SLOT0-4) >= 0;        // any slot
+  if (u8.length < MIN_SRAM) return false;
+  if (findStr(u8, DIR_SIG_STR) >= 0) return true;                     // "GMD1" directory signature (initialised save)
+  return u8[CONFIG_OFS]===0xA5 || u8[1+CONFIG_OFS]===0xA5;            // or a config-only save (magic at logical CONFIG_OFS)
 }
-// Detect the physical .sav layout and return the logical contiguous image (config@0-3,
-// bank@256, slots@2304). Three real layouts: emulator-linear (1-byte even lead-in, config
-// stride-2, bank/slots +1 -- what the ROM reads on a linear-SRAM emulator), odd-byte
-// hardware (everything at 2*offset+1, e.g. EverDrive), and the legacy pure-logical layout.
+// Detect the physical .sav layout and return the logical contiguous image (config@0, dir signature
+// @8, config block @16, bank @256, directory @2304 -- all consecutive logical bytes). Three real
+// layouts: emulator-linear (1-byte even lead-in -- what the ROM reads on a linear-SRAM emulator),
+// odd-byte hardware (every logical byte at 2*offset+1, e.g. EverDrive), and a pure-logical image.
+// The robust marker is the "GMD1" directory signature the cart writes at logical DIR_SIG.
 function toLogical(raw){
-  const p = findStr(raw, SLOT_MAGIC, 0);
-  if (p === SLOT0+1) return {logical:raw.slice(1), fmt:"emulator"};  // emulator-linear (slot magic at 2305); logical = file shifted by the 1-byte lead-in
-  if (p === SLOT0) return {logical:raw, fmt:"logical"};            // legacy contiguous
+  const sig = enc.encode(DIR_SIG_STR);
+  const sigAt = (u8, base) => { for (let i=0;i<sig.length;i++) if (u8[base+i]!==sig[i]) return false; return true; };
+  if (sigAt(raw, 1+DIR_SIG)) return {logical:raw.slice(1), fmt:"emulator"};  // linear: logical N at file[1+N]
+  if (sigAt(raw, DIR_SIG))   return {logical:raw, fmt:"logical"};            // pure-logical image
   const di = deinterleave(raw);
-  if (findStr(di, SLOT_MAGIC, 0) === SLOT0) return {logical:di, fmt:"odd-byte"};
-  // config-only saves (no valid slot): decide by the config-magic position (logical CONFIG_OFS)
+  if (sigAt(di, DIR_SIG))    return {logical:di, fmt:"odd-byte"};            // EverDrive odd-byte
+  // no directory signature (uninitialised / config-only): fall back to the config magic at logical CONFIG_OFS
   if (raw[1+CONFIG_OFS]===0xA5) return {logical:raw.slice(1), fmt:"emulator"};
-  if (raw[CONFIG_OFS]===0xA5) return {logical:raw, fmt:"logical"};
-  if (di[CONFIG_OFS]===0xA5) return {logical:di, fmt:"odd-byte"};
+  if (raw[CONFIG_OFS]===0xA5)   return {logical:raw, fmt:"logical"};
+  if (di[CONFIG_OFS]===0xA5)    return {logical:di, fmt:"odd-byte"};
   return {logical:raw, fmt:"unknown"};
 }
 function loadSram(raw, forceDeint){
@@ -226,7 +229,7 @@ function buildSav(){
   // block all run consecutively from there (the ROM reads the config via sram_at, same stride).
   const LEAD=1;
   const kb=+$("size").value, out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
-  out[LEAD+8]=0x47; out[LEAD+9]=0x4D; out[LEAD+10]=0x44; out[LEAD+11]=0x31;       // "GMD1" dir signature (logical 8) so the cart won't re-format it
+  const so=LEAD+DIR_SIG; out[so]=0x47; out[so+1]=0x4D; out[so+2]=0x44; out[so+3]=0x31;  // "GMD1" dir signature (logical DIR_SIG) so the cart won't re-format it
   const co=LEAD+CONFIG_OFS;                                                       // config block at logical CONFIG_OFS (consecutive; matches load_config)
   out[co]=0xA5; out[co+1]=config.pal&7; out[co+2]=config.vid; out[co+3]=config.sync;
   out[co+4]=config.clon||0; out[co+5]=(config.audit==null?1:config.audit); out[co+6]=0x5A;  // clon, audit, extended-config marker
