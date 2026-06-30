@@ -9462,6 +9462,8 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     beq.s   .nofreqres
     tst.b   c_psweep(a6)                    ; ...pitch sweep active -> re-send (it decays the pitch each tick)
     bne.s   .dofreqres
+    cmpi.b  #$FF, c_tbl(a6)                 ; ...or a macro table is running (its TSP column arps the note;
+    bne.s   .dofreqres                      ;   ch_freq_send diffs vs the pitch shadow, so it only emits on change)
     moveq   #0, d0                          ; ...or a pitch-mod (chord or bend) is active
     move.b  c_track(a6), d0
     lea     c_chord, a4
