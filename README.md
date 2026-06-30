@@ -20,15 +20,21 @@ project** to **SMSGGDJ**, little-scale's Sega Master System / Game Gear music tr
 > Drive, and Nomad**, as well as in emulation via Genesis Plus. 
 
 Ten voices: 6 FM (`F1`–`F6`; `F6` doubles as the PCM / sample host) + 3 PSG square
-(`S1`–`S3`) + 1 PSG noise (`NO`).
+(`T1`–`T3`) + 1 PSG noise (`NO`).
 
 ## Quickstart
 
-**Voices (10)** — `F1`–`F6` FM · `S1`–`S3` PSG square · `NO` PSG noise. `F6` also hosts
+**Voices (10)** — `F1`–`F6` FM · `T1`–`T3` PSG square · `NO` PSG noise. `F6` also hosts
 PCM samples / wavetables.
 
-**Controls** — the *held* button picks the action (no chord-timing windows):
+**Main Concepts** 
+- Notes live within phrases, phrases live within chains, chains are put together to make a song
+- Each vertical track corresponds to a sound chip channel (F1 - F6 are YM2612, T1-T3 and NO are SN76489)
+- Tracks do not own instruments, phrases or chains but rather use these as structures to play out from
+- There are six possible instrument types which can be used on the following tracks: 
+FM (F1 - F6), Kit (F6), Wave (F6), Tone (T1 - T3), Noise (No), Perc (F3)
 
+**Controls** — the *held* button picks the action:
 - **D-pad** — move the cursor.
 - **B** — tap = insert / edit · hold + D-pad = nudge the value (L/R small, U/D big) ·
   double-tap = paste · tap on a note = audition it.
@@ -37,11 +43,7 @@ PCM samples / wavetables.
 - **C + B** = play from the cursor (solo this screen).
 - **Start** = play / stop the song (in LIVE, launch the cursor row).
 
-- Notes live within phrases, phrases live within chains, chains are put together make a song
-- Each vertical track corresponds to a sound chip channel
-- Tracks do not own instruments, phrases or chains but rather use these as templates to play out from
-- There are five possible instrument types which can be used on the following tracks: 
-FM (F1 - F6), Kit (F6), Wave (F6), Tone (T1 - T3), Noise (No), Perc (F3)
+
 
 
 **Screens** — there are 12 screens:
