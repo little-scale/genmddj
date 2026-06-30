@@ -1,6 +1,6 @@
 # genmddj
 
-![genmddj](art/genmddj.png)
+<p align="center"><img src="art/genmddj.png" alt="genmddj"></p>
 
 An **LSDJ-inspired music tracker for the Sega Mega Drive / Genesis**, driving the
 **YM2612** FM synthesiser (6 × 4-operator + an 8-bit PCM DAC) and the **SN76489**
