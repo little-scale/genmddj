@@ -5,7 +5,7 @@
 An **LSDJ-inspired music tracker for the Sega Mega Drive / Genesis**, driving the
 **YM2612** FM synthesiser (6 × 4-operator + an 8-bit PCM DAC) and the **SN76489**
 PSG (3 squares + noise), written in **68000 + Z80 assembly**. It's a **sibling
-project** to **SMSGGDJ**, the author's shipped Master System / Game Gear tracker.
+project** to **SMSGGDJ**, little-scale's shipped Sega Master System / Game Gear music tracker.
 
 > [!TIP]
 > **Just want to play it?** Grab a ready-to-flash ROM from the
