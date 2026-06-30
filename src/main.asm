@@ -10881,6 +10881,18 @@ draw_dec_s:                               ; d3=signed byte, d4=offset; addr pres
 ; NB: no per-render body clear -- clear_grid wipes on entry, and these fields are
 ; fixed-width so they self-overwrite; clearing rows 5-16 every render overran VBlank.
 render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit idiom
+    moveq   #3, d3                          ; read-only build stamp above the fields: VER  <ver> <git>
+    moveq   #1, d4
+    lea     str_o_ver, a1
+    bsr     print_at
+    moveq   #3, d3
+    moveq   #9, d4
+    lea     ver_str, a1
+    bsr     print_at
+    moveq   #3, d3
+    moveq   #14, d4
+    lea     git_hash_str, a1
+    bsr     print_at
     moveq   #5, d3
     moveq   #1, d4
     lea     str_o_vid, a1
@@ -13298,6 +13310,7 @@ krn_2:      dc.b "2X ",0
 krn_4:      dc.b "4X ",0
     even
 ; OPTIONS / PROJECT page labels + enum tables (TSP/MODE reuse the FM/PSG strings)
+str_o_ver:  dc.b "VER",0
 str_o_vid:  dc.b "VID",0
 str_o_sync: dc.b "SYNC",0
 str_o_pal:  dc.b "COLOUR",0
