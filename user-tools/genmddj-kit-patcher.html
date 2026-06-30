@@ -57,6 +57,8 @@
   <div class="budget" title="sample pool vs available ROM space"><div id="budgetBar"></div></div>
   <span id="budgetTxt" class="muted"></span>
   <div class="spacer"></div>
+  <button id="importKit" title="load a .genkit into the current kit tab">Import .genkit</button>
+  <button id="exportKit" title="save the current kit tab as a .genkit">Export .genkit</button>
   <button id="exportRom" class="primary" disabled>Export patched ROM</button>
   <button id="exportBin" disabled>Export pool .bin</button>
 </header>
@@ -99,6 +101,7 @@
 <input type="file" id="romFile" accept=".bin,.md,.gen" hidden>
 <input type="file" id="wavFile" accept=".wav,audio/*" hidden>
 <input type="file" id="bulkFile" accept=".wav,audio/*" multiple hidden>
+<input type="file" id="kitFile" accept=".genkit,application/json" hidden>
 
 <script>
 const MAGIC = "GMDJKIT1";
@@ -360,6 +363,48 @@ async function dropWavs(files, startPad){
   status(`loaded ${Math.min(wavs.length,NPADS-startPad)} sample(s)`, "ok");
 }
 
+/* ---------- .genkit (one kit, re-editable: source audio + per-pad edits, no ROM needed) ---------- */
+const GENKIT_MAGIC = "GENKIT1";
+function f32ToB64(f32){
+  const bytes = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
+  let s="", CH=0x8000;
+  for (let i=0;i<bytes.length;i+=CH) s += String.fromCharCode.apply(null, bytes.subarray(i,i+CH));
+  return btoa(s);
+}
+function b64ToF32(b64){
+  const s=atob(b64), bytes=new Uint8Array(s.length);
+  for (let i=0;i<s.length;i++) bytes[i]=s.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+function exportKit(){
+  const pads = kits[sel.k].map(pad => pad ? {
+    name:pad.name, srcRate:pad.srcRate, gain:pad.gain, tanh:pad.tanh,
+    trimStart:pad.trimStart, trimEnd:pad.trimEnd, fadeIn:pad.fadeIn, fadeOut:pad.fadeOut,
+    src:f32ToB64(pad.src)
+  } : null);
+  const n = pads.filter(Boolean).length;
+  download(enc.encode(JSON.stringify({magic:GENKIT_MAGIC, version:1, dacRate:DAC_RATE, pads})), `genmddj-kit${sel.k}.genkit`);
+  status(`exported KIT ${sel.k} as .genkit (${n} pad${n===1?"":"s"})`, "ok");
+}
+async function importKit(file){
+  let obj;
+  try { obj = JSON.parse(dec.decode(new Uint8Array(await file.arrayBuffer()))); }
+  catch(e){ status("not a valid .genkit (bad JSON)", "err"); return; }
+  if (!obj || obj.magic!==GENKIT_MAGIC || !Array.isArray(obj.pads)){ status("not a .genkit file", "err"); return; }
+  for (let p=0;p<NPADS;p++){
+    const pd = obj.pads[p];
+    if (!pd || !pd.src){ kits[sel.k][p]=null; continue; }
+    const pad = newPad(pd.name, b64ToF32(pd.src), pd.srcRate||DAC_RATE);
+    pad.gain = pd.gain ?? 1; pad.tanh = pd.tanh ?? 0;
+    pad.trimStart = pd.trimStart ?? 0; pad.trimEnd = pd.trimEnd ?? 1;
+    pad.fadeIn = pd.fadeIn ?? 0; pad.fadeOut = pd.fadeOut ?? 0;
+    kits[sel.k][p] = pad;
+  }
+  sel.p = 0; renderAll();
+  const n = kits[sel.k].filter(Boolean).length;
+  status(`imported .genkit into KIT ${sel.k} (${n} pad${n===1?"":"s"})`, "ok");
+}
+
 /* ---------- events ---------- */
 $("loadRom").onclick=()=>$("romFile").click();
 $("romFile").onchange=async e=>{
@@ -372,6 +417,9 @@ $("romFile").onchange=async e=>{
 };
 $("exportRom").onclick=exportRom;
 $("exportBin").onclick=()=>{ download(buildPool(),"samples.bin"); status("exported pool .bin","ok"); };
+$("exportKit").onclick=exportKit;
+$("importKit").onclick=()=>$("kitFile").click();
+$("kitFile").onchange=e=>{ if(e.target.files[0]) importKit(e.target.files[0]); e.target.value=""; };
 
 const bind=(id,fn)=>$(id).oninput=e=>{ const pad=kits[sel.k][sel.p]; if(!pad)return; fn(pad,+e.target.value); renderEditor(); refreshBudget(); renderGrid(); };
 bind("trimStart",(p,v)=>{ p.trimStart=Math.min(v/1000, p.trimEnd-0.001); });
