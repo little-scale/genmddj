@@ -71,16 +71,17 @@
     <b class="dim">CONFIG</b>
     <label>palette <select id="cPal"></select></label>
     <label>video <select id="cVid">
-      <option value="0">AUTO</option><option value="1">PAL</option><option value="2">NTSC</option></select></label>
+      <option value="0">NTSC</option><option value="1">PAL</option><option value="2">AUTO</option></select></label>
     <label>sync <select id="cSync">
-      <option value="0">OFF</option><option value="1">OUT</option><option value="2">PULSE</option><option value="3">IN</option></select></label>
+      <option value="0">OFF</option><option value="1">OUT</option><option value="2">PULSE</option><option value="3">IN</option><option value="5">IN24</option></select></label>
     <span class="tag" id="bankTag">bank: –</span>
   </div>
 
   <div id="slots"></div>
 
   <div class="bar">
-    <button class="primary" id="dlSav" disabled>download .sav</button>
+    <button class="primary" id="dlSav" disabled>build save</button>
+    <label class="dim" title="gzip the save, as Genesis Plus / Bannister stores its battery RAM"><input type="checkbox" id="gz"> gzip (emulator .sav)</label>
     <button id="dlAll" disabled>download all .gmdj</button>
     <span class="dim" id="note"></span>
   </div>
@@ -124,6 +125,7 @@ let songs = [];         // [{title, data:Uint8Array(20832)|null, valid, src}]
 let config = {pal:0, vid:0, sync:0, clon:0, audit:1};
 let bank = null;        // Uint8Array(2048) preserved instrument bank
 let usedDeint = false;
+let loadedLen = 0;      // decompressed length of the last-loaded SRAM image (for a same-size gzip round-trip)
 
 // palette dropdown 0..7
 for (let i=0;i<8;i++){ const o=document.createElement("option"); o.value=i; o.textContent="COLR "+i; $("cPal").appendChild(o); }
@@ -222,13 +224,13 @@ function addGmdj(raw, name){
 }
 
 // ---------- build ----------
-function buildSav(){
+function buildSav(totalBytes){
   // Physical cart/emulator layout (verified against a ROM-written .sav). The ROM's SRAM
   // base is the ODD byte $200001, and a linear-SRAM emulator maps $200000 -> file[0], so
   // logical byte 0 lands at file[1] (a 1-byte even lead-in). Bank, slots, AND the config
   // block all run consecutively from there (the ROM reads the config via sram_at, same stride).
   const LEAD=1;
-  const kb=+$("size").value, out=new Uint8Array(sizeBytes(kb)).fill(0xFF);
+  const out=new Uint8Array(totalBytes).fill(0xFF);
   const so=LEAD+DIR_SIG; out[so]=0x47; out[so+1]=0x4D; out[so+2]=0x44; out[so+3]=0x31;  // "GMD1" dir signature (logical DIR_SIG) so the cart won't re-format it
   const co=LEAD+CONFIG_OFS;                                                       // config block at logical CONFIG_OFS (consecutive; matches load_config)
   out[co]=0xA5; out[co+1]=config.pal&7; out[co+2]=config.vid; out[co+3]=config.sync;
@@ -240,7 +242,7 @@ function buildSav(){
     if (ne >= DIR_N){ note(`directory full -- ${ne} songs written`, true); break; }
     let blob = rleCompress(s.data), raw=0;
     if (blob.length >= DATA_SIZE){ blob = s.data; raw=1; }                       // store-raw fallback
-    if (LEAD+HEAP_BASE+heapOff+blob.length > out.length){ note(`SRAM full at ${kb}KB -- ${ne} songs written`, true); break; }
+    if (LEAD+HEAP_BASE+heapOff+blob.length > out.length){ note(`SRAM full (${(out.length/1024)|0}KB) -- ${ne} songs written`, true); break; }
     out.set(blob, LEAD+HEAP_BASE+heapOff);                                       // blob -> heap
     const e = LEAD+DIR_BASE+ne*DIR_ENT;                                          // directory entry
     out[e]=0xA5; out[e+1]=raw;
@@ -343,6 +345,10 @@ async function gunzip(buf){                          // native browser gunzip (a
   const s = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(s).arrayBuffer());
 }
+async function gzip(buf){                            // gzip out, to match Genesis Plus / Bannister battery saves
+  const s = new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
 async function addFiles(list){
   for (const f of list){
     let raw = new Uint8Array(await f.arrayBuffer());
@@ -351,7 +357,7 @@ async function addFiles(list){
       catch(e){ note(`${f.name}: gzip decompress failed (${e.message})`, true); continue; }
     }
     if (/\.gmdj$/i.test(f.name) || ascii(raw,0,8)===GMDJ_MAGIC) addGmdj(raw, f.name);
-    else loadSram(raw, $("deint").checked);
+    else { loadedLen = raw.length; loadSram(raw, $("deint").checked); }
   }
 }
 const zone=$("zone"), inp=$("file");
@@ -362,7 +368,14 @@ inp.onchange=()=>{ if(inp.files.length) addFiles([...inp.files]); inp.value=""; 
 zone.addEventListener("drop",ev=>{ if(ev.dataTransfer.files.length) addFiles([...ev.dataTransfer.files]); });
 $("size").onchange=()=>{ if(sram) loadSram(usedDeint?sram:sram, false); render(); };  // re-window slots
 $("deint").onchange=()=>{ /* applies on next load */ };
-$("dlSav").onclick=()=>{ const kb=+$("size").value; download(buildSav(), `genmddj-${kb}k.sav`); note(`built ${kb}KB .sav`,false); };
+$("dlSav").onclick=async ()=>{
+  const gz=$("gz").checked, kb=+$("size").value;
+  const sz = (gz && loadedLen) ? loadedLen : sizeBytes(kb);          // gzip: match the loaded SRAM size for a clean round-trip
+  let out = buildSav(sz);
+  if (gz){ out = await gzip(out); download(out, "genmddj.sav");
+    note(`built gzip .sav (${sz} B SRAM -> ${out.length} B; rename to <rom>.sav in the emulator's battery folder)`, false); }
+  else { download(out, `genmddj-${kb}k.srm`); note(`built ${kb}KB .srm (raw -- EverDrive / raw-SRAM)`, false); }
+};
 $("dlAll").onclick=()=>{ songs.forEach((s,n)=>{ if(s) download(makeGmdj(s), (s.title||("song"+n)).replace(/\s+/g,"_")+".gmdj"); }); };
 render();
 </script>
