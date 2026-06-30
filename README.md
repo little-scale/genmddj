@@ -28,7 +28,7 @@ progress. Working today:
   OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
   **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
 
-See [PLAN.md](PLAN.md) for the M1–M12 milestone roadmap.
+See [MANUAL.md](MANUAL.md) for how to use it.
 
 ## Build
 
@@ -52,9 +52,8 @@ per-tick sequencer engine. Each tick it computes the chip-register state it want
 bus grab. The Z80 is a pure chip servant — it flushes that write list to the YM2612
 and PSG, and feeds the PCM DAC off the YM2612's Timer A. It holds no song state.
 
-The full design contract — hardware constraints, the data model, the FM / PSG voice
-model, the command set, the DAC, sync, and the save format — is in
-[DESIGN.md](DESIGN.md).
+The FM / PSG voice model, the full screen set, the A–Z command set, save/load and sync
+are all covered from the player's side in [MANUAL.md](MANUAL.md).
 
 ## Tools
 
