@@ -73,7 +73,7 @@
 <script>
 "use strict";
 const NWAVE=16, STEPS=32;
-const WAVEMAGIC="GMDJWAV0", SONGMAGIC="GMDJSONG", DATA_SIZE=20832, WAVE_OFF=20320;  // .gmdj: 32B header + data block; waves at WAVE_OFF
+const WAVEMAGIC="GMDJWAV0", SONGMAGIC="GMDJSONG", DATA_SIZE=23904, WAVE_OFF=23392;  // .gmdj: 32B header + 23904 data block; waves pool at WAVE_OFF (matches src/main.asm SAVE_DATA)
 const $=id=>document.getElementById(id);
 let buf=null, base=-1, mode="", fname="", sel=0, drawing=false, lastStep=-1;
 
