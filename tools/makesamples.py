@@ -26,9 +26,9 @@ import sys, os, re, glob, wave, struct, argparse
 import numpy as np
 
 # Per-sample build-time conditioning (overridable via flags; see main()). Default chain:
-# per-sample peak NORMALISE -> 5x GAIN -> TANH soft-clip.
+# per-sample peak NORMALISE -> 4x GAIN -> TANH soft-clip.
 NORMALIZE = True
-GAIN      = 5.0
+GAIN      = 4.0
 USE_TANH  = True
 
 MAGIC = b'GMDJKIT1'
@@ -90,8 +90,8 @@ def main():
     ap.add_argument('out')
     ap.add_argument('--no-normalize', dest='normalize', action='store_false',
                     help='disable per-sample peak normalise (default: on)')
-    ap.add_argument('--gain', type=float, default=5.0,
-                    help='linear gain applied after normalise (default: 5.0)')
+    ap.add_argument('--gain', type=float, default=4.0,
+                    help='linear gain applied after normalise (default: 4.0)')
     ap.add_argument('--no-tanh', dest='tanh', action='store_false',
                     help='disable the tanh soft-clip after gain (default: on)')
     args = ap.parse_args()
