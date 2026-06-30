@@ -8,9 +8,9 @@ PSG (3 squares + noise), written in **68000 + Z80 assembly**. It's a **sibling
 project** to **SMSGGDJ**, little-scale's shipped Sega Master System / Game Gear music tracker.
 
 > [!TIP]
-> **Just want to play it?** Grab a ready-to-flash ROM from the
-> [Releases](../../releases) page — no toolchain needed, just drop the `.bin` on your
-> flashcart or open it in an emulator. *(First builds landing shortly — almost there.)*
+> **Just want to play it?** **[v0.1 is out](../../releases/latest)** — grab the
+> ready-to-flash `genmddj-v0.1.bin` from the [Releases](../../releases) page, no toolchain
+> needed: drop the `.bin` on your flashcart or open it in an emulator.
 
 > [!NOTE]
 > **Work in progress** — under active development, so expect rough edges and shifting
