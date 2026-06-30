@@ -45,10 +45,13 @@ transpose tail. Decimal ranges:
 | **per op ×4** | | `+$08 + 10·slot` | mul, dt, tl(0–127), rs, ar(0–31), am, d1r(0–31), d2r(0–31), rr(0–15), sl(0–15) |
 | `tbl` | 0–31 / 255 | `+$30` | macro table (255 = none) |
 | `tbs` | 0–255 | `+$31` | table speed (0 = per note) |
-| `tsp` | −128…127 | `+$32` | signed-semitone transpose |
+| `tsp` | −128…127 | `+$35` | signed-semitone transpose |
+| `name` | 8 ASCII | `+$36` | 8-char patch name (`+$36..$3D`; display metadata, not read by the engine) |
+| `psweep` | 0–255 | `+$3E` | FM pitch sweep — hi nibble = depth (×4 semis, downward), lo nibble = rate/tick (0 = off) |
 
-Record bytes `+$32..` for KIT/sample fields and the reserved tail are zero/`$FF` for an FM
-record. Non-FM types (KIT/WAVE/TONE/NOISE/PERC) reuse the same 64 bytes as a union.
+Bytes `+$32..$34` are the **KIT/sample union** (`kit` / `gain` / `rate`) and `+$3F` is `pmode`
+(PERC) — unused in an FM record. Non-FM types (KIT/WAVE/TONE/NOISE/PERC) reuse the same 64
+bytes as a union.
 
 ### 2.2 Operator order — the one gotcha ⚠
 
