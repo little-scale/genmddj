@@ -20,6 +20,38 @@ The handoff is always a **documented format**, never a code dependency:
   library.
 - **save / `.gmdj` / `.srm`** — the song + config format, read/written on cart SRAM.
 
+## At a glance — the data flow
+
+```
+FILE TYPES
+  .bin       a genmddj ROM (what you flash / emulate)
+  .gmdj      one song (this suite's song container)
+  .srm/.sav  a cartridge save (config + instrument bank + up to 32 songs)
+  .gmi       one instrument (a YM2612 patch)        .genkit  one sample drum kit
+  .wav  a sample   .vgm  a game chip-log   .als/.mid/MML  music sources   .adv  an Ableton Operator patch
+```
+
+```
+CUSTOMISE THE ROM      (drop a .bin, edit, export a re-checksummed .bin)
+
+   .gmi .tfi .vgi .adv .vgm ──► instrument patcher ─┐
+   .wav .genkit ─────────────► kit patcher ─────────┤
+                                palette patcher ─────┼──►  patched .bin ──►  flashcart / emulator
+                                font patcher ────────┤
+   .gmdj  (or .bin defaults) ─► wave editor ─────────┘
+
+
+MAKE & MANAGE SONGS / SAVES
+
+   .als .mid / MML ──► als2genmddj ──► .gmdj ──┐
+                                               ├──► save tool ──► .srm/.sav ──► flashcart / emulator
+   .gmi ──► bank editor ──► instrument bank ───┘        │
+                                                        └─ de-re-interleaver:  EverDrive 64K ⇄ 32K logical
+```
+
+The table below is the per-tool detail; the same map (with a what/in→out bullet per tool) is in
+[`../MANUAL.md`](../MANUAL.md) §15.
+
 ## What ships now
 
 | Tool | File | Kind | Edits |
