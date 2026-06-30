@@ -535,4 +535,64 @@ VOICES   F1 F2 F3 F4 F5 F6   (FM; F6 also hosts samples/wavetables)
          NO                  (PSG noise / drums)
 ```
 
+## 15. The companion tools (`user-tools/`)
+
+A suite of **browser tools** (just open the `.html` — no install) for getting music and
+sounds into genmddj and customising the ROM. They move data between a handful of file types:
+
+```
+FILE TYPES
+  .bin       a genmddj ROM (what you flash / emulate)
+  .gmdj      one song (this suite's song container)
+  .srm/.sav  a cartridge save (config + instrument bank + up to 32 songs)
+  .gmi       one instrument (a YM2612 patch)        .genkit  one sample drum kit
+  .wav  a sample   .vgm  a game chip-log   .als/.mid/MML  music sources   .adv  an Ableton Operator patch
+```
+
+```
+CUSTOMISE THE ROM      (drop a .bin, edit, export a re-checksummed .bin)
+
+   .gmi .tfi .vgi .adv .vgm ──► instrument patcher ─┐
+   .wav .genkit ─────────────► kit patcher ─────────┤
+                                palette patcher ─────┼──►  patched .bin ──►  flashcart / emulator
+                                font patcher ────────┤
+   .gmdj  (or .bin defaults) ─► wave editor ─────────┘
+
+
+MAKE & MANAGE SONGS / SAVES
+
+   .als .mid / MML ──► als2genmddj ──► .gmdj ──┐
+                                               ├──► save tool ──► .srm/.sav ──► flashcart / emulator
+   .gmi ──► bank editor ──► instrument bank ───┘        │
+                                                        └─ de-re-interleaver:  EverDrive 64K ⇄ 32K logical
+```
+
+Each tool — what it does · **in** → **out**:
+
+- **palette patcher** — recolour the 8 UI palettes (picks snap to legal Sega colours).
+  **a `.bin`** → a patched **`.bin`**.
+- **font patcher** — redraw the 8×8 UI font (96 glyphs + an auto-derived inverse set; system-font
+  import). **a `.bin`** (or a system font) → a patched **`.bin`**, or **`font.bin`** for a build bake.
+- **instrument patcher** — edit, **audition** (a register-level OPN2 piano), convert, and rip the 32
+  FM patches. **a `.bin`, or `.gmi`/`.tfi`/`.vgi`/`.adv`, or a `.vgm`/`.vgz` game log** → a patched
+  **`.bin`**, or **`.gmi`/`.tfi`/`.vgi`/`.adv`**.
+- **kit / sample patcher** — build sample drum kits (per-pad trim / gain / tanh / fade; drag `.wav`s
+  onto pads). **a `.bin`, `.wav` files, or a `.genkit`** → a patched **`.bin`**, a **`.genkit`**, or **`.wav`**.
+- **wave editor** — draw the 16 wavetables (canvas, presets, or an `f(x)=` expression). **a `.bin`**
+  (the factory defaults every NEW song uses) **or a `.gmdj`** (one song's waves) → the same, edited.
+- **save tool** — extract songs from a cart save, edit config (palette / video / sync), keep the
+  instrument bank, and build a fresh save. **a `.srm`/`.sav` and/or `.gmdj` songs** → a 32 KB (1-song)
+  or 64 KB (3-song) **`.srm`/`.sav`**, plus extracted **`.gmdj`** songs.
+- **bank editor** — manage the 32-slot SRAM instrument library (shared across songs). **a `.srm`/`.sav`
+  + `.gmi` per slot** → the save with its bank rewritten (songs/config untouched).
+- **de-re-interleaver** — convert a save between EverDrive's 64 KB odd-byte layout and the 32 KB
+  logical layout. **a `.srm`** → the converted **`.srm`**.
+- **als2genmddj** — get music in and out: Ableton **`.als`** & MIDI **`.mid`** ⇄ **`.gmdj`**, **MML
+  text** ⇄ **`.gmdj`**, and one Ableton Operator **`.adv`** ⇄ a **`.gmi`** instrument. Includes a song viewer.
+- **build-time bakers** (run by `make`, not in the browser) — the factory instruments, samples, note
+  tables, font, and default palettes/waves are baked from source; edit the source files and rebuild.
+
+Full detail (formats, the conversion maths, the marker-locator scheme) is in
+[`user-tools/README.md`](user-tools/README.md), `PRESETS.md`, `PALETTE.md`, and `ALS.md`.
+
 Have fun. Save often.

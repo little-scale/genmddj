@@ -35,6 +35,36 @@ progress. Working today:
 
 See [MANUAL.md](MANUAL.md) for how to use it.
 
+## Quickstart
+
+**Voices (10)** — `F1`–`F6` FM · `S1`–`S3` PSG square · `NO` PSG noise. `F6` also hosts
+PCM samples / wavetables.
+
+**Controls** — the *held* button picks the action (no chord-timing windows):
+
+- **D-pad** — move the cursor.
+- **B** — tap = insert / edit · hold + D-pad = nudge the value (L/R small, U/D big) ·
+  double-tap = paste · tap on a note = audition it.
+- **A** (held) — modifier: `A`+B = block-select · `A`+←/→ = switch channel · `A`+↑/↓ = page.
+- **C** (held) + D-pad — change screen · **C + B** = play from the cursor (solo this screen).
+- **Start** — play / stop the song (in LIVE, launch the cursor row).
+
+**Screens** — `SONG` arranges chains across the 10 tracks → `CHAIN` lists phrases →
+`PHRASE` holds the notes. Build sounds in `INSTR` / `FM` / `WAVE`, automate them in `TABLE`,
+set the feel in `GROOVE`, add delay in `ECHO`, save/load in `FILES`, settings in `OPTIONS`.
+
+**Make a sound in six steps:**
+
+1. `PHRASE` — `B`-tap to drop a note; `B`-hold + ←/→ to change it.
+2. Set the row's **instrument** (the column right of the note).
+3. `C + B` to audition the phrase.
+4. `CHAIN` — list your phrase numbers in order.
+5. `SONG` — place that chain in a track's column.
+6. **Start** to play the whole song. Save it on the `FILES` screen.
+
+The full guide — every screen, the FM editor, the A–Z commands, sync — is in
+**[MANUAL.md](MANUAL.md)**.
+
 ## Build
 
 Requires [vasm](http://sun.hasenbraten.de/vasm/) (Motorola syntax — `vasmm68k_mot`)
