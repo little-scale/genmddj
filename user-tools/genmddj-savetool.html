@@ -53,7 +53,7 @@
   new <code>.sav</code>/<code>.srm</code>. Drop a de-interleaved SRAM or <code>.gmdj</code> files
   (odd-byte SRAM is auto-detected; if not, run it through the de-/re-interleaver first).</p>
 
-  <div class="zone" id="zone">drop a <b>.sav / .srm / .gmdj</b> file here &nbsp;·&nbsp; or click to choose</div>
+  <div class="zone" id="zone">drop a <b>.sav / .srm / .gmdj</b> file here &nbsp;·&nbsp; or click to choose &nbsp;<small>(gzip auto-detected)</small></div>
   <input type="file" id="file" multiple hidden accept=".sav,.srm,.gmdj,.bin">
 
   <div class="bar">
@@ -339,9 +339,17 @@ function viewSong(n){
 }
 
 // ---------- file intake ----------
+async function gunzip(buf){                          // native browser gunzip (as in als2genmddj)
+  const s = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
 async function addFiles(list){
   for (const f of list){
-    const raw = new Uint8Array(await f.arrayBuffer());
+    let raw = new Uint8Array(await f.arrayBuffer());
+    if (raw[0]===0x1f && raw[1]===0x8b){             // gzip magic -- e.g. Genesis Plus / Bannister battery saves
+      try { raw = await gunzip(raw); note(`${f.name}: gunzipped (${raw.length} B)`, false); }
+      catch(e){ note(`${f.name}: gzip decompress failed (${e.message})`, true); continue; }
+    }
     if (/\.gmdj$/i.test(f.name) || ascii(raw,0,8)===GMDJ_MAGIC) addGmdj(raw, f.name);
     else loadSram(raw, $("deint").checked);
   }
