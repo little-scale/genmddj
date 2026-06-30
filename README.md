@@ -20,21 +20,6 @@ project** to **SMSGGDJ**, little-scale's shipped Sega Master System / Game Gear 
 Ten voices: 6 FM (`F1`–`F6`; `F6` doubles as the PCM / sample host) + 3 PSG square
 (`S1`–`S3`) + 1 PSG noise (`NO`).
 
-## Status
-
-**M1–M8 are built and hardware-verified on a real cartridge**; M9 / M11 / M12 are in
-progress. Working today:
-
-- The **68k → SCB → Z80** engine, with PSG + full 6-operator FM voices.
-- The complete screen set: **SONG / CHAIN / PHRASE / INSTR / FM / TABLE / WAVE /
-  GROOVE / ECHO / PROJECT / OPTIONS**.
-- Grooves, the command set, copy / paste / clone.
-- **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;
-  OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
-  **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
-
-See [MANUAL.md](MANUAL.md) for how to use it.
-
 ## Quickstart
 
 **Voices (10)** — `F1`–`F6` FM · `S1`–`S3` PSG square · `NO` PSG noise. `F6` also hosts
@@ -97,6 +82,21 @@ A browser-based companion suite lives in [`user-tools/`](user-tools/): ROM patch
 save-file tool, and **`als2genmddj`** — convert Ableton Live `.als`, Standard MIDI
 `.mid`, or **MML** text ⇄ a genmddj `.gmdj` song. See
 [user-tools/README.md](user-tools/README.md).
+
+## Status
+
+**M1–M8 are built and hardware-verified on a real cartridge**; M9 / M11 / M12 are in
+progress. Working today:
+
+- The **68k → SCB → Z80** engine, with PSG + full 6-operator FM voices.
+- The complete screen set: **SONG / CHAIN / PHRASE / INSTR / FM / TABLE / WAVE /
+  GROOVE / ECHO / PROJECT / OPTIONS**.
+- Grooves, the command set, copy / paste / clone.
+- **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;
+  OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
+  **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
+
+See [MANUAL.md](MANUAL.md) for how to use it.
 
 ## Documentation
 
