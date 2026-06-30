@@ -28,9 +28,10 @@
 <div class="wrap">
   <h1><span>genmddj</span> BANK EDITOR</h1>
   <p class="dim">Edit the <b>32-slot SRAM instrument bank</b> — the cross-song library (the middle tier
-  between the factory ROM bank and a song's instruments). Drop a de-interleaved <code>.sav</code>/<code>.srm</code>
-  to edit its bank in place (config + songs untouched), or start a blank cart. Drop <code>.gmi</code> patches
-  to load them into slots. Saves the <code>.sav</code> back.</p>
+  between the factory ROM bank and a song's instruments). Drop a cart or emulator <code>.sav</code>/<code>.srm</code>
+  &mdash; linear, EverDrive odd-byte, and gzipped (Genesis Plus) are auto-detected &mdash; to edit its bank in place
+  (config + songs untouched), or start a blank cart. Drop <code>.gmi</code> patches to load them into slots.
+  Saves back in the same layout (re-gzipped if the source was).</p>
 
   <div class="zone" id="zone">drop a <b>.sav / .srm</b> or <b>.gmi</b> patches here · or click
     &nbsp;—&nbsp; <select id="size"><option value="32">32 KB</option><option value="64" selected>64 KB</option></select>
@@ -53,31 +54,52 @@
 <script>
 "use strict";
 const CONFIG_SZ=256, BANK_BASE=256, NUBANK=32, BANK_REC=64, BANK_SIZE=NUBANK*BANK_REC;
-const SLOT0=2304, SLOT_SIZE=20848, GMI_MAGIC="GMDJINS1", INSTR_SZ=64;
+const SLOT0=2304, DIR_SIG=8, CONFIG_OFS=16, GMI_MAGIC="GMDJINS1", INSTR_SZ=64;
 const ITYPE=["FM","KIT","WAVE","TONE","NOISE","PERC"];
 const $=id=>document.getElementById(id);
 const enc=new TextEncoder(), dec=new TextDecoder("latin1");
 let sram=null, usedDeint=false, gmiStart=0;
+let rawPhys=null, layout={lead:0,stride:1,fmt:"logical"}, wasGzip=false;   // physical image + its layout, for a faithful save
 
 function ascii(u8,o,n){let s="";for(let i=0;i<n;i++){const c=u8[o+i];if(c===0)break;s+=String.fromCharCode(c);}return s.trim();}
 function findStr(u8,str,from=0){const m=enc.encode(str);outer:for(let i=from;i<=u8.length-m.length;i++){for(let j=0;j<m.length;j++)if(u8[i+j]!==m[j])continue outer;return i;}return -1;}
-const deinterleave=u8=>{const o=new Uint8Array(u8.length>>1);for(let i=0;i<o.length;i++)o[i]=u8[i*2+1];return o;};
-function looksLikeSram(u8){ if(u8.length<SLOT0) return false; if(u8[0]===0xA5) return true; return findStr(u8,"GMDDJ",SLOT0-4)>=0; }
+async function gunzip(buf){ const s=new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip")); return new Uint8Array(await new Response(s).arrayBuffer()); }
+async function gzip(buf){ const s=new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip")); return new Uint8Array(await new Response(s).arrayBuffer()); }
+const sigAt=(u8,b,str)=>{ const m=enc.encode(str); for(let i=0;i<m.length;i++) if(u8[b+i]!==m[i]) return false; return true; };
+function detectLayout(raw){                                   // "GMD1" dir signature @ logical DIR_SIG picks the physical mapping
+  if(sigAt(raw,1+DIR_SIG,"GMD1"))   return {lead:1,stride:1,fmt:"emulator"};   // linear emulator (1-byte even lead-in)
+  if(sigAt(raw,DIR_SIG,"GMD1"))     return {lead:0,stride:1,fmt:"logical"};    // pure logical image
+  if(sigAt(raw,1+2*DIR_SIG,"GMD1")) return {lead:1,stride:2,fmt:"odd-byte"};   // EverDrive odd-byte (logical N at 1+2N)
+  if(raw[1+CONFIG_OFS]===0xA5)   return {lead:1,stride:1,fmt:"emulator"};       // fallback: config magic @ logical CONFIG_OFS
+  if(raw[CONFIG_OFS]===0xA5)     return {lead:0,stride:1,fmt:"logical"};
+  if(raw[1+2*CONFIG_OFS]===0xA5) return {lead:1,stride:2,fmt:"odd-byte"};
+  return {lead:1,stride:1,fmt:"emulator"};
+}
+const applyLayout=(rawP,L)=>{ const n=Math.max(0,(rawP.length-L.lead)/L.stride|0); const u=new Uint8Array(n); for(let i=0;i<n;i++) u[i]=rawP[L.lead+i*L.stride]; return u; };
 const recOff=i=>BANK_BASE+i*BANK_REC;
 const isEmpty=i=>sram[recOff(i)]===0xFF || sram[recOff(i)]>5;
 
 function dl(u8,name){const b=new Blob([u8],{type:"application/octet-stream"});const a=document.createElement("a");
   a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
 
-function loadSram(raw, forceDeint){
-  let u8=raw; usedDeint=false;
-  if(forceDeint || (!looksLikeSram(raw) && looksLikeSram(deinterleave(raw)))){ u8=deinterleave(raw); usedDeint=true; }
-  sram=u8; show();
-  note(`${usedDeint?"de-interleaved · ":""}loaded ${(u8.length/1024|0)} KB`,false);
+async function loadSram(raw, forceDeint){
+  wasGzip=false;
+  if(raw[0]===0x1f && raw[1]===0x8b){ try{ raw=await gunzip(raw); wasGzip=true; }catch(e){ note("gzip decompress failed",true); return; } }
+  rawPhys=raw;
+  layout = forceDeint ? {lead:1,stride:2,fmt:"odd-byte"} : detectLayout(raw);
+  sram = applyLayout(rawPhys, layout); usedDeint = layout.fmt==="odd-byte";
+  if(sram.length < BANK_BASE+BANK_SIZE){ note("file too small / not a genmddj save",true); sram=null; rawPhys=null; return; }
+  show();
+  note(`${wasGzip?"gunzipped · ":""}${layout.fmt} · ${(rawPhys.length/1024|0)} KB`,false);
 }
-function blankSram(kb){ const u=new Uint8Array(kb*1024).fill(0); u[0]=0xA5;             // config magic
-  for(let i=0;i<NUBANK;i++) u[BANK_BASE+i*BANK_REC]=0xFF;                                // empty bank
-  sram=u; usedDeint=false; show(); note(`blank ${kb} KB cart`,false); }
+function blankSram(kb){                                       // a conformant emulator-linear blank (GMD1 + config@16)
+  const lead=1, p=new Uint8Array(kb*1024).fill(0xFF);
+  enc.encodeInto("GMD1", p.subarray(lead+DIR_SIG, lead+DIR_SIG+4));                       // dir signature -> cart won't re-format
+  p[lead+CONFIG_OFS]=0xA5; p[lead+CONFIG_OFS+1]=0; p[lead+CONFIG_OFS+2]=0; p[lead+CONFIG_OFS+3]=0;
+  p[lead+CONFIG_OFS+4]=0; p[lead+CONFIG_OFS+5]=1; p[lead+CONFIG_OFS+6]=0x5A;               // pal/vid/sync 0, clon 0, audit ON, ext marker
+  for(let i=0;i<NUBANK;i++) p[lead+BANK_BASE+i*BANK_REC]=0xFF;                             // empty bank slots ($FF type)
+  rawPhys=p; layout={lead:1,stride:1,fmt:"emulator"}; wasGzip=false;
+  sram=applyLayout(rawPhys,layout); usedDeint=false; show(); note(`blank ${kb} KB cart`,false); }
 
 function loadGmiInto(buf, slot){
   if(ascii(buf,0,8)!==GMI_MAGIC){ note("not a .gmi patch",true); return false; }
@@ -103,7 +125,7 @@ function render(){
     mk("clear",()=>{ sram.fill(0,o,o+INSTR_SZ); sram[o]=0xFF; render(); }, empty);
     box.appendChild(d);
   }
-  $("layoutTag").textContent = usedDeint?"odd-byte → de-interleaved":"linear";
+  $("layoutTag").textContent = sram ? (wasGzip?"gzip · ":"")+layout.fmt : "no file";
   $("fillTag").textContent = `${filled}/${NUBANK} filled`;
 }
 function show(){ $("main").style.display="block"; render(); }
@@ -128,14 +150,18 @@ async function loadGmis(files){ let slot=sram?0:0, n=0;
 async function take(files){
   const srams=files.filter(f=>/\.(sav|srm|bin)$/i.test(f.name));
   const gmis=files.filter(f=>/\.gmi$/i.test(f.name));
-  if(srams.length){ loadSram(new Uint8Array(await srams[0].arrayBuffer()), false); }
+  if(srams.length){ await loadSram(new Uint8Array(await srams[0].arrayBuffer()), false); }
   if(gmis.length){ if(!sram) blankSram(+$("size").value); await loadGmis(gmis); }
 }
 const zone=$("zone"), inp=$("file");
 zone.onclick=e=>{ if(e.target.tagName!=="SELECT"&&e.target.id!=="blank") inp.click(); };
 inp.onchange=()=>{ if(inp.files.length) take([...inp.files]); inp.value=""; };
 $("blank").onclick=e=>{ e.stopPropagation(); blankSram(+$("size").value); };
-$("save").onclick=()=>{ if(!sram)return; dl(sram, `genmddj-bank-${(sram.length/1024|0)}k.sav`); note("saved",false); };
+$("save").onclick=async()=>{ if(!sram||!rawPhys)return;
+  for(let i=0;i<BANK_SIZE;i++){ const N=BANK_BASE+i; rawPhys[layout.lead+N*layout.stride]=sram[N]; }   // edited bank -> physical (config/songs untouched)
+  let out=rawPhys, name;
+  if(wasGzip){ out=await gzip(rawPhys); name="genmddj.sav"; } else name=`genmddj-bank-${(rawPhys.length/1024|0)}k.srm`;
+  dl(out, name); note(`saved ${wasGzip?"gzip ":""}${layout.fmt}`,false); };
 ["dragenter","dragover"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.add("hot");}));
 ["dragleave","drop"].forEach(e=>zone.addEventListener(e,ev=>{ev.preventDefault();zone.classList.remove("hot");}));
 zone.addEventListener("drop",ev=>{ if(ev.dataTransfer.files.length) take([...ev.dataTransfer.files]); });
