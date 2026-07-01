@@ -199,7 +199,7 @@ function renderList(){
   const el=$("#ilist"); el.innerHTML='';
   for(let i=0;i<NINSTR;i++){
     const d=document.createElement('div'); d.className='inst'+(i===sel?' sel':''); d.dataset.slot=i;
-    d.innerHTML=`<span class="ix">${i.toString().padStart(2,'0')}</span><span class="nm">${readName(i)}</span><span class="ty">${TYPES[getB(i,0)]||'?'} A${getB(i,1)}</span>`;
+    d.innerHTML=`<span class="ix">${i.toString(16).toUpperCase().padStart(2,'0')}</span><span class="nm">${readName(i)}</span><span class="ty">${TYPES[getB(i,0)]||'?'} A${getB(i,1)}</span>`;
     d.onclick=()=>{ sel=i; renderList(); renderEditor(); };
     el.appendChild(d);
   }
