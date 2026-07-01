@@ -9285,9 +9285,9 @@ compose_noise:                            ; a6=ch; a3/d6=PSG buf
     move.b  d3, (a3)+
     addq.b  #1, d6
 .nd:
-    move.b  c_period(a6), d0             ; rate 3 = pitched: steal T3 (chan 2) for the noise pitch
-    andi.b  #3, d0
-    cmpi.b  #3, d0
+    move.w  c_period(a6), d0             ; rate 3 = pitched: steal T3 (chan 2) for the noise pitch
+    andi.w  #3, d0                        ; (c_period is a WORD; the 3-bit noise control is its low byte)
+    cmpi.w  #3, d0
     bne.s   .nret
     moveq   #0, d0
     move.b  c_note(a6), d0
