@@ -174,6 +174,8 @@ bank_slot  equ $00FFD42A           ; INSTR SRAM bank slot (LOAD/SAVE)
 rom_slot   equ $00FFD42B           ; INSTR ROM factory slot (LOAD) -- independent of bank_slot
 last_tvol  equ $00FFD42C           ; TABLE V-column memory: last VOL value entered (new V cell inherits it)
 btap_src   equ $00FFD42D           ; ref-cell value at the FIRST B-tap (before it edits) -> double-tap mint/clone source
+eff_pal    equ $00FFD42E           ; resolved region: 0 = NTSC (60Hz), 1 = PAL (50Hz) -- from opt_vid (AUTO = VDP status bit)
+tempo_k    equ $00FFD430           ; BPM<->ticks constant (word): 1250 @60Hz / 1042 @50Hz (frames-per-row = tempo_k/BPM)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -589,6 +591,7 @@ Start:
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
     bsr     load_config                   ; restore saved OPTIONS over the boot defaults (was never called -> didn't persist)
+    bsr     resolve_vid                    ; apply the restored/default VID region (eff_pal + VDP mode + tempo constant)
     moveq   #0, d0                         ; slot count = (sram_bytes - 256 config) / SAVE_SLOT
     move.b  sram_size, d0
     beq.s   .sl_none
@@ -8222,7 +8225,8 @@ advance_ch:                               ; a6 = channel
     moveq   #0, d2                          ; T xx = flat tempo: set the ACTIVE groove flat at xx BPM
     move.b  (3,a1,d1.w), d2               ;   (= 1250/xx ticks every row; flattens the swing)
     beq     .cmddone                        ; T00 -> ignore (no divide-by-zero)
-    move.l  #1250, d0
+    moveq   #0, d0                          ; frames-per-row = tempo_k/BPM (tempo_k = 1250 @60Hz / 1042 @50Hz)
+    move.w  tempo_k, d0
     divu.w  d2, d0
     andi.l  #$FFFF, d0
     bne.s   .ct_nz
@@ -11023,8 +11027,9 @@ groove_bpm:                               ; in d3.b = groove#; out d3.w = BPM (=
     moveq   #0, d3
     tst.w   d2
     beq.s   .gbr                            ; empty groove -> BPM 0
-    move.l  #1250, d0
-    mulu.w  d1, d0                          ; 1250 * length
+    moveq   #0, d0                          ; BPM = tempo_k * length / sum (tempo_k = 1250 @60Hz / 1042 @50Hz)
+    move.w  tempo_k, d0
+    mulu.w  d1, d0                          ; tempo_k * length
     divu.w  d2, d0                          ; / sum
     move.w  d0, d3
 .gbr:
@@ -11160,6 +11165,27 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     add.w   d2, d1                          ; + highlight (inverse tile)
     move.w  d1, VDP_DATA
     rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDITION (SRAM/FREE moved to FILES)
+
+; opt_vid (0 NTSC / 1 PAL / 2 AUTO) -> eff_pal, and apply the region live: VDP display mode
+; (V28 224-line / V30 240-line) + tempo constant (frames-per-row = tempo_k/BPM). Call at boot
+; (after the config load) and whenever the VID field is edited. Clobbers d0/d1.
+resolve_vid:
+    move.b  opt_vid, d0
+    cmpi.b  #2, d0                          ; AUTO -> detect the console from the VDP status PAL bit
+    bne.s   .rv_have
+    move.w  VDP_CTRL, d0                    ; VDP status word: bit 0 = 1 on a PAL console
+.rv_have:
+    andi.w  #1, d0
+    move.b  d0, eff_pal
+    move.w  #1250, tempo_k                  ; 60Hz: frames-per-row = 1250/BPM
+    move.w  #$8174, d1                      ; VDP reg 1 = $74 (V28 / 224-line)
+    tst.b   d0
+    beq.s   .rv_apply
+    move.w  #1042, tempo_k                  ; 50Hz: 1042/BPM keeps the same real-time tempo for a given BPM
+    move.w  #$817C, d1                      ; V30 / 240-line (PAL fills the taller frame)
+.rv_apply:
+    move.w  d1, VDP_CTRL                    ; write the mode register (takes effect on the next frame)
+    rts
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
     moveq   #5, d3                          ; MODE (cur_row 0)
@@ -11507,6 +11533,7 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
 .eo_skup:
     move.b  #5, opt_sync
 .eo_done:
+    bsr     resolve_vid                     ; VID edits take effect immediately (region + VDP mode + tempo)
     bsr     apply_palette                   ; re-apply UI palette (harmless for VID/SYNC)
     bsr     save_config                     ; persist OPTIONS to SRAM
     rts
