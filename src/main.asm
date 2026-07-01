@@ -8498,6 +8498,8 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     move.b  #0, c_vol(a6)
     rts
 .square:
+    moveq   #0, d2                         ; note from the channel (d2 isn't set when hold_tick fires a delayed note)
+    move.b  c_note(a6), d2
     add.w   d2, d2
     lea     notetable, a2
     move.w  (a2,d2.w), d2                 ; d2 = new period
