@@ -111,7 +111,7 @@ last_phrase equ $00FFE3AC          ; CHAIN insert memory: last phrase# placed (s
 last_cprm  equ $00FFE3AD           ; command PRM memory: last command parameter entered (paired with last_cmd)
 btap_frame equ $00FFE3AE           ; g_ticks at the last B-tap (word) -- double-tap window
 btap_addr  equ $00FFE3B0           ; field address of the last B-tap (long) -- double-tap = same cell
-DBLTAP_FRAMES equ 16               ; max frames between B-taps to count as a double-tap
+DBLTAP_FRAMES equ 24               ; max frames between B-taps to count as a double-tap (~0.40s NTSC / 0.48s PAL)
 pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
 patch_done equ $00FFE3BE           ; 1 = an FM operator patch was emitted this tick (budget 1/tick)
 PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write patch (SCB headroom)
@@ -173,6 +173,7 @@ sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 
 bank_slot  equ $00FFD42A           ; INSTR SRAM bank slot (LOAD/SAVE)
 rom_slot   equ $00FFD42B           ; INSTR ROM factory slot (LOAD) -- independent of bank_slot
 last_tvol  equ $00FFD42C           ; TABLE V-column memory: last VOL value entered (new V cell inherits it)
+btap_src   equ $00FFD42D           ; ref-cell value at the FIRST B-tap (before it edits) -> double-tap mint/clone source
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -3218,7 +3219,7 @@ do_insert:
     move.b  last_chain, (a1)
     rts
 .song_new:
-    move.b  (a1), d3                        ; source = the cell's chain ($FF = empty cell)
+    move.b  btap_src, d3                    ; source = the cell BEFORE tap-1 filled it ($FF = was empty -> mint blank)
     bsr     find_free_chain
     cmpi.b  #NCHAINS, d0
     bhs     .ret                            ; no free chain -> no-op
@@ -3255,7 +3256,7 @@ do_insert:
     move.b  #0, 1(a1)                        ; fresh chain step -> transpose 0 (not the $FF fill)
     rts
 .chain_new:
-    move.b  (a1), d3                        ; source = the cell's phrase ($FF = empty cell)
+    move.b  btap_src, d3                    ; source = the cell BEFORE tap-1 filled it ($FF = was empty -> mint blank)
     bsr     find_free_phrase
     cmpi.b  #NPHRASES, d0
     bhs     .ret
@@ -3464,7 +3465,10 @@ chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this 
     cmpi.w  #DBLTAP_FRAMES, d0
     bhi.s   .ct_rec
     moveq   #1, d2
+    bra.s   .ct_rec2                        ; double tap -> keep btap_src from the first tap
 .ct_rec:
+    move.b  (a1), btap_src                  ; first tap -> the cell's value before this tap edits it (mint/clone source)
+.ct_rec2:
     move.l  a1, btap_addr
     move.w  g_ticks, btap_frame
     rts
