@@ -225,6 +225,7 @@ c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override
 a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
 c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override (ticks/step; $FF = use instrument)
 c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
+e_set      equ $00FFD414           ; E command: 1 if E re-sloped this row (note-on keeps c_eatk/c_edcy, else clears)
 c_slide    equ $00FFD650           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0). NOTE: a WORD array (NCH*2 bytes) -- kept in the free $D650+ block so it can't overrun the groove/sync/sram vars at $D420+ (the engine_play_reset clear spans c_slide+c_lrate = NCH*3 bytes)
 c_lrate    equ $00FFD664           ; L command: per-channel slide rate (byte array, immediately after c_slide so the clear covers both; 0 = no glide)
 c_lfopitch equ $00FFD66E           ; FM LFO TUNE target: per-channel pitch (fnum) offset, word array (right after c_lrate; cleared each tick by fmlfo_tick + by engine_play_reset)
@@ -8101,6 +8102,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, c_set                      ; C command: clear this row's chord-set flag
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
+    move.b  #0, e_set                      ; E command: clear this row's envelope-reslope flag
     move.b  #0, d_set                      ; D command: clear this row's delay flag
     move.b  #0, a_set                      ; A command: clear this row's table-switch flag
     move.b  #0, l_set                      ; L command: clear this row's slide flag
@@ -8286,6 +8288,13 @@ advance_ch:                               ; a6 = channel
     lea     c_bend, a0                      ; no P this row -> stop the bend (c_pfine cleared above unless F)
     clr.b   (a0,d0.w)
 .crp:
+    tst.b   e_set                          ; no E this row -> drop the envelope re-slope (back to the instrument)
+    bne.s   .cre
+    lea     c_eatk, a0
+    move.b  #$FF, (a0,d0.w)
+    lea     c_edcy, a0
+    move.b  #$FF, (a0,d0.w)
+.cre:
     movem.l (sp)+, d0/a0
     bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
@@ -8891,6 +8900,7 @@ exec_cmd:
     move.b  d0, (a4,d3.w)
     lea     c_edcy, a4
     move.b  d2, (a4,d3.w)
+    move.b  #1, e_set                       ; E on this row -> note-on keeps the re-slope (else it clears)
     bra     .cmddone
 .cmd_l:                                   ; L xx = slide/portamento glide rate; note-on arms the offset (PSG: slide_arm in period units; FM: fm_slide_arm in fnum units, within-octave)
     move.b  (3,a1,d1.w), d2               ; xx = glide rate
