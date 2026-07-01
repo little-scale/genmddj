@@ -177,7 +177,8 @@ bank_slot  equ $00FFD42A           ; INSTR SRAM bank slot (LOAD/SAVE)
 rom_slot   equ $00FFD42B           ; INSTR ROM factory slot (LOAD) -- independent of bank_slot
 last_tvol  equ $00FFD42C           ; TABLE V-column memory: last VOL value entered (new V cell inherits it)
 btap_src   equ $00FFD42D           ; ref-cell value at the FIRST B-tap (before it edits) -> double-tap mint/clone source
-eff_pal    equ $00FFD42E           ; resolved region: 0 = NTSC (60Hz), 1 = PAL (50Hz) -- from opt_vid (AUTO = VDP status bit)
+opt_clock  equ $00FFD42F           ; OPTIONS: CLOCK region (sound-chip crystal -> pitch) 0=NTSC 1=PAL 2=AUTO
+eff_pal    equ $00FFD42E           ; resolved VIDEO region: 0 = NTSC (60Hz), 1 = PAL (50Hz) -- from opt_vid (AUTO = VDP status bit)
 tempo_k    equ $00FFD430           ; BPM<->ticks constant (word): 1250 @60Hz / 1042 @50Hz (frames-per-row = tempo_k/BPM)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
@@ -585,7 +586,8 @@ Start:
     dbra    d0, .blxp
     move.b  #$FF, live_fb
     move.b  #0, repatch
-    move.b  #2, opt_vid                   ; OPTIONS defaults: region AUTO
+    move.b  #2, opt_vid                   ; OPTIONS defaults: VIDEO region AUTO
+    move.b  #2, opt_clock                 ;   CLOCK region AUTO
     move.b  #0, opt_sync                  ;   sync OFF
     move.b  #0, sync_shadow                ;   MIDI-takeover change detector matches (no spurious entry at boot)
     move.b  #0, opt_pal                   ;   UI palette 0
@@ -1981,7 +1983,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1
     rts
 .rmopts:
-    moveq   #4, d1                          ; OPTIONS: VID SYNC PALETTE CLON AUDIT
+    moveq   #5, d1                          ; OPTIONS: VIDEO CLOCK SYNC PALETTE CLON AUDIT
     rts
 .rmfiles:
     tst.b   sram_layout
@@ -11079,7 +11081,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #15, d4
     lea     git_hash_str, a1
     bsr     print_at
-    moveq   #5, d3
+    moveq   #5, d3                          ; VIDEO (cur_row 0) at row 5
     moveq   #1, d4
     lea     str_o_vid, a1
     bsr     print_at
@@ -11100,12 +11102,33 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #5, d3
     moveq   #10, d4                          ; value column at 10 (aligns with AUDITION)
     bsr     print_hl
-    moveq   #7, d3                          ; SYNC at row 7 (blank row after VID)
+    moveq   #6, d3                          ; CLOCK (cur_row 1) at row 6
+    moveq   #1, d4
+    lea     str_o_clock, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #1, cur_row
+    bne.s   .ock
+    moveq   #$60, d2
+.ock:
+    moveq   #0, d1
+    move.b  opt_clock, d1
+    cmpi.w  #2, d1
+    bls.s   .okc
+    moveq   #2, d1
+.okc:
+    lsl.w   #2, d1
+    lea     vid_lbl, a1                      ; CLOCK shares the AUTO/NTSC/PAL value labels
+    move.l  (a1,d1.w), a1
+    moveq   #6, d3
+    moveq   #10, d4
+    bsr     print_hl
+    moveq   #8, d3                          ; SYNC (cur_row 2) at row 8 (blank row after the region pair)
     moveq   #1, d4
     lea     str_o_sync, a1
     bsr     print_at
     moveq   #0, d2
-    cmpi.b  #1, cur_row
+    cmpi.b  #2, cur_row
     bne.s   .os
     moveq   #$60, d2
 .os:
@@ -11118,27 +11141,27 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lsl.w   #2, d1
     lea     sync_lbl, a1
     move.l  (a1,d1.w), a1
-    moveq   #7, d3                          ; SYNC value at row 7
-    moveq   #10, d4                          ; value column at 10 (aligns with AUDITION)
+    moveq   #8, d3                          ; SYNC value at row 8
+    moveq   #10, d4
     bsr     print_hl
-    moveq   #9, d3                          ; COLOUR at row 9 (blank row after SYNC)
+    moveq   #10, d3                         ; COLOUR (cur_row 3) at row 10 (blank row after SYNC)
     moveq   #1, d4
     lea     str_o_pal, a1
     bsr     print_at
-    move.l  #$44940003, (a0)                ; COLOUR digit at row 9 col 10
+    move.l  #$45140003, (a0)                ; COLOUR digit at row 10 col 10
     move.b  opt_pal, d3
     moveq   #0, d4
-    cmpi.b  #2, cur_row
+    cmpi.b  #3, cur_row
     bne.s   .op
     moveq   #$60, d4
 .op:
     bsr     draw_hex1
-    moveq   #10, d3                         ; CLON (cur_row 3) at row 10
+    moveq   #11, d3                         ; CLON (cur_row 4) at row 11
     moveq   #1, d4
     lea     str_o_clon, a1
     bsr     print_at
     moveq   #0, d2
-    cmpi.b  #3, cur_row
+    cmpi.b  #4, cur_row
     bne.s   .ocl
     moveq   #$60, d2
 .ocl:
@@ -11148,16 +11171,16 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lsl.w   #2, d1
     lea     clon_lbl, a1
     move.l  (a1,d1.w), a1
-    moveq   #10, d3                         ; CLONE value at row 10
-    moveq   #10, d4                          ; value column at 10 (aligns with AUDITION)
+    moveq   #11, d3                         ; CLONE value at row 11
+    moveq   #10, d4
     bsr     print_hl
-    moveq   #11, d3                         ; AUDIT (cur_row 4) at row 11
+    moveq   #12, d3                         ; AUDIT (cur_row 5) at row 12
     moveq   #1, d4
     lea     str_o_audit, a1
     bsr     print_at
-    move.l  #$45940003, (a0)                ; AUDITION toggle box at row 11 col 10 (like the LFO ON toggle)
+    move.l  #$46140003, (a0)                ; AUDITION toggle box at row 12 col 10 (like the LFO ON toggle)
     moveq   #0, d2
-    cmpi.b  #4, cur_row
+    cmpi.b  #5, cur_row
     bne.s   .oau
     moveq   #$60, d2                        ; highlight when this row is selected
 .oau:
@@ -11170,32 +11193,39 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     move.w  d1, VDP_DATA
     rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDITION (SRAM/FREE moved to FILES)
 
-; opt_vid (0 NTSC / 1 PAL / 2 AUTO) -> eff_pal, and apply the region live: VDP display mode
-; (V28 224-line / V30 240-line) + tempo constant (frames-per-row = tempo_k/BPM). Call at boot
-; (after the config load) and whenever the VID field is edited. Clobbers d0/d1/a1/a2.
+; Apply the two region settings live. VIDEO (opt_vid) -> eff_pal: tempo constant (tempo_k) + VDP
+; display mode (V28 224-line / V30 240-line). CLOCK (opt_clock) -> pitch tables (note_base/fnum_base).
+; AUTO on either reads the VDP status PAL bit. Call at boot (after load_config) and on every OPTIONS
+; edit, so VIDEO/CLOCK take effect immediately. Clobbers d0/d1/a1/a2.
 resolve_vid:
-    move.b  opt_vid, d0
+    move.b  opt_vid, d0                    ; --- VIDEO: tempo + VDP display mode ---
     cmpi.b  #2, d0                          ; AUTO -> detect the console from the VDP status PAL bit
-    bne.s   .rv_have
+    bne.s   .rv_vhave
     move.w  VDP_CTRL, d0                    ; VDP status word: bit 0 = 1 on a PAL console
-.rv_have:
+.rv_vhave:
     andi.w  #1, d0
     move.b  d0, eff_pal
     move.w  #1250, tempo_k                  ; 60Hz: frames-per-row = 1250/BPM
     move.w  #$8174, d1                      ; VDP reg 1 = $74 (V28 / 224-line)
     tst.b   d0
-    beq.s   .rv_apply
+    beq.s   .rv_vapply
     move.w  #1042, tempo_k                  ; 50Hz: 1042/BPM keeps the same real-time tempo for a given BPM
     move.w  #$817C, d1                      ; V30 / 240-line (PAL fills the taller frame)
-.rv_apply:
+.rv_vapply:
     move.w  d1, VDP_CTRL                    ; write the mode register (takes effect on the next frame)
-    lea     notetable, a1                   ; pitch tables: NTSC or PAL (d0 = eff_pal)
-    lea     fm_fnum, a2
+    move.b  opt_clock, d0                  ; --- CLOCK: pitch tables (independent of VIDEO) ---
+    cmpi.b  #2, d0                          ; AUTO -> VDP status PAL bit
+    bne.s   .rv_chave
+    move.w  VDP_CTRL, d0
+.rv_chave:
+    andi.w  #1, d0
+    lea     notetable, a1                   ; NTSC PSG periods + wave increments
+    lea     fm_fnum, a2                     ; NTSC FM F-numbers
     tst.b   d0
-    beq.s   .rv_pitch
-    lea     notetable+PAL_NOTES, a1         ; PAL PSG periods + wave increments
-    lea     fm_fnum_pal, a2                 ; PAL FM F-numbers
-.rv_pitch:
+    beq.s   .rv_cpitch
+    lea     notetable+PAL_NOTES, a1         ; PAL
+    lea     fm_fnum_pal, a2
+.rv_cpitch:
     move.l  a1, note_base
     move.l  a2, fnum_base
     rts
@@ -11501,29 +11531,36 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
 
 edit_opts:                                ; B+dpad on OPTIONS: adjust the current field
     move.b  cur_row, d0
-    beq.s   .eo_vid
+    beq.s   .eo_vid                          ; 0 = VIDEO
     cmpi.b  #1, d0
-    beq.s   .eo_sync
+    beq.s   .eo_clock                        ; 1 = CLOCK
     cmpi.b  #2, d0
-    bne.s   .eo_n2
-    lea     opt_pal, a1                     ; PAL 0..7 (cur_row 2)
+    beq.s   .eo_sync                         ; 2 = SYNC
+    cmpi.b  #3, d0
+    bne.s   .eo_n3
+    lea     opt_pal, a1                     ; 3 = COLOUR (0..7)
     moveq   #7, d3
     moveq   #1, d4
     bra.s   .eo_apply
-.eo_n2:
-    cmpi.b  #3, d0
+.eo_n3:
+    cmpi.b  #4, d0
     bne.s   .eo_audit
-    lea     opt_clon, a1                    ; CLON SLIM/DEEP (cur_row 3)
+    lea     opt_clon, a1                    ; 4 = CLON SLIM/DEEP
     moveq   #1, d3
     moveq   #1, d4
     bra.s   .eo_apply
 .eo_audit:
-    lea     opt_audit, a1                   ; AUDIT ON/OFF (cur_row 4)
+    lea     opt_audit, a1                   ; 5 = AUDIT ON/OFF
     moveq   #1, d3
     moveq   #1, d4
     bra.s   .eo_apply
 .eo_vid:
     lea     opt_vid, a1
+    moveq   #2, d3
+    moveq   #1, d4
+    bra.s   .eo_apply
+.eo_clock:
+    lea     opt_clock, a1
     moveq   #2, d3
     moveq   #1, d4
     bra.s   .eo_apply
@@ -11533,7 +11570,7 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     moveq   #1, d4
 .eo_apply:
     bsr     adj_field
-    cmpi.b  #1, cur_row                   ; SYNC field: skip the unimplemented MIDI mode (4)
+    cmpi.b  #2, cur_row                   ; SYNC field (row 2): skip the unimplemented MIDI mode (4)
     bne.s   .eo_done
     cmpi.b  #4, opt_sync
     bne.s   .eo_done
@@ -11597,7 +11634,11 @@ save_config:
     adda.l  d5, a1
     move.b  opt_audit, (a1)
     adda.l  d5, a1
-    move.b  #$5A, (a1)                       ; extended-config marker (offset-clon+ fields present)
+    move.b  #$5A, (a1)                       ; extended-config marker (audit present)
+    adda.l  d5, a1
+    move.b  opt_clock, (a1)                  ; CLOCK region (v0.13+)
+    adda.l  d5, a1
+    move.b  #$C3, (a1)                       ; CLOCK-present marker
     move.b  #0, $A130F1                      ; unmap (protect)
 .sc_x:
     movem.l (sp)+, d0-d5/a1
@@ -11606,9 +11647,9 @@ load_config:                               ; called at boot (after sram_init) + 
     movem.l d0-d5/a1, -(sp)
     moveq   #CONFIG_OFS, d0
     bsr     sram_at
-    beq.s   .lcdone                          ; no SRAM -> keep boot defaults
+    beq     .lcdone                          ; no SRAM -> keep boot defaults
     cmpi.b  #$A5, (a1)                       ; valid config?
-    bne.s   .lcunmap
+    bne     .lcunmap
     adda.l  d5, a1
     move.b  (a1), opt_pal
     adda.l  d5, a1
@@ -11624,13 +11665,23 @@ load_config:                               ; called at boot (after sram_init) + 
     adda.l  d5, a1                           ; -> opt_audit
     move.b  (a1), opt_audit
     adda.l  d5, a1                           ; -> extended-config marker
+    move.b  #2, opt_clock                    ; default CLOCK = AUTO (overridden if the v0.13 field is present)
     cmpi.b  #$5A, (a1)                       ; marker present? (pre-audit configs lack it)
-    bne.s   .lcauon                          ;   absent -> default AUDIT ON (user's chosen default)
+    bne.s   .lcauon                          ;   absent -> default AUDIT ON, CLOCK AUTO
     cmpi.b  #1, opt_audit                   ; clamp a stale/garbage audition byte to ON
-    bls.s   .lcauok
+    bhi.s   .lcauon
+    adda.l  d5, a1                           ; -> CLOCK field
+    move.b  (a1), d0
+    adda.l  d5, a1                           ; -> CLOCK-present marker
+    cmpi.b  #$C3, (a1)                       ; CLOCK field present (v0.13+ config)?
+    bne.s   .lcsync                          ;   absent (v0.12 config) -> keep AUTO
+    cmpi.b  #2, d0                            ; valid 0-2?
+    bhi.s   .lcsync
+    move.b  d0, opt_clock
+    bra.s   .lcsync
 .lcauon:
     move.b  #1, opt_audit
-.lcauok:
+.lcsync:
     cmpi.b  #4, opt_sync                    ; MIDI is unimplemented + hidden -> heal a stale config to IN
     bne.s   .lcunmap
     move.b  #3, opt_sync
@@ -13528,7 +13579,8 @@ krn_4:      dc.b "4X ",0
     even
 ; OPTIONS / PROJECT page labels + enum tables (TSP/MODE reuse the FM/PSG strings)
 str_o_ver:  dc.b "VER",0
-str_o_vid:  dc.b "VID",0
+str_o_vid:  dc.b "VIDEO",0
+str_o_clock: dc.b "CLOCK",0
 str_o_sync: dc.b "SYNC",0
 str_o_pal:  dc.b "COLOUR",0
 str_o_clon: dc.b "CLONE",0
