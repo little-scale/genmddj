@@ -9055,9 +9055,9 @@ env_ch:                                   ; a6 = channel
     move.b  (t_vol,a1,d3.w), c_tvol(a6)   ; non-PERC FM: VOL column ($FF = no change) -> carrier-TL override
     bra     .e_done
 .ec_psg:
+    lea     instrum, a4                    ; a4 = instrum[c_instr] -- the macro table advances even when the
+                                           ;   volume envelope is idle, so a table keeps running through a DCY=0 decay
     move.b  c_estate(a6), d0
-    beq     .e_done                        ; state 0 = off
-    lea     instrum, a4                    ; a4 = instrum[c_instr]
     moveq   #0, d1
     move.b  c_instr(a6), d1
     mulu.w  #INSTR_SIZE, d1
@@ -9131,6 +9131,7 @@ env_ch:                                   ; a6 = channel
     move.w  d3, c_period(a6)
 .noswp:
     move.b  c_estate(a6), d0              ; reload: the table-arp/chord path above clobbers d0
+    beq     .e_done                        ; envelope idle -> the table already advanced; skip the envelope machine
     cmpi.b  #1, d0
     bne.s   .e_hold
     bsr     env_atk                        ; state 1 = attack (E may re-slope it per-channel)
