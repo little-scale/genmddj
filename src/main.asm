@@ -4060,6 +4060,14 @@ render_sfield:                            ; d5=track col, d6=row, d4=cursor off
     cmp.b   d2, d1                          ; c_songpos == actual row?
     bne.s   .nomark
     move.w  #$1F, d0                        ; triangle
+    tst.b   proj_mode                      ; LIVE + this track queued to stop at chain end -> show X instead
+    beq.s   .nomark
+    lea     live_when, a2
+    moveq   #0, d1
+    move.b  d5, d1
+    cmpi.b  #3, (a2,d1.w)
+    bne.s   .nomark
+    move.w  #'X', d0
 .nomark:
     move.w  d0, VDP_DATA
     lea     song, a2                       ; chain# at song[(page*16+row)*NCH + col]
