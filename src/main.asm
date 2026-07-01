@@ -11081,7 +11081,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     vid_lbl, a1
     move.l  (a1,d1.w), a1
     moveq   #5, d3
-    moveq   #9, d4
+    moveq   #10, d4                          ; value column at 10 (aligns with AUDITION)
     bsr     print_hl
     moveq   #6, d3
     moveq   #1, d4
@@ -11102,13 +11102,13 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     sync_lbl, a1
     move.l  (a1,d1.w), a1
     moveq   #6, d3
-    moveq   #9, d4
+    moveq   #10, d4                          ; value column at 10 (aligns with AUDITION)
     bsr     print_hl
     moveq   #7, d3
     moveq   #1, d4
     lea     str_o_pal, a1
     bsr     print_at
-    move.l  #$43920003, (a0)
+    move.l  #$43940003, (a0)                ; COLOUR digit at row 7 col 10 (was col 9)
     move.b  opt_pal, d3
     moveq   #0, d4
     cmpi.b  #2, cur_row
@@ -11132,26 +11132,25 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     clon_lbl, a1
     move.l  (a1,d1.w), a1
     moveq   #8, d3
-    moveq   #9, d4
+    moveq   #10, d4                          ; value column at 10 (aligns with AUDITION)
     bsr     print_hl
     moveq   #9, d3                          ; AUDIT (cur_row 4) at row 9
     moveq   #1, d4
     lea     str_o_audit, a1
     bsr     print_at
+    move.l  #$44940003, (a0)                ; AUDITION toggle box at row 9 col 10 (like the LFO ON toggle)
     moveq   #0, d2
     cmpi.b  #4, cur_row
     bne.s   .oau
-    moveq   #$60, d2
+    moveq   #$60, d2                        ; highlight when this row is selected
 .oau:
     moveq   #0, d1
     move.b  opt_audit, d1
     andi.w  #1, d1
-    lsl.w   #2, d1
-    lea     audit_lbl, a1
-    move.l  (a1,d1.w), a1
-    moveq   #9, d3
-    moveq   #10, d4                          ; AUDITION is 8 chars -> value at col 10 (one-col gap)
-    bsr     print_hl
+    add.w   d1, d1                          ; 0/1 -> $7B off-box / $7D on-box
+    addi.w  #$7B, d1
+    add.w   d2, d1                          ; + highlight (inverse tile)
+    move.w  d1, VDP_DATA
     rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDITION (SRAM/FREE moved to FILES)
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
