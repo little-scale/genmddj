@@ -630,7 +630,7 @@ Start:
 
     move.b  #1, in_splash
     move.b  #0, splash_row
-    move.w  #150, splash_ctr
+    move.w  #100, splash_ctr             ; ~2.0s PAL (50Hz) / ~1.7s NTSC (60Hz); Start skips
     move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
