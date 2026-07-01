@@ -8214,6 +8214,9 @@ advance_ch:                               ; a6 = channel
     move.b  cmd_tsp, d3                    ; + J command repeat-gated transpose (signed; 0 if inactive)
     ext.w   d3
     add.w   d3, d2
+    move.b  proj_tsp, d3                   ; + PROJECT master transpose (signed; global key shift)
+    ext.w   d3
+    add.w   d3, d2
     tst.w   d2                             ; test the NOTE (the gate above may have left
     bmi     nt_done                           ; cmpi flags -> would wrongly drop FM/KIT/WAVE)
     cmpi.w  #96, d2
