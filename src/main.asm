@@ -6484,6 +6484,31 @@ clear_live_patch:
     move.b  #1, repatch
     rts
 
+silence_all:                              ; STOP: cut every ringing voice -- FM key-off, PSG vol-off, wave DAC feed
+    move.b  #0, wave_on                   ; stop any wave-note DAC feed
+    lea     scb_data, a0                   ; PSG: all 4 voices -> max attenuation (silent)
+    move.b  #$9F, (a0)+
+    move.b  #$BF, (a0)+
+    move.b  #$DF, (a0)+
+    move.b  #$FF, (a0)+
+    move.b  #4, scb_count
+    lea     ym_data, a0                    ; FM: key-off F1-F6 ($28: op mask 0, chan 0,1,2,4,5,6)
+    moveq   #0, d1
+.sa_k:
+    move.b  d1, d2
+    cmpi.b  #3, d2
+    blo.s   .sa_lo
+    addq.b  #1, d2                          ; skip $28 value 3 (port-0 chan 3 is invalid)
+.sa_lo:
+    move.b  #0, (a0)+                       ; part 0
+    move.b  #$28, (a0)+                     ; key on/off register
+    move.b  d2, (a0)+                       ; channel, key bits 0 = off
+    addq.b  #1, d1
+    cmpi.b  #6, d1
+    blo.s   .sa_k
+    move.b  #6, ym_count
+    bra     push_scb                        ; push (own BUSREQ); a restart re-emits via engine_play_reset
+
 toggle_play:
     move.b  playing, d0
     eori.b  #1, d0
@@ -6491,7 +6516,7 @@ toggle_play:
     bsr     clear_live_patch              ; play/stop = clean slate for A/V overrides
     move.b  playing, d0                   ; (ym_setup clobbered d0)
     tst.b   d0
-    beq.s   .tp
+    beq.s   .tp_stop
     tst.b   proj_mode                     ; LIVE: Start launches the cursor row, not the full song
     bne.s   .tp_live
     move.b  #0, play_mode                 ; SONG: full song from the top
@@ -6501,6 +6526,9 @@ toggle_play:
 .tp_live:
     bsr     engine_play_reset             ; all-silent, then launch the cursor row
     bsr     live_launch_row
+    bra.s   .tp
+.tp_stop:
+    bsr     silence_all                   ; STOP: silence any ringing FM / PSG / wave voice
 .tp:
     rts
 
@@ -6531,7 +6559,8 @@ play_context:                             ; C+B: toggle audition of the current 
     tst.b   playing                        ; already playing -> stop
     beq.s   .pc_start
     move.b  #0, playing
-    bra     clear_live_patch              ; drop A/V overrides on stop
+    bsr     clear_live_patch              ; drop A/V overrides on stop
+    bra     silence_all                   ; ...and cut any ringing FM / PSG / wave voice
 .pc_start:
     move.b  cur_screen, d0
     cmpi.b  #SCR_SONG, d0
