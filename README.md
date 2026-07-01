@@ -18,7 +18,7 @@ project** to **SMSGGDJ**, little-scale's Sega Master System / Game Gear music tr
 > **Work in progress** — under active development, so expect rough edges and shifting
 > internals. It does run on real hardware, though: tested on NTSC and PAL **Sega Genesis, Mega
 > Drive, and Nomad**, as well as in emulation. All manual emulator testing was done in
-> **[Genesis Plus GX](https://github.com/ekeeke/Genesis-Plus-GX)**.
+> **[Genesis Plus](https://www.bannister.org/software/gplus.htm)** (Richard Bannister's macOS port).
 
 Ten voices: 6 FM (`F1`–`F6`; `F6` doubles as the PCM / sample host) + 3 PSG square
 (`T1`–`T3`) + 1 PSG noise (`NO`).
