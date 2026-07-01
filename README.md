@@ -10,9 +10,9 @@ project** to **SMSGGDJ**, little-scale's Sega Master System / Game Gear music tr
 
 
 > [!TIP]
-> **Just want to play it?** **[v0.1 is out](../../releases/latest)** — grab the
-> ready-to-flash `genmddj-v0.1.bin` from the [Releases](../../releases) page, no toolchain
-> needed: drop the `.bin` on your flashcart or open it in an emulator.
+> **Just want to play it?** Grab the **[latest release](../../releases/latest)** — a
+> ready-to-flash `.bin` from the [Releases](../../releases) page, no toolchain needed: drop it
+> on your flashcart or open it in an emulator. See [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 > [!NOTE]
 > **Work in progress** — under active development, so expect rough edges and shifting
