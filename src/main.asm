@@ -120,6 +120,7 @@ lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 f
 lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
 lx_dirty   equ $00FFE1AE           ; X command: per-channel flag -> recompute carrier $40 (TL)
 lx_pvol    equ $00FFD415           ; X command: per-channel PSG output level 0-15 (caps square/noise env; 15 = full)
+x_set      equ $00FFD41F           ; X command: 1 if X set the PSG level this row (note-on keeps it, else -> full)
 lo_b4      equ $00FFE1B8           ; O command: per-channel live $B4 value ((pan<<6)|(AMS<<4)|FMS)
 lo_dirty   equ $00FFE1C2           ; O command: per-channel flag -> emit lo_b4 for this channel
 lu_off     equ $00FFE1CC           ; U command: per-channel modulator TL offset 0-127
@@ -8114,6 +8115,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, f_set                      ; F command: clear this row's finetune-set flag
     move.b  #0, p_set                      ; P command: clear this row's bend-set flag
     move.b  #0, e_set                      ; E command: clear this row's envelope-reslope flag
+    move.b  #0, x_set                      ; X command: clear this row's PSG-level flag
     move.b  #0, d_set                      ; D command: clear this row's delay flag
     move.b  #0, a_set                      ; A command: clear this row's table-switch flag
     move.b  #0, l_set                      ; L command: clear this row's slide flag
@@ -8306,6 +8308,11 @@ advance_ch:                               ; a6 = channel
     lea     c_edcy, a0
     move.b  #$FF, (a0,d0.w)
 .cre:
+    tst.b   x_set                          ; no X this row -> PSG output level back to full
+    bne.s   .crx
+    lea     lx_pvol, a0
+    move.b  #15, (a0,d0.w)
+.crx:
     movem.l (sp)+, d0/a0
     bset    #0, c_lfosync(a6)              ; note-on -> FM LFO note-resync flag
     move.b  (1,a1,d0.w), c_instr(a6)      ; phrase IN column -> channel's instrument
@@ -8702,6 +8709,7 @@ exec_cmd:
 .cx_psg:
     lea     lx_pvol, a4                    ; PSG: cap the envelope output at this level (0-15)
     move.b  d2, (a4,d3.w)
+    move.b  #1, x_set                       ; X on this row -> note-on keeps the level (else back to full)
     bra     .cmddone
 .cmd_o:
     cmpi.b  #1, c_type(a6)                 ; FM channels (DAC pan TBD)
