@@ -2544,6 +2544,8 @@ edit_fm:
     mulu.w  #FM_NPARM, d0
     moveq   #0, d1
     move.b  cur_col, d1
+    lea     fm_disp, a2                    ; display col -> storage param (AM last)
+    move.b  (a2,d1.w), d1
     add.w   d1, d0
     addi.w  #i_op, d0
     lea     0(a3,d0.w), a1
@@ -5875,11 +5877,14 @@ render_fm:                                ; a0 = VDP_CTRL
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    move.w  d6, d0                         ; value = a3[i_op + op*10 + param]
+    lea     fm_disp, a1                    ; display col d5 -> storage param d7 (AM shown last)
+    moveq   #0, d7
+    move.b  (a1,d5.w), d7
+    move.w  d6, d0                         ; value = a3[i_op + op*10 + storage param]
     mulu.w  #FM_NPARM, d0
-    add.w   d5, d0
+    add.w   d7, d0
     move.b  (i_op,a3,d0.w), d3
-    moveq   #0, d4                          ; highlight if cur_row==NVOICE+2+op && cur_col==param
+    moveq   #0, d4                          ; highlight if cur_row==NVOICE+2+op && cur_col==display col
     move.b  cur_row, d1
     subi.b  #NVOICE+2, d1
     cmp.b   d6, d1
@@ -5889,8 +5894,18 @@ render_fm:                                ; a0 = VDP_CTRL
     bne.s   .nhl
     moveq   #$60, d4
 .nhl:
+    cmpi.b  #5, d7                          ; AM -> a toggle box glyph, like the LFO / global-LFO screens
+    bne.s   .nham
+    moveq   #0, d0                          ; am 0/1 -> $7B off-box / $7D on-box
+    move.b  d3, d0
+    add.w   d0, d0
+    addi.w  #$7B, d0
+    add.w   d4, d0                          ; + highlight (inverse tile)
+    move.w  d0, VDP_DATA
+    bra.s   .pnext
+.nham:
     lea     fm_pmax, a1                    ; max <= 15 -> show one nibble, else two
-    move.b  (a1,d5.w), d1
+    move.b  (a1,d7.w), d1
     cmpi.b  #16, d1
     bhs.s   .wide
     bsr     draw_hex1
@@ -13315,7 +13330,7 @@ str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
-str_hdr_fm: dc.b "OP  ML DT TL RS AR AM D1 D2 RR SL",0
+str_hdr_fm: dc.b "OP  ML DT TL RS AR D1 D2 RR SL AM",0
 str_scr_ph: dc.b "PHRASE",0
 str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
@@ -13350,7 +13365,8 @@ str_hdr_tb: dc.b "   V  TSP CMD",0
 table_scol: dc.b 4, 7, 11, 12             ; V(1) TSP(2) CMD-letter PRM(2) -> "A00" adjacent
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
 fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
-fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL
+fm_disp:    dc.b 0, 1, 2, 3, 4, 6, 7, 8, 9, 5           ; display col -> storage param (AM shown last)
+fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL (storage order)
 fm_pstep:   dc.b 4, 4, 16, 1, 16, 1, 16, 4, 4, 4         ; B+U/D coarse step (<= range)
     even
 str_inst:   dc.b "INST",0
