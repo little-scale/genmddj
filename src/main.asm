@@ -9144,7 +9144,14 @@ env_ch:                                   ; a6 = channel
     bsr     env_dcy                        ; state 3 = decay (E may re-slope it per-channel)
     tst.b   d1
     bne.s   .d_ramp
-    move.b  #0, c_vol(a6)                 ; DCY 0 -> instant cut
+    move.b  c_vol(a6), d1                 ; DCY 0 -> FAST decay: 4 volume levels per FRAME (~66ms 15->0),
+    cmpi.b  #4, d1                          ;   a snappy percussion tail rather than a hard 1-frame cut
+    bls.s   .d_fastcut
+    subq.b  #4, d1
+    move.b  d1, c_vol(a6)
+    rts
+.d_fastcut:
+    move.b  #0, c_vol(a6)
     move.b  #0, c_estate(a6)
     rts
 .d_ramp:
