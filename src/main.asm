@@ -108,6 +108,7 @@ cur_table  equ $00FFE3A9           ; macro table shown/edited on the TABLE scree
 last_instr equ $00FFE3AA           ; PHRASE I-column memory: last instrument placed (new notes inherit it)
 last_chain equ $00FFE3AB           ; SONG insert memory: last chain# placed (single B-tap repeats it)
 last_phrase equ $00FFE3AC          ; CHAIN insert memory: last phrase# placed (single B-tap repeats it)
+last_cprm  equ $00FFE3AD           ; command PRM memory: last command parameter entered (paired with last_cmd)
 btap_frame equ $00FFE3AE           ; g_ticks at the last B-tap (word) -- double-tap window
 btap_addr  equ $00FFE3B0           ; field address of the last B-tap (long) -- double-tap = same cell
 DBLTAP_FRAMES equ 16               ; max frames between B-taps to count as a double-tap
@@ -171,6 +172,7 @@ sram_size  equ $00FFD428           ; SRAM probe: detected size in KB (8/16/32/64
 sram_slots equ $00FFD429           ; how many save slots fit this cart (0/0/1/3 for 8/16/32/64 KB)
 bank_slot  equ $00FFD42A           ; INSTR SRAM bank slot (LOAD/SAVE)
 rom_slot   equ $00FFD42B           ; INSTR ROM factory slot (LOAD) -- independent of bank_slot
+last_tvol  equ $00FFD42C           ; TABLE V-column memory: last VOL value entered (new V cell inherits it)
 repatch    equ $00FFE3C3           ; 1 = re-push F1's patch on the next SCB push (Q/X cmds, edits)
 live_algo  equ $00FFE3C4           ; transient ALGO override from a Q command ($FF = none)
 live_vol   equ $00FFE3C5           ; transient VOL override from an X command ($FF = none)
@@ -524,6 +526,8 @@ Start:
     move.b  #0, dpad_prev
     move.b  #48, last_note
     move.b  #0, last_cmd
+    move.b  #0, last_cprm
+    move.b  #15, last_tvol
     move.b  #0, last_instr
     move.b  #0, last_chain
     move.b  #0, last_phrase
@@ -2780,10 +2784,20 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     sub.b   d4, d0
 .et4:
     move.b  d0, (a1)
+    cmpi.b  #t_prm, cur_col                  ; PRM column -> remember the parameter for defaults
+    bne.s   .et4x
+    move.b  d0, last_cprm
+.et4x:
     rts
 .et_vol:                                      ; VOL column: 4-bit volume, like the instrument VOL field
     move.b  (a1), d0
-    andi.w  #$0F, d0                          ; $FF (no change) -> 0-15
+    cmpi.b  #$FF, d0                          ; empty ($FF = no change) -> drop in the last V value (no nudge)
+    bne.s   .ev_have
+    move.b  last_tvol, d0
+    move.b  d0, (a1)
+    rts
+.ev_have:
+    andi.w  #$0F, d0                          ; 0-15
     btst    #2, d2                            ; Left -1
     beq.s   .ev1
     subq.b  #1, d0
@@ -2809,6 +2823,7 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     moveq   #15, d0
 .ev_hi:
     move.b  d0, (a1)
+    move.b  d0, last_tvol                     ; remember for the next empty V cell
     rts
 .et_tblsel:                                   ; TBL selector (cur_row 0): L/R/U/D cycle cur_table (wrap)
     move.b  cur_table, d0
@@ -2840,6 +2855,18 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     rts
 .et_cmd:
     move.b  (a1), d0
+    bne.s   .etc_have                        ; cell already has a command -> normal cycle
+    move.b  last_cmd, d1                      ; blank cell -> drop in the last command (letter + PRM)
+    beq.s   .etc_have                        ; ...unless nothing's been entered yet
+    move.b  d1, d0
+    bsr     tbl_cmd_excl                     ; last cmd not valid in a table? (Z=1) -> normal cycle
+    beq.s   .etc_norm
+    move.b  d1, (a1)                          ; place the command letter...
+    move.b  last_cprm, (1,a1)                 ; ...+ its PRM (the byte after CMD)
+    rts
+.etc_norm:
+    moveq   #0, d0                            ; keep the cell blank -> fall into the normal cycle
+.etc_have:
     btst    #3, d2                           ; Right -> next command (skip A/I/J, wrap 0-26)
     beq.s   .etcl
 .et_up:
@@ -2864,6 +2891,10 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     beq.s   .et_dn
 .etcw:
     move.b  d0, (a1)
+    tst.b   d0                               ; remember the last real command for defaults
+    beq.s   .etcw_x
+    move.b  d0, last_cmd
+.etcw_x:
     rts
 
 tbl_cmd_excl:                               ; Z=1 if d0 is table-excluded: A=1 G=7 I=9 J=10 T=20 W=23
@@ -2976,10 +3007,15 @@ edit_value:
     beq.s   .h4_chain
     cmpi.b  #SCR_CHAIN, cur_screen
     beq.s   .h4_phrase
-    tst.b   cur_screen                     ; PHRASE instr column (col 1) -> last_instr
+    tst.b   cur_screen                     ; PHRASE: col 1 -> last_instr, col 3 (PRM) -> last_cprm
     bne.s   .h4r
     cmpi.b  #1, cur_col
+    beq.s   .h4_linstr
+    cmpi.b  #3, cur_col
     bne.s   .h4r
+    move.b  d0, last_cprm
+    bra.s   .h4r
+.h4_linstr:
     move.b  d0, last_instr
 .h4r:
     rts
@@ -3157,7 +3193,8 @@ do_insert:
     bne.s   .ret
     tst.b   (a1)                            ; only drop into an empty command cell
     bne.s   .ret
-    move.b  last_cmd, (a1)                  ; B-tap repeats the last command entered
+    move.b  last_cmd, (a1)                  ; B-tap repeats the last command entered...
+    move.b  last_cprm, (1,a1)               ; ...with its parameter (col 3 = the byte after the command)
 .ret:
     rts
 .ins_iaud:
