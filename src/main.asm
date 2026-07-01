@@ -10961,7 +10961,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lea     ver_str, a1
     bsr     print_at
     moveq   #3, d3
-    moveq   #14, d4
+    moveq   #15, d4
     lea     git_hash_str, a1
     bsr     print_at
     moveq   #5, d3
@@ -13325,7 +13325,7 @@ Exception:
 ; data
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
-ver_str:    dc.b "V0.1",0                    ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, ...)
+ver_str:    dc.b "V0.11",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, ...)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
