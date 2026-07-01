@@ -119,6 +119,7 @@ lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $
 lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
 lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
 lx_dirty   equ $00FFE1AE           ; X command: per-channel flag -> recompute carrier $40 (TL)
+lx_pvol    equ $00FFD415           ; X command: per-channel PSG output level 0-15 (caps square/noise env; 15 = full)
 lo_b4      equ $00FFE1B8           ; O command: per-channel live $B4 value ((pan<<6)|(AMS<<4)|FMS)
 lo_dirty   equ $00FFE1C2           ; O command: per-channel flag -> emit lo_b4 for this channel
 lu_off     equ $00FFE1CC           ; U command: per-channel modulator TL offset 0-127
@@ -566,6 +567,11 @@ Start:
     move.b  #0, g_lfo                     ; FM LFO off by default
     move.b  #$FF, live_algo               ; no transient Q/X command overrides yet
     move.b  #$FF, live_vol
+    lea     lx_pvol, a0                   ; X command: PSG output level = full (per channel)
+    moveq   #NCH-1, d0
+.blxp:
+    move.b  #15, (a0)+
+    dbra    d0, .blxp
     move.b  #$FF, live_fb
     move.b  #0, repatch
     move.b  #2, opt_vid                   ; OPTIONS defaults: region AUTO
@@ -6774,6 +6780,11 @@ engine_play_reset:
 .epr_e:
     move.b  #$FF, (a0)+
     dbra    d0, .epr_e
+    lea     lx_pvol, a0                   ; X command: reset per-channel PSG output level to full
+    moveq   #NCH-1, d0
+.epr_xp:
+    move.b  #15, (a0)+
+    dbra    d0, .epr_xp
     lea     c_slide, a0                   ; clear L portamento offsets + rates + the LFO TUNE offsets (contiguous)
     moveq   #(NCH*5)-1, d0
 .epr_l:
@@ -8677,16 +8688,20 @@ exec_cmd:
     move.b  #1, (a4,d3.w)
     bra     .cmddone
 .cmd_x:
-    cmpi.b  #1, c_type(a6)
-    bne     .cmddone
     move.b  (3,a1,d1.w), d2               ; PR = new volume 0-15
     andi.b  #$0F, d2
     moveq   #0, d3
     move.b  c_track(a6), d3
+    cmpi.b  #1, c_type(a6)                 ; FM -> live carrier TL; PSG (square/noise) -> live output level
+    bne.s   .cx_psg
     lea     lx_vol, a4
-    move.b  d2, (a4,d3.w)                 ; lx_vol[track] = live volume (this channel)
+    move.b  d2, (a4,d3.w)                 ; lx_vol[track] = live carrier volume (this channel)
     lea     lx_dirty, a4
     move.b  #1, (a4,d3.w)
+    bra     .cmddone
+.cx_psg:
+    lea     lx_pvol, a4                    ; PSG: cap the envelope output at this level (0-15)
+    move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_o:
     cmpi.b  #1, c_type(a6)                 ; FM channels (DAC pan TBD)
@@ -9180,6 +9195,16 @@ env_ch:                                   ; a6 = channel
 .e_done:
     rts
 
+psg_xcap:                                 ; d0 = PSG env level (0-15) -> capped at the X-command level. clobbers d1/a1
+    moveq   #0, d1
+    move.b  c_track(a6), d1
+    lea     lx_pvol, a1
+    cmp.b   (a1,d1.w), d0
+    bls.s   .xc_x                          ; level <= X -> keep
+    move.b  (a1,d1.w), d0                  ; level > X -> cap at the X level
+.xc_x:
+    rts
+
 compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     move.b  c_type(a6), d0
     beq.s   .square
@@ -9187,12 +9212,13 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     beq     compose_noise
     bra     compose_fm
 .square:
-    moveq   #15, d1
     move.b  c_tvol(a6), d0                ; live table VOL ($FF = none) overrides the envelope
     cmpi.b  #$FF, d0
     bne.s   .sq_tv
     move.b  c_vol(a6), d0
 .sq_tv:
+    bsr     psg_xcap                       ; X command: cap the PSG level (clobbers d1/a1)
+    moveq   #15, d1
     sub.b   d0, d1                        ; attenuation = 15 - volume
     bsr     psg_tremolo                   ; d1 += tremolo LFO
     move.w  c_period(a6), d2
@@ -9276,12 +9302,13 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
 
 ; PSG noise compose: control byte ($E0|mode from c_period) + vol ($F0|atten)
 compose_noise:                            ; a6=ch; a3/d6=PSG buf
-    moveq   #15, d1
     move.b  c_tvol(a6), d0                ; live table VOL ($FF = none) overrides the envelope
     cmpi.b  #$FF, d0
     bne.s   .no_tv
     move.b  c_vol(a6), d0
 .no_tv:
+    bsr     psg_xcap                       ; X command: cap the PSG level (clobbers d1/a1)
+    moveq   #15, d1
     sub.b   d0, d1
     move.w  c_period(a6), d2
     cmp.w   c_shadowp(a6), d2
