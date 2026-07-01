@@ -133,7 +133,10 @@ c_bend     equ $00FFE400           ; P command: per-channel signed pitch-bend ra
 c_rtper    equ $00FFE40A           ; R command: per-channel retrigger period (ticks, 0=off)
 c_rtctr    equ $00FFE414           ; R command: per-channel retrigger countdown
 g_lfo_dirty equ $00FFE41E          ; 1 = re-emit $22 (global LFO) on the next SCB push (boot + edits)
-; $00FFE41F-$00FFE427 free (was c_ypatch, removed when Y became AMS/FMS)
+note_base  equ $00FFE420          ; region pitch: -> PSG period/wave-inc table (notetable NTSC, notetable+PAL_NOTES PAL)
+fnum_base  equ $00FFE424          ; region pitch: -> FM F-number table (fm_fnum NTSC / fm_fnum_pal PAL)
+PAL_NOTES  equ 4480               ; byte offset from notetable to the PAL periods block (see maketables.py)
+; $00FFE41F, $00FFE428+ per below (was c_ypatch, removed when Y became AMS/FMS)
 g_wait     equ $00FFE428           ; W command: this-row frame-count override (0 = use 1250/proj_tmpo)
 cmd_tsp    equ $00FFE429           ; J command: this-row repeat-gated transpose (signed; 0 each row)
 hop_ctr    equ $00FFE42A           ; H command: hops taken this advance (runaway guard; 0 each advance)
@@ -8554,7 +8557,7 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     moveq   #0, d2                         ; note from the channel (d2 isn't set when hold_tick fires a delayed note)
     move.b  c_note(a6), d2
     add.w   d2, d2
-    lea     notetable, a2
+    movea.l note_base, a2                ; region PSG period table
     move.w  (a2,d2.w), d2                 ; d2 = new period
     bsr     slide_arm                      ; L: arm portamento from the old c_period to d2 (preserves d2)
     move.w  d2, c_period(a6)
@@ -9168,7 +9171,7 @@ env_ch:                                   ; a6 = channel
     cmpi.w  #96, d3
     bhs.s   .notbl
     add.w   d3, d3
-    lea     notetable, a1
+    movea.l note_base, a1                ; region PSG period table
     move.w  (a1,d3.w), c_period(a6)
 .notbl:
     move.b  (ip_swp,a4), d3               ; SWP: per-tick pitch slide (signed period delta)
@@ -9324,7 +9327,7 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     cmpi.w  #96, d0
     bhs.s   .fp_clamp                       ; out of range -> no arp this tick
     add.w   d0, d0
-    lea     notetable, a1
+    movea.l note_base, a1                ; region PSG period table
     move.w  (a1,d0.w), d0                  ; period[note+offset]
     moveq   #0, d3
     move.b  c_note(a6), d3
@@ -9404,7 +9407,7 @@ compose_noise:                            ; a6=ch; a3/d6=PSG buf
     cmpi.w  #96, d0
     bhs.s   .nret                         ; no valid note yet -> leave T3 alone
     add.w   d0, d0
-    lea     notetable, a1
+    movea.l note_base, a1                ; region PSG period table
     move.w  (a1,d0.w), d2                ; T3 period = notetable[note]
     move.b  d2, d3
     andi.b  #$0F, d3
@@ -10160,7 +10163,7 @@ fm_freq:
     clr.w   d0
     swap    d0                             ; semitone
     add.w   d0, d0                         ; * 2
-    lea     fm_fnum, a1
+    movea.l fnum_base, a1                 ; region FM F-number table
     move.w  (a1,d0.w), d2                  ; fnum
     move.w  d2, d1
     lsr.w   #8, d1                         ; fnum >> 8
@@ -10659,7 +10662,8 @@ wave_play:
     cmpi.w  #96, d0
     bhs     .wpx
     add.w   d0, d0
-    lea     notetable+192, a2
+    movea.l note_base, a2                 ; region wave-increment table (periods block + 192)
+    adda.w  #192, a2
     movea.w (a2,d0.w), a4                  ; a4 = increment (max ~$2140, no sign issue)
     move.w  a4, d0                          ; PITCH: increment += increment*(pitch-8)/128
     moveq   #0, d1                          ; pitch 8 = in tune; +-7 ~= +-1 semitone (proportional)
@@ -11168,7 +11172,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
 
 ; opt_vid (0 NTSC / 1 PAL / 2 AUTO) -> eff_pal, and apply the region live: VDP display mode
 ; (V28 224-line / V30 240-line) + tempo constant (frames-per-row = tempo_k/BPM). Call at boot
-; (after the config load) and whenever the VID field is edited. Clobbers d0/d1.
+; (after the config load) and whenever the VID field is edited. Clobbers d0/d1/a1/a2.
 resolve_vid:
     move.b  opt_vid, d0
     cmpi.b  #2, d0                          ; AUTO -> detect the console from the VDP status PAL bit
@@ -11185,6 +11189,15 @@ resolve_vid:
     move.w  #$817C, d1                      ; V30 / 240-line (PAL fills the taller frame)
 .rv_apply:
     move.w  d1, VDP_CTRL                    ; write the mode register (takes effect on the next frame)
+    lea     notetable, a1                   ; pitch tables: NTSC or PAL (d0 = eff_pal)
+    lea     fm_fnum, a2
+    tst.b   d0
+    beq.s   .rv_pitch
+    lea     notetable+PAL_NOTES, a1         ; PAL PSG periods + wave increments
+    lea     fm_fnum_pal, a2                 ; PAL FM F-numbers
+.rv_pitch:
+    move.l  a1, note_base
+    move.l  a2, fnum_base
     rts
 
 render_echo:                              ; MODE / TAP1 TAP2 / RD1 RD2 / STER
@@ -13775,6 +13788,8 @@ psg_tables:
 ; YM2612 F-numbers for one octave (C..B); block = note/12 selects the octave
 fm_fnum:
     dc.w 644, 682, 723, 766, 811, 859, 910, 965, 1022, 1083, 1147, 1215
+fm_fnum_pal:                              ; NTSC fnums * (NTSC ym clock / PAL ym clock) = *1.009205 (PAL clock is lower)
+    dc.w 650, 688, 730, 773, 818, 867, 918, 974, 1031, 1093, 1158, 1226
     even
 
 vdp_regs:
