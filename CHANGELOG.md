@@ -2,7 +2,9 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## v0.13 — 2026-07-02
+## v0.14 — 2026-07-02
+
+_(v0.13 skipped.)_
 
 ### Added
 - **GROUP** (TONE instruments) — a TONE instrument played on **T1** can drive **T2** and **T3**
