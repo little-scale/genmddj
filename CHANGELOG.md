@@ -2,6 +2,31 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.13 — 2026-07-02
+
+### Added
+- **GROUP** (TONE instruments) — a TONE instrument played on **T1** can drive **T2** and **T3**
+  from it, for fat sounds from a single melody line. Modes: **UNISON1/2** (±1/±2 register detune),
+  **FIFTH**, **POWER** (fifth + octave), **OCTAVE1/2**, and **CHORD** (the `C` command sets the
+  T2/T3 semitone offsets — high nibble T2, low nibble T3, latched). **RD1/RD2** attenuate the T2/T3
+  voices below T1. T2/T3 follow T1's timing, envelope, sweep and vibrato. (MANUAL §5.)
+- **Region-aware playback** — OPTIONS split the old (inert) region setting into **VIDEO**
+  (NTSC/PAL/AUTO → refresh rate: tempo constant + VDP 224/240-line mode) and **CLOCK**
+  (NTSC/PAL/AUTO → sound-chip crystal: PAL vs NTSC pitch tables for PSG, wavetable and FM).
+  `AUTO` reads the console; the two axes are independent, so a **PAL-60 mod** (60 Hz video +
+  PAL crystal) plays in time *and* in tune. Takes effect immediately. Hardware-verified.
+
+### Changed
+- **OPTIONS** — aligned the value column and spaced the list (blank rows after VIDEO and SYNC);
+  **AUDITION** is a toggle box.
+- **Instrument patcher** shows the patch index in **hex**, matching the console.
+- Standardised the PSG square voices to **T1–T3** across the manual, docs and tools (matching the
+  on-screen labels). `als2genmddj` still accepts legacy `S1`–`S3` in MML input.
+
+### Docs
+- MANUAL: a GROUP section; README notes manual emulator testing was done in Richard Bannister's
+  macOS **Genesis Plus**.
+
 ## v0.12 — 2026-07-01
 
 ### Fixed

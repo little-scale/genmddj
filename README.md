@@ -116,6 +116,10 @@ progress. Working today:
 - The complete screen set: **SONG / CHAIN / PHRASE / INSTR / FM / TABLE / WAVE /
   GROOVE / ECHO / PROJECT / OPTIONS**.
 - Grooves, the command set, copy / paste / clone.
+- **GROUP** — a TONE instrument on T1 drives T2/T3 for detuned unisons, fifths, power
+  chords, octaves and chords from a single line.
+- **Region-aware** — separate **VIDEO** (50/60 Hz → tempo + display) and **CLOCK** (NTSC/PAL
+  crystal → pitch) options, so PAL, NTSC and modded (PAL-60) consoles all play in tune and in time.
 - **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;
   OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
   **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
