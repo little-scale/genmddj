@@ -214,6 +214,11 @@ wave_bake  equ $00FFD240           ; engine: 32-byte shaped wave (bake chain out
 prev_ch    equ $00FFD260           ; INSTR WAVE preview: scratch "channel" (c_vol forced full)
 wlfo_phase equ $00FFD268           ; 5 global wave LFO phases (vol/warp/fold/drive/crush, 1 wave)
 wbake_in   equ $00FFD270           ; 5 bake inputs the shaper reads (vol/warp/fold/drive/crush)
+clu_period equ $00FFD278           ; GROUP: T1's final PSG period this tick (word) -- snapshot for T2/T3
+clu_mode   equ $00FFD27A           ; GROUP: T1's active mode (0=OFF..7=CHORD) this tick; 0 if T1 isn't a TONE
+clu_vol    equ $00FFD27B           ; GROUP: T1's final level (0-15) this tick
+clu_rd1    equ $00FFD27C           ; GROUP: T2 level drop (from T1 instrument RD1)
+clu_rd2    equ $00FFD27D           ; GROUP: T3 level drop (from T1 instrument RD2)
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
@@ -9382,6 +9387,126 @@ psg_xcap:                                 ; d0 = PSG env level (0-15) -> capped 
 .xc_x:
     rts
 
+; GROUP cluster: called at the PSG square's .fp_done (d1 = atten, d2 = final period, a6 = channel).
+; T1 (track 6) snapshots its final period/level + this instrument's GROUP settings; T2 (7) / T3 (8)
+; overwrite d1/d2 with the derived voice when a group is active (CHORD handled in a later commit).
+; Preserves a3/a5/a6/d5/d6 (the SCB pointers); modifies only d1/d2.
+cluster_hook:
+    movem.l d0/d3/d4/a1, -(sp)
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    cmpi.b  #6, d0                          ; T1 = master -> snapshot
+    bne.s   .chk_slave
+    move.w  d2, clu_period
+    moveq   #15, d3
+    sub.b   d1, d3                          ; level = 15 - atten
+    move.b  d3, clu_vol
+    clr.b   clu_mode                        ; default OFF (also if T1 isn't a TONE)
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    cmpi.b  #3, (i_type,a1)                ; TONE?
+    bne.s   .chk_x
+    move.b  (i_cluster,a1), clu_mode
+    move.b  (i_crd1,a1), clu_rd1
+    move.b  (i_crd2,a1), clu_rd2
+.chk_x:
+    movem.l (sp)+, d0/d3/d4/a1
+    rts
+.chk_slave:
+    cmpi.b  #7, d0
+    blo.s   .chk_x                          ; F1-F6 (not reached via .square anyway)
+    cmpi.b  #8, d0
+    bhi.s   .chk_x                          ; NO or beyond -> no group
+    move.b  clu_mode, d3
+    beq.s   .chk_x                          ; OFF -> slave plays its own note
+    cmpi.b  #7, d3                          ; CHORD -> later commit; leave the slave alone for now
+    beq.s   .chk_x
+    subq.b  #7, d0                          ; d0: 0 = T2, 1 = T3
+    moveq   #0, d4                          ; level = clu_vol - RD (clamp >=0)
+    move.b  clu_vol, d4
+    tst.b   d0
+    bne.s   .chs_rd2
+    sub.b   clu_rd1, d4
+    bra.s   .chs_lvl
+.chs_rd2:
+    sub.b   clu_rd2, d4
+.chs_lvl:
+    bpl.s   .chs_mode
+    moveq   #0, d4
+.chs_mode:
+    move.w  clu_period, d2                  ; derive the slave period from T1's final period
+    cmpi.b  #1, d3
+    beq.s   .m_uni1
+    cmpi.b  #2, d3
+    beq.s   .m_uni2
+    cmpi.b  #3, d3
+    beq.s   .m_fifth
+    cmpi.b  #4, d3
+    beq.s   .m_power
+    cmpi.b  #5, d3
+    beq.s   .m_oct1
+    tst.b   d0                              ; mode 6 = OCTAVE2
+    beq.s   .p_octup                        ;   T2 = octave up
+    add.w   d2, d2                          ;   T3 = octave down
+    bra.s   .p_clamp
+.m_oct1:
+    tst.b   d0
+    beq.s   .p_octup                        ; T2 = octave up
+    bra.s   .p_silent                       ; T3 unused
+.m_power:
+    tst.b   d0
+    beq.s   .p_fifth                        ; T2 = fifth up
+    bra.s   .p_octup                        ; T3 = octave up
+.m_fifth:
+    tst.b   d0
+    beq.s   .p_fifth                        ; T2 = fifth up
+    bra.s   .p_silent                       ; T3 unused
+.m_uni1:
+    tst.b   d0
+    beq.s   .p_up1
+    subq.w  #1, d2                          ; T3 = period - 1
+    bra.s   .p_clamp
+.m_uni2:
+    tst.b   d0
+    beq.s   .p_up2
+    subq.w  #2, d2                          ; T3 = period - 2
+    bra.s   .p_clamp
+.p_up1:
+    addq.w  #1, d2                          ; T2 = period + 1
+    bra.s   .p_clamp
+.p_up2:
+    addq.w  #2, d2                          ; T2 = period + 2
+    bra.s   .p_clamp
+.p_octup:
+    lsr.w   #1, d2                          ; period >> 1 = octave up
+    bra.s   .p_clamp
+.p_fifth:
+    moveq   #0, d0                          ; period * 2 / 3 = a (just) fifth up
+    move.w  d2, d0
+    add.w   d0, d0
+    divu.w  #3, d0
+    move.w  d0, d2
+    bra.s   .p_clamp
+.p_silent:
+    moveq   #0, d4                          ; unused voice -> silent
+.p_clamp:
+    tst.w   d2                              ; clamp period 1..1023
+    bgt.s   .pc_hi
+    moveq   #1, d2
+    bra.s   .pc_at
+.pc_hi:
+    cmpi.w  #1023, d2
+    bls.s   .pc_at
+    move.w  #1023, d2
+.pc_at:
+    moveq   #15, d1                          ; atten = 15 - level
+    sub.b   d4, d1
+    movem.l (sp)+, d0/d3/d4/a1
+    rts
+
 compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     move.b  c_type(a6), d0
     beq.s   .square
@@ -9452,6 +9577,7 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     bls.s   .fp_done
     move.w  #1023, d2
 .fp_done:
+    bsr     cluster_hook                   ; GROUP: T1 snapshot / T2-T3 period+vol override
     cmp.w   c_shadowp(a6), d2
     beq.s   .sp
     move.w  d2, c_shadowp(a6)
@@ -13774,7 +13900,7 @@ str_r512:   dc.b "512     ",0
 str_r1k:    dc.b "1K      ",0
 str_r2k:    dc.b "2K      ",0
 str_pitch:  dc.b "PITCHED ",0
-str_clu:    dc.b "CLUSTER",0
+str_clu:    dc.b "GROUP",0
 str_crd1:   dc.b "RD1",0
 str_crd2:   dc.b "RD2",0
 str_cl_off: dc.b "OFF     ",0               ; padded 8 so a shorter value overwrites cleanly
