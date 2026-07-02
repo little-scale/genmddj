@@ -31,7 +31,7 @@
   <h1><span>als</span> ↔ <span>genmddj</span></h1>
   <p class="dim">Drop a Live Set (<code>.als</code>) or a Standard MIDI File (<code>.mid</code>) → a genmddj <code>.gmdj</code> song (+ <code>.gmi</code>
   instruments), or a <code>.gmdj</code> → a <code>.als</code>. The first <b>9 MIDI tracks</b> map to genmddj
-  channels <b>F1–F6</b> (FM) then <b>S1–S3</b> (PSG/TONE) — each FM track's <b>Operator</b> device is
+  channels <b>F1–F6</b> (FM) then <b>T1–T3</b> (PSG/TONE) — each FM track's <b>Operator</b> device is
   converted to a YM2612 patch (also exported as <code>.gmi</code>), and each PSG track's <b>Analog</b> device gets a
   rough port (amp ADSR → the TONE AHD envelope; LFO→pitch/amp → vibrato/tremolo). Session clips become phrases; a clip &gt; 16 steps
   spills into more phrases. <b>Contiguous</b> vertical clip runs fill chains; an empty scene starts a new chain.
@@ -54,9 +54,9 @@
       <b>MML</b>
       <button id="mmlgo" class="primary">MML &rarr; .gmdj</button>
       <button id="mmlout">song &rarr; MML</button>
-      <span class="dim" style="font-size:12px">one line per channel &middot; F1&ndash;F6 / S1&ndash;S3 &middot; <code>cdefgab</code> +/# - &middot; <code>o</code>&lt; &gt; &middot; <code>l4</code> &middot; <code>r</code> &middot; <code>&amp;</code> &middot; <code>@</code>inst &middot; <code>v</code> &middot; <code>;</code>comment</span>
+      <span class="dim" style="font-size:12px">one line per channel &middot; F1&ndash;F6 / T1&ndash;T3 &middot; <code>cdefgab</code> +/# - &middot; <code>o</code>&lt; &gt; &middot; <code>l4</code> &middot; <code>r</code> &middot; <code>&amp;</code> &middot; <code>@</code>inst &middot; <code>v</code> &middot; <code>;</code>comment</span>
     </div>
-    <textarea id="mml" spellcheck="false" placeholder="; type MML, then MML &rarr; .gmdj&#10;F1 @0 o4 l8 c d e f g a b &gt;c&#10;S1 o5 l16 c+ e c- r" style="width:100%;height:130px;background:#0d1018;color:#e7ecf5;border:1px solid #34405a;border-radius:6px;padding:8px;font:13px ui-monospace,Menlo,monospace;resize:vertical"></textarea>
+    <textarea id="mml" spellcheck="false" placeholder="; type MML, then MML &rarr; .gmdj&#10;F1 @0 o4 l8 c d e f g a b &gt;c&#10;T1 o5 l16 c+ e c- r" style="width:100%;height:130px;background:#0d1018;color:#e7ecf5;border:1px solid #34405a;border-radius:6px;padding:8px;font:13px ui-monospace,Menlo,monospace;resize:vertical"></textarea>
   </div>
   <pre id="report" hidden></pre>
   <div class="viewer" id="viewer"></div>
@@ -333,7 +333,7 @@ async function fromAls(buf, name){
   const exportGmi=$("fmi").checked;
   const s=conv.st;
   report(`Live Set: ${s.tracks} MIDI track(s)${s.skipped?` (${s.skipped} beyond 9 skipped)`:""}
-mapped 9 channels -> F1..F6 (FM) + S1..S3 (TONE)
+mapped 9 channels -> F1..F6 (FM) + T1..T3 (TONE)
 FM patches: ${s.fmConv||0} converted from Operator devices, ${FM_CH-(s.fmConv||0)} default
 PSG patches: ${s.anConv||0} converted from Analog devices (ADSR->AHD, LFO->vib/trm), ${3-(s.anConv||0)} default
 clips: ${s.clips} · phrases: ${conv.phraseList.length}/${NPHRASES} · chains: ${conv.chainList.length}/${NCHAINS}
@@ -439,7 +439,7 @@ function showViewer(){
   for(let r=0;r<NSONGROWS;r++){ let cells="",u=false;
     for(let c=0;c<NCH;c++){ const v=d[so+r*NCH+c]; if(v!==0xFF){u=true;usedCh.add(v);} cells+=`<td class="${v===0xFF?'mt':''}">${v===0xFF?'··':hx(v)}</td>`; }
     if(u) rows+=`<tr><th>${hx(r)}</th>${cells}</tr>`; }
-  P.push(`<h3>Song</h3><table><tr><th></th>${["F1","F2","F3","F4","F5","F6","S1","S2","S3","NO"].map(t=>`<th>${t}</th>`).join("")}</tr>${rows||'<tr><td colspan=11 class=dim>empty</td></tr>'}</table>`);
+  P.push(`<h3>Song</h3><table><tr><th></th>${["F1","F2","F3","F4","F5","F6","T1","T2","T3","NO"].map(t=>`<th>${t}</th>`).join("")}</tr>${rows||'<tr><td colspan=11 class=dim>empty</td></tr>'}</table>`);
   const usedPh=new Set(); let ch="";
   [...usedCh].sort((a,b)=>a-b).forEach(c=>{ let steps="";
     for(let s=0;s<CH_STEPS;s++){ const ph=d[co+c*CHAIN_SZ+s*2]; if(ph!==0xFF){usedPh.add(ph);steps+=`<td>${hx(ph)}</td>`;} }
@@ -516,7 +516,7 @@ async function fromMidi(buf, name){
   outBytes=makeGmdj(d,title); outName=(title||"song")+".gmdj";
   const exportGmi=$("fmi").checked, s=conv.st;
   report(`MIDI file: ${s.tracks} channel(s) with notes${s.skipped?` (${s.skipped} beyond 9 skipped)`:""}
-mapped to F1..F6 (FM) + S1..S3 (TONE); FM tracks get default patches (.mid carries no FM data)
+mapped to F1..F6 (FM) + T1..T3 (TONE); FM tracks get default patches (.mid carries no FM data)
 clips: ${s.clips} \u00b7 phrases: ${conv.phraseList.length}/${NPHRASES} \u00b7 chains: ${conv.chainList.length}/${NCHAINS}
 notes octave-folded: ${s.folded} \u00b7 polyphony reduced: ${s.poly}${s.truncated?"\n\u26a0 song exceeded pool limits \u2014 truncated":""}
 velocity->X: ${$("vel").checked?"on":"off"}`);
@@ -527,12 +527,12 @@ velocity->X: ${$("vel").checked?"on":"off"}`);
 
 // ====================================================================
 //  MML (Music Macro Language)  <->  .gmdj
-//  one line per channel: F1-F6 (FM) / S1-S3 (PSG).
+//  one line per channel: F1-F6 (FM) / T1-T3 (PSG).
 //  notes cdefgab + accidental (+ # -), o<n> < > octave, l<n> default length,
 //  <n> per-note length, . dotted, & tie, r rest, v<n> velocity->X, @<n> instrument,
 //  t<n> tempo (annotation only), ; comment.  o4 / l4 defaults; C4 = MIDI 60.
 // ====================================================================
-const CH_NAMES=["F1","F2","F3","F4","F5","F6","S1","S2","S3"];
+const CH_NAMES=["F1","F2","F3","F4","F5","F6","T1","T2","T3"];
 const MML_SEMI={c:0,d:2,e:4,f:5,g:7,a:9,b:11};
 const MML_NOTE=["c","c+","d","d+","e","f","f+","g","g+","a","a+","b"];
 function mmlLenBeats(n,dots){ let b=4/n, add=b; for(let i=0;i<dots;i++){ add/=2; b+=add; } return b; }  // whole note = 4 beats
@@ -572,7 +572,8 @@ function parseMml(text){
     const line=raw.replace(/;.*$/,"").trim(); if(!line) continue;
     const m=line.match(/^([A-Za-z][1-9])\b\s*(.*)$/);
     if(!m){ const tm=line.match(/^t(\d+)/i); if(tm){ if(tempo===null) tempo=+tm[1]; } else st.errors.push(line.slice(0,12)); continue; }
-    const ti=CH_NAMES.indexOf(m[1].toUpperCase()); if(ti<0){ st.errors.push(m[1]); continue; }
+    let nm=m[1].toUpperCase(); if(nm==='S1')nm='T1'; else if(nm==='S2')nm='T2'; else if(nm==='S3')nm='T3'; // accept legacy S1/S2/S3 as T1/T2/T3
+    const ti=CH_NAMES.indexOf(nm); if(ti<0){ st.errors.push(m[1]); continue; }
     const tm=m[2].match(/(^|\s)t(\d+)/i); if(tm&&tempo===null) tempo=+tm[2];
     mmlParseInto(m[2], get(ti), st);
   }
@@ -598,13 +599,13 @@ function convertMml(text, velToV){
 }
 async function fromMml(text, name){
   let conv; try{ conv=convertMml(text, $("vel").checked); }catch(e){ note(e.message||"bad MML",true); return; }
-  if(!conv.st.tracks){ note("no notes — each line starts with a channel (F1…F6, S1…S3)",true); return; }
+  if(!conv.st.tracks){ note("no notes — each line starts with a channel (F1…F6, T1…T3)",true); return; }
   const {d,gmis}=buildBlock(conv, $("vel").checked); lastBlock=d;
   const title=(name||"mml").replace(/\.(mml|txt)$/i,"").slice(0,8);
   outBytes=makeGmdj(d,title); outName=(title||"song")+".gmdj";
   const s=conv.st, exportGmi=$("fmi").checked;
   report(`MML: ${s.tracks} channel(s)${s.tempo?` · tempo annotation t${s.tempo} (not written — genmddj tempo = grooves)`:""}
-mapped to F1..F6 (FM) + S1..S3 (TONE); FM channels get default patches
+mapped to F1..F6 (FM) + T1..T3 (TONE); FM channels get default patches
 clips: ${s.clips} · phrases: ${conv.phraseList.length}/${NPHRASES} · chains: ${conv.chainList.length}/${NCHAINS}
 notes octave-folded: ${s.folded} · polyphony reduced: ${s.poly}${s.errors.length?`\n⚠ ${s.errors.length} token(s) skipped: ${[...new Set(s.errors)].slice(0,8).join(" ")}`:""}${s.truncated?"\n⚠ exceeded pool limits — truncated":""}`);
   $("dl").disabled=false; $("view").disabled=false;

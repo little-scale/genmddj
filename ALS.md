@@ -103,7 +103,7 @@ envelope, fine-cent ratios, and — under note-on-only — Release. Operator's L
 `AMS`/`FMS` + the global `$22` LFO if present; otherwise dropped.
 
 ### 2.7 Analog (`UltraAnalog`) → PSG TONE  *(built 2026-06-28, rough)*
-The **PSG** tracks (S1–S3) with an Ableton **Analog** device get a rough TONE patch instead of a
+The **PSG** tracks (T1–T3) with an Ableton **Analog** device get a rough TONE patch instead of a
 bare default (`analogToTone` in `als2genmddj.html`). **Oscillator/voice 1 only** — Analog repeats
 every param per voice; we always take the first occurrence and ignore osc 2. The **amp envelope**
 (`<Envelope.1>` — the loudness one; `AMP_ENV` constant, flip to 0 if inverted) ADSR maps to the
@@ -118,9 +118,9 @@ the old default TONE. Filter, the 2nd osc, FX, and sub-row detail are dropped.
 `.als` is gzipped XML → parse tracks, clips, devices, tempo.
 
 ### 3.1 Track → channel routing
-9 channels: **F1–F6 (FM) + S1–S3 (PSG square TONE).** The **first six FM-eligible tracks** (those
+9 channels: **F1–F6 (FM) + T1–T3 (PSG square TONE).** The **first six FM-eligible tracks** (those
 with an Operator device) → F1–F6 with §2 adaptation; the remaining melodic tracks → the PSG
-squares (S1–S3), with an Analog device adapted to TONE (§2.7). A track without a usable
+squares (T1–T3), with an Analog device adapted to TONE (§2.7). A track without a usable
 instrument maps notes only (default voice). (Noise / DAC-kit routing isn't wired yet.)
 
 ### 3.2 Clip → phrases → chain
@@ -154,7 +154,7 @@ Operator preset for A/B against the original through the shared JS YM2612 core.
 
 ## 4.1 MML ↔ `.gmdj`
 
-A plain-text alternative to `.als`/`.mid`: **one line per channel** (`F1`–`F6` / `S1`–`S3`), so a
+A plain-text alternative to `.als`/`.mid`: **one line per channel** (`F1`–`F6` / `T1`–`T3`), so a
 tune can be written or pasted as text. The dialect: classic `cdefgab` + `#`/`-` accidentals ·
 `o` / `<` / `>` octave · `l` / dotted / `&` tie for length · `r` rest · `@` instrument · `v` → the
 `X` volume command · `;` comment. `t` (tempo) is an annotation only — tempo is the groove. Converts

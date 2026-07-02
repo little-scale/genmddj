@@ -29,7 +29,7 @@ The ten voices are:
 
 - **F1–F6** — the six **YM2612 FM** voices. **F6** doubles as the host for PCM samples
   and wavetables (the DAC), so when a sample plays, F6's FM voice steps aside.
-- **S1–S3** — the three **SN76489 PSG square** voices.
+- **T1–T3** — the three **SN76489 PSG square** voices.
 - **NO** — the PSG **noise** voice (also used for drum kits and pitched periodic-noise bass).
 
 ---
@@ -120,7 +120,7 @@ state, sync status and the position `SS:CC:PP` (song row : chain step : phrase r
 right margin shows the ten channel activity meters, the current octave, and the current
 instrument.
 
-- **SONG** — the arrangement: ten columns of chain numbers (F1–F6, S1–S3, NO), one per
+- **SONG** — the arrangement: ten columns of chain numbers (F1–F6, T1–T3, NO), one per
   voice, with a per-track playhead.
 - **CHAIN** — a list of phrases (each with a transpose), played in order.
 - **PHRASE** — 16 steps of note / instrument / command. The heart of it.
@@ -195,10 +195,10 @@ to a note in a PHRASE to play that note with that sound. The six types:
 
 - **FM** — a full **YM2612 four-operator** voice. Plays on F1–F6. The flagship type, with
   its own editor (§6).
-- **TONE** — a **PSG square** wave. Plays on S1–S3. Volume, an AHD volume envelope,
+- **TONE** — a **PSG square** wave. Plays on T1–T3. Volume, an AHD volume envelope,
   transpose, vibrato / pitch-sweep / tremolo, and an optional table. (Ports from SMSGGDJ.)
 - **NOISE** — the **PSG noise** voice (NO). White or periodic noise, at fixed rates or
-  **pitched** (which borrows S3 to tune it — great for periodic-noise bass).
+  **pitched** (which borrows T3 to tune it — great for periodic-noise bass).
 - **KIT** — a **sample drum kit** on the YM2612 DAC (hosted on F6). The **note picks the
   pad** (positionally: pad 0 = kick, 1 = snare, 2 = hat, …). The **KIT** field chooses
   which ROM kit (e.g. 808 / 909 / C78 / 606 / speech), and a **RATE** plays it at
@@ -563,7 +563,7 @@ SCREEN MAP
    FILES    GROOVE            FM LFO   ECHO
 
 VOICES   F1 F2 F3 F4 F5 F6   (FM; F6 also hosts samples/wavetables)
-         S1 S2 S3            (PSG square)
+         T1 T2 T3            (PSG square)
          NO                  (PSG noise / drums)
 ```
 
