@@ -25,8 +25,8 @@ WAVE_LEN = 32            # wavetable steps; phase is 8.8 fixed-point -> 32*256 u
 # Per-region constants. The SN76489 PSG runs at master/15; the YM2612 Timer-A DAC
 # feed rate scales with the YM clock (master/7). NTSC master = 53.693175 MHz,
 # PAL master = 53.203424 MHz (ratio 0.99088).
-NTSC = dict(psg_clock=3579545, dac_rate=5327)   # 53693175/15 ; ym/(144*10) = 53693175/7/1440
-PAL  = dict(psg_clock=3546895, dac_rate=5278)   # 53203424/15 ; 53203424/7/1440
+NTSC = dict(psg_clock=3579545, dac_rate=10653)  # 53693175/15 ; ym/(144*5) = 53693175/7/720
+PAL  = dict(psg_clock=3546895, dac_rate=10556)  # 53203424/15 ; 53203424/7/720
 
 
 def periods(psg_clock):

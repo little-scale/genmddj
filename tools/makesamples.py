@@ -34,7 +34,7 @@ USE_TANH  = True
 MAGIC = b'GMDJKIT1'
 NKITS = 16
 NPADS = 16
-DAC_RATE = 5327                 # YM2612 Timer-A DAC cadence (1024-TA=10); clock-defined, stable
+DAC_RATE = 10653                # YM2612 Timer-A DAC cadence (1024-TA=5); the tight-loop feed paces this 1:1
 HEADER = 16
 MEMBER = 16
 DIR_SIZE = NKITS * NPADS * MEMBER

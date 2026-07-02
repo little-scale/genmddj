@@ -106,7 +106,7 @@
 <script>
 const MAGIC = "GMDJKIT1";
 const HEADER = 16, MEMBER = 16;
-let NKITS = 16, NPADS = 16, DAC_RATE = 5327;   // shipping DAC rate (YM2612 Timer-A 1024-TA=10 = 5327Hz); overridden from the ROM header on load
+let NKITS = 16, NPADS = 16, DAC_RATE = 10653;  // shipping DAC rate (YM2612 Timer-A 1024-TA=5 = 10653Hz); overridden from the ROM header on load
 let DIR_SIZE = NKITS*NPADS*MEMBER, POOL_BASE = HEADER + DIR_SIZE;
 
 let rom = null, poolOffset = -1, poolAvail = 0;

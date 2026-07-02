@@ -16,8 +16,10 @@
 ;   $1FB3  dptr    - starting window read pointer ($8000.. , little-endian)
 ;   $1FB5  dlen    - sample length in bytes (little-endian word)
 ;
-; The DAC byte cadence (~17.7 kHz) is set by the main-loop period; one
-; PCM byte is fed per pass while a sample plays.
+; The DAC cadence is YM2612 Timer A (TA_24/TA_25 below); while a sample plays
+; a tight loop paces one PCM byte per overflow, interleaving one bounded unit of
+; SCB/mailbox work per pass (see 'tight'). The sample state lives in the shadow
+; register set; D_PTR/D_REM/D_STEP/D_HALF RAM cells below are vestigial.
 ; ============================================================
 
 .MEMORYMAP
@@ -69,6 +71,20 @@ BANKS 1
 .DEFINE CH3_SPC   $1FF6     ; PERC: 1 = CH3 special mode (68k sets; Z80 ORs bit6 into $27)
 .DEFINE DAC_FM    $1FCE     ; 68k bumps to switch F6 DAC->FM: park + DISABLE $2B (the ONLY $2B-off path)
 .DEFINE DAC_FMLAST $1FCF    ; last DAC_FM processed
+; --- sliced SCB executor state (Z80-local; the 68k never writes $1F70-$1F7F) ---
+.DEFINE SL_PSGN   $1F70     ; PSG bytes still to drain from the current SCB
+.DEFINE SL_PSGP   $1F71     ; -> next PSG byte (word)
+.DEFINE SL_YMN    $1F73     ; YM triples still to drain
+.DEFINE SL_YMP    $1F74     ; -> next YM triple (word)
+.DEFINE T27VAL    $1F76     ; precomputed Timer-A reset value ($15, or $55 with CH3 special)
+.DEFINE MB_ROT    $1F77     ; tight-loop rotating mailbox index (0-4)
+.DEFINE CT_PSG    $1F78     ; diag: total PSG bytes written (byte, wraps)
+.DEFINE CT_YM     $1F79     ; diag: total YM triples written (byte, wraps)
+.DEFINE CT_FEED   $1F7A     ; diag: total DAC bytes fed (word, wraps) -- the feed-rate probe
+; Timer A: rate = 53267/(1024-TA) Hz NTSC. 1024-TA=5 -> 10653 Hz ($24=$FE $25=$03).
+; (Was 1024-TA=10 = 5327: the ceiling of the old polled feed; the tight loop paces higher.)
+.DEFINE TA_24     $FE
+.DEFINE TA_25     $03
 
 .BANK 0 SLOT 0
 .ORG 0
@@ -93,8 +109,17 @@ start:
     ld   (CH3_SPC), a           ; CH3 special mode off at boot
     ld   (DAC_FM), a            ; no DAC->FM (disable) request pending
     ld   (DAC_FMLAST), a
+    ld   (SL_PSGN), a           ; sliced SCB executor idle
+    ld   (SL_YMN), a
+    ld   (MB_ROT), a
+    ld   (CT_PSG), a
+    ld   (CT_YM), a
+    ld   (CT_FEED), a
+    ld   (CT_FEED+1), a
     ld   b, a                   ; b = last SCB seq processed
     ld   d, a                   ; d = last dac trigger
+    ld   a, $15
+    ld   (T27VAL), a            ; Timer-A reset value (CH3 special folded in at each SCB arm)
 
     ld   a, $9F                 ; silence all 4 PSG channels
     ld   (PSG), a
@@ -114,19 +139,20 @@ start:
     xor  a
     ld   (YM_D0), a
 
-    ld   a, $24                 ; YM2612 Timer A = DAC clock; 1024-TA=10 -> 5327 Hz
-    ld   (YM_A0), a             ; (highest rate the polled feed paces 1:1 -- output measured
-    ld   a, $FD                 ;  = 440 on a 440 sine; >5327 over-runs + pitches down. M9 =
-    ld   (YM_D0), a             ;  cycle-counted feed to climb higher. TA=$3F6 -> $24=$FD/$25=$02)
+    ld   a, $24                 ; YM2612 Timer A = DAC clock (rate set by TA_24/TA_25 above)
+    ld   (YM_A0), a
+    ld   a, TA_24
+    ld   (YM_D0), a
     ld   a, $25
     ld   (YM_A0), a
-    ld   a, $02
+    ld   a, TA_25
     ld   (YM_D0), a
     ld   a, $27                 ; load + enable Timer A
     ld   (YM_A0), a
     ld   a, $05
     ld   (YM_D0), a
 
+; ==== relaxed loop (no sample playing): mailbox checks + a blocking SCB drain ====
 main:
     ld   a, (SCB_DAC)           ; new sample to start?
     cp   d
@@ -151,34 +177,237 @@ mn_dfm:
     ld   a, (DAC_FM)           ; F6 DAC->FM switch? (the ONLY path that disables $2B)
     ld   hl, DAC_FMLAST
     cp   (hl)
-    jr   z, mn_dac
+    jr   z, mn_scb
     ld   (hl), a
     call dac_to_fm
-mn_dac:
-    ld   a, (YM_A0)             ; Timer A overflow -> time to feed one DAC sample
-    bit  0, a
-    jr   z, mn_scb
-    ld   a, $27                 ; reset Timer A flag (keep it loaded + enabled)
-    ld   (YM_A0), a
-    ld   a, $15
-    ld   hl, CH3_SPC            ; PERC CH3 special mode -> keep $27 bit6 set across the timer write
-    bit  0, (hl)
-    jr   z, ta_nospc
-    or   $40
-ta_nospc:
-    ld   (YM_D0), a
-    ld   a, (D_PLAY)
-    or   a
-    call nz, dac_feed
 mn_scb:
     ld   a, (SCB_SEQ)           ; new SCB write list?
     cp   b
-    jr   z, main
+    jr   z, mn_play
     ld   b, a
-    call scb_exec
-    jr   main
+    call scb_arm
+mn_drain:
+    call scb_unit               ; not playing -> drain the whole list now (as the old scb_exec)
+    jr   nz, mn_drain
+mn_play:
+    ld   a, (D_PLAY)            ; a sample/wave started -> switch to the paced tight loop
+    or   a
+    jr   z, main
+    ; fall through
 
-; ---- arm a new sample from the DAC command ----
+; ==== tight loop (sample playing): Timer-A-paced feed + ONE bounded work unit per pass.
+; The worst-case gap between Timer-A status reads stays under one sample period, so
+; overflows are never merged (= the old feed's dropped-sample pitch-down). A pass that
+; feeds does NO other work; SCB writes and mailbox checks ride the passes in between. ====
+tight:
+    ld   a, (YM_A0)             ; status: bit 0 = Timer A overflow
+    bit  0, a
+    jr   z, tt_unit
+    ld   a, $27                 ; feed pass: reset the flag (precomputed value -- CH3 folded in)...
+    ld   (YM_A0), a
+    ld   a, (T27VAL)
+    ld   (YM_D0), a
+    ld   a, (D_WMODE)           ; ...and push one PCM/wave byte. The sample state lives in the
+    or   a                      ;    SHADOW registers (hl'=ptr de'=rem c'=step b'=half) -- the
+    jr   nz, tt_wave            ;    jitter-critical path owns them (DESIGN.md invariant).
+    exx                         ; --- PCM byte from the ROM window ---
+    ld   a, $2A
+    ld   (YM_A0), a
+    ld   a, (hl)
+    ld   (YM_D0), a
+    ld   a, b                   ; half-rate (KIT 0.5x): advance only every other feed
+    or   a
+    jr   z, tf_adv
+    xor  2                      ; flip the phase bit (b: 1 <-> 3)
+    ld   b, a
+    and  2
+    jr   z, tf_done             ; skip pass: no advance, no consume
+tf_adv:
+    ld   a, l                   ; ptr += step
+    add  a, c
+    ld   l, a
+    jr   nc, +
+    inc  h
++:
+    bit  7, h                   ; left the $8000-$FFFF window? -> next 32 KB bank
+    jr   nz, +
+    set  7, h
+    call bank_next
++:
+    ld   a, e                   ; remaining -= step
+    sub  c
+    ld   e, a
+    jr   nc, +
+    dec  d
++:
+    ld   a, d                   ; ended? (d wraps negative, or d|e == 0)
+    or   e
+    jr   z, tf_end
+    bit  7, d
+    jr   z, tf_done
+tf_end:
+    xor  a                      ; finished -> park at centre, LEAVE the DAC enabled (no $2B
+    ld   (D_PLAY), a            ;   toggle => no click); F6->FM disables $2B via dac_to_fm
+    ld   a, $2A
+    ld   (YM_A0), a
+    ld   a, $80
+    ld   (YM_D0), a
+tf_done:
+    exx
+    ld   hl, CT_FEED            ; diag: count every fed byte (the feed-rate probe)
+    inc  (hl)
+    jr   nz, tt_next
+    inc  hl
+    inc  (hl)
+    jr   tt_next
+tt_wave:
+    exx                         ; --- wave byte: WV_BUF[(phase>>8) & 31], phase += inc ---
+    ld   a, $2A                 ;    (hl'=phase, de'=increment; b'/c' scratch in wave mode)
+    ld   (YM_A0), a
+    ld   a, h
+    and  31
+    add  a, $D0                 ; WV_BUF = $1FD0: $D0+31 stays inside page $1F
+    ld   c, a
+    ld   b, $1F
+    ld   a, (bc)
+    ld   (YM_D0), a
+    add  hl, de
+    jr   tf_done
+tt_unit:
+    call scb_unit               ; one queued SCB write (PSG byte or YM triple)...
+    jr   nz, tt_next
+    ld   a, (MB_ROT)            ; ...or, drained: ONE mailbox check, rotating 0-4
+    inc  a
+    cp   5
+    jr   c, +
+    xor  a
++:
+    ld   (MB_ROT), a
+    or   a
+    jr   z, tt_ck_dac
+    dec  a
+    jr   z, tt_ck_wv
+    dec  a
+    jr   z, tt_ck_woff
+    dec  a
+    jr   z, tt_ck_dfm
+    ld   a, (SCB_SEQ)           ; 4: new SCB? (only when the previous is fully drained)
+    cp   b
+    jr   z, tt_next
+    ld   b, a
+    call scb_arm
+    jr   tt_next
+tt_ck_dac:
+    ld   a, (SCB_DAC)           ; retrigger / new sample mid-play
+    cp   d
+    jr   z, tt_next
+    ld   d, a
+    call dac_arm
+    jr   tt_next
+tt_ck_wv:
+    ld   a, (WV_TRIG)
+    ld   hl, WV_LAST
+    cp   (hl)
+    jr   z, tt_next
+    ld   (hl), a
+    call wave_arm
+    jr   tt_next
+tt_ck_woff:
+    ld   a, (WV_OFF)
+    ld   hl, WV_OLAST
+    cp   (hl)
+    jr   z, tt_next
+    ld   (hl), a
+    call wave_off
+    jr   tt_next
+tt_ck_dfm:
+    ld   a, (DAC_FM)
+    ld   hl, DAC_FMLAST
+    cp   (hl)
+    jr   z, tt_next
+    ld   (hl), a
+    call dac_to_fm
+tt_next:
+    ld   a, (D_PLAY)            ; sample ended / stopped -> back to the relaxed loop
+    or   a
+    jp   nz, tight
+    jp   main
+
+; ---- arm the sliced executor on a new SCB: snapshot counts + pointers, fold CH3 into $27 ----
+scb_arm:
+    ld   a, (SCB_CNT)
+    ld   (SL_PSGN), a
+    ld   hl, SCB_DATA
+    ld   (SL_PSGP), hl
+    ld   a, (SCB_YMCNT)
+    ld   (SL_YMN), a
+    ld   hl, SCB_YMDAT
+    ld   (SL_YMP), hl
+    ld   a, $15                 ; precompute the Timer-A reset value once per SCB
+    ld   hl, CH3_SPC            ; (CH3 special only changes via an SCB push)
+    bit  0, (hl)
+    jr   z, +
+    or   $40
++:
+    ld   (T27VAL), a
+    ret
+
+; ---- execute ONE pending SCB write. Returns NZ if it did work, Z when the list is empty.
+;      Preserves b/d (the main/tight seq registers). YM spacing: the caller's loop overhead
+;      (>=~120 cycles between calls) replaces the old blanket ym_wait. ----
+scb_unit:
+    ld   a, (SL_PSGN)
+    or   a
+    jr   z, su_ym
+    dec  a                      ; one PSG byte
+    ld   (SL_PSGN), a
+    ld   hl, (SL_PSGP)
+    ld   a, (hl)
+    ld   (PSG), a
+    inc  hl
+    ld   (SL_PSGP), hl
+    ld   hl, CT_PSG
+    inc  (hl)
+    or   1                      ; NZ = did work
+    ret
+su_ym:
+    ld   a, (SL_YMN)
+    or   a
+    ret  z                      ; Z = nothing pending
+    dec  a                      ; one YM triple: part, reg, value
+    ld   (SL_YMN), a
+    ld   hl, (SL_YMP)
+    ld   a, (hl)
+    inc  hl
+    or   a
+    jr   nz, su_p2
+    ld   a, (hl)
+    inc  hl
+    ld   (YM_A0), a
+    nop                         ; address -> data settle (>=17 cycles with the fetches)
+    nop
+    ld   a, (hl)
+    inc  hl
+    ld   (YM_D0), a
+    jr   su_fin
+su_p2:
+    ld   a, (hl)
+    inc  hl
+    ld   (YM_A1), a
+    nop
+    nop
+    ld   a, (hl)
+    inc  hl
+    ld   (YM_D1), a
+su_fin:
+    ld   (SL_YMP), hl
+    ld   hl, CT_YM
+    inc  (hl)
+    or   1                      ; NZ = did work (a = a YM data byte, never matters)
+    ret
+
+; ---- arm a new sample from the DAC command: bank the window, load the SHADOW set
+;      (hl'=ptr, de'=remaining, c'=step, b'=half flags). Preserves primary b/d. ----
 dac_arm:
     ld   a, $2B                 ; enable ch6 DAC ($2B bit7)
     ld   (YM_A0), a
@@ -189,27 +418,38 @@ dac_arm:
     ld   hl, (SCB_DBANK)
     ld   (D_BANK), hl
     call set_bank
+    exx
     ld   hl, (SCB_DPTR)
-    ld   (D_PTR), hl
-    ld   hl, (SCB_DLEN)
-    ld   (D_REM), hl
+    ld   de, (SCB_DLEN)
     ld   a, (SCB_DSTEP)
-    ld   (D_STEP), a
+    ld   c, a
     ld   a, (SCB_DHALF)
-    ld   (D_HALF), a
-    xor  a
-    ld   (D_HFLIP), a
-    inc  a
+    or   a
+    jr   z, +
+    ld   a, 1                   ; half-rate on: b' = 1 (phase bit clear)
++:
+    ld   b, a
+    exx
+    ld   a, 1
     ld   (D_PLAY), a
     ret
 
-; ---- arm wave-loop mode: enable the DAC, mark wave mode. Does NOT reset the phase,
-;      so the per-tick re-arm (the engine re-bakes the wave every frame) is seamless.
+; ---- arm wave-loop mode: enable the DAC, mark wave mode. The phase (hl') persists across
+;      the per-tick re-arm (the engine re-bakes the wave every frame); the increment (de')
+;      reloads each arm (vibrato/pitch changes it). A fresh wave start zeroes the phase. ----
 wave_arm:
     ld   a, $2B
     ld   (YM_A0), a
     ld   a, $80
     ld   (YM_D0), a
+    ld   a, (D_WMODE)
+    exx
+    or   a
+    jr   nz, +                  ; already in wave mode -> keep the phase
+    ld   hl, 0                  ; fresh wave note -> phase 0
++:
+    ld   de, (WV_INC)
+    exx
     ld   a, 1
     ld   (D_WMODE), a
     ld   (D_PLAY), a
@@ -244,100 +484,22 @@ dac_to_fm:
     ld   (YM_D0), a
     ret
 
-; ---- feed one PCM byte (gained), advance by the rate step, re-bank, stop at end ----
-dac_feed:
-    ld   a, (D_WMODE)
-    or   a
-    jp   nz, wave_feed
-    ld   hl, (D_PTR)
-    ld   a, $2A                 ; ch6 DAC data register
-    ld   (YM_A0), a
-    ld   a, (hl)               ; PCM byte from the ROM window
-    ld   (YM_D0), a
-    ld   a, (D_HALF)           ; advance amount c: D_STEP, or 0 on a half-rate skip
-    or   a
-    jr   z, df_full
-    ld   a, (D_HFLIP)
-    xor  1
-    ld   (D_HFLIP), a
-    jr   nz, df_full
-    ld   c, 0
-    jr   df_adv
-df_full:
-    ld   a, (D_STEP)
-    ld   c, a
-df_adv:
-    ld   a, l
-    add  a, c
-    ld   l, a
-    jr   nc, df_noc
-    inc  h
-df_noc:
-    bit  7, h                   ; still inside the $8000-$FFFF window?
-    jr   nz, df_nob
-    set  7, h                   ; wrapped -> next 32 KB bank, keep the overshoot
+; ---- (rare) PCM crossed the window edge: advance D_BANK + re-latch. Called with the
+;      SHADOW set active; set_bank's push/pop protects the shadow b/c (half/step). ----
+bank_next:
     push hl
     ld   hl, (D_BANK)
     inc  hl
     ld   (D_BANK), hl
     call set_bank
     pop  hl
-df_nob:
-    ld   (D_PTR), hl
-    ld   hl, (D_REM)           ; D_REM -= c
-    ld   a, l
-    sub  c
-    ld   l, a
-    jr   nc, df_rem
-    dec  h
-df_rem:
-    ld   (D_REM), hl
-    ld   a, h
-    or   a
-    jp   m, df_end             ; underflowed past 0
-    or   l
-    jr   nz, df_pace
-df_end:
-    xor  a
-    ld   (D_PLAY), a           ; finished -> park at centre, LEAVE the DAC enabled (no $2B toggle =>
-    ld   a, $2A                 ; no click). Next hit just re-streams; F6->FM disables $2B via dac_to_fm.
-    ld   (YM_A0), a
-    ld   a, $80
-    ld   (YM_D0), a
-df_pace:
-    ret                        ; Timer A paces the feed now; no busy-wait needed
-
-; ---- wavetable feed: WV_BUF[(phase>>8) & 31] -> DAC, then phase += inc ----
-; MUST preserve bc/de: the main loop keeps the last SCB_SEQ in b and last SCB_DAC in d.
-wave_feed:
-    push bc
-    push de
-    ld   hl, (WV_PHASE)
-    ld   a, h                   ; integer part of the 8.8 phase
-    and  31                     ; -> step 0..31 (the wave loops every 32)
-    ld   c, a
-    ld   b, 0
-    ld   hl, WV_BUF
-    add  hl, bc
-    ld   c, (hl)                ; wave sample
-    ld   a, $2A                 ; ch6 DAC data register
-    ld   (YM_A0), a
-    ld   a, c
-    ld   (YM_D0), a
-    ld   hl, (WV_PHASE)         ; phase += increment
-    ld   a, (WV_INC)
-    ld   e, a
-    ld   a, (WV_INC+1)
-    ld   d, a
-    add  hl, de
-    ld   (WV_PHASE), hl
-    pop  de
-    pop  bc
     ret
 
-; ---- set the 9-bit window bank from hl (LSB first) ----
+; ---- set the 9-bit window bank from hl (LSB first). Preserves bc: b/d are the loop seq
+;      registers and dac_arm / the feed's bank wrap call this from both loops. ----
 set_bank:
     push hl
+    push bc
     ld   b, 9
 -:
     ld   a, l
@@ -346,62 +508,8 @@ set_bank:
     srl  h
     rr   l
     djnz -
-    pop  hl
-    ret
-
-; ---- execute the PSG + YM write lists in the SCB ----
-scb_exec:
-    ld   a, (SCB_CNT)
-    or   a
-    jr   z, scb_ym
-    ld   c, a
-    ld   hl, SCB_DATA
--:
-    ld   a, (hl)
-    ld   (PSG), a
-    inc  hl
-    dec  c
-    jr   nz, -
-scb_ym:
-    ld   a, (SCB_YMCNT)
-    or   a
-    ret  z
-    ld   c, a
-    ld   hl, SCB_YMDAT
-ym_wr:
-    ld   a, (hl)               ; part select
-    inc  hl
-    or   a
-    jr   nz, ym_p2
-    ld   a, (hl)
-    inc  hl
-    ld   (YM_A0), a
-    call ym_wait
-    ld   a, (hl)
-    inc  hl
-    ld   (YM_D0), a
-    call ym_wait
-    jr   ym_dec
-ym_p2:
-    ld   a, (hl)
-    inc  hl
-    ld   (YM_A1), a
-    call ym_wait
-    ld   a, (hl)
-    inc  hl
-    ld   (YM_D1), a
-    call ym_wait
-ym_dec:
-    dec  c
-    jr   nz, ym_wr
-    ret
-
-ym_wait:
-    push bc
-    ld   b, $08
--:
-    djnz -
     pop  bc
+    pop  hl
     ret
 
 .ENDS
