@@ -2104,8 +2104,10 @@ col_max:                                  ; -> d1 = highest column index for cur
     move.b  (i_type,a1,d0.w), d0
     cmpi.b  #5, d0                        ; PERC: rows 0-2 single col; op rows 3-6 = BLK/FNUM/MUL/DT
     beq.s   .pcol
-    cmpi.b  #2, d0                        ; WAVE?
-    bne.s   .fm                            ; else PSG/KIT/TONE/NOISE = single column
+    tst.b   d0                            ; FM -> the operator grid (multi-column)
+    beq.s   .fm
+    cmpi.b  #2, d0                        ; WAVE -> its own grid; TONE/KIT/NOISE -> bank rows + single-col fields
+    bne.s   .psgcol
     moveq   #0, d0
     move.b  cur_row, d0
     subq.w  #2, d0                         ; grid rows start at cur_row 2
@@ -2114,6 +2116,16 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #0, d1
     move.b  (a1,d0.w), d1
     subq.b  #1, d1                         ; colcount - 1
+    rts
+.psgcol:                                  ; TONE/KIT/NOISE: row 0/1 (bank) multi-col; every field row is single
+    tst.b   cur_row
+    bne.s   .psgc1
+    moveq   #8, d1                          ; row 0 = INST name (8 chars)
+    rts
+.psgc1:
+    cmpi.b  #1, cur_row
+    bne.s   .izero                          ; rows >= 2 (fields) -> single column (was routed to .fm -> phantom OP cols)
+    moveq   #5, d1                          ; row 1 = SRAM/ROM bank buttons
     rts
 .izero:
     moveq   #0, d1
