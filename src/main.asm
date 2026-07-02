@@ -219,6 +219,7 @@ clu_mode   equ $00FFD27A           ; GROUP: T1's active mode (0=OFF..7=CHORD) th
 clu_vol    equ $00FFD27B           ; GROUP: T1's final level (0-15) this tick
 clu_rd1    equ $00FFD27C           ; GROUP: T2 level drop (from T1 instrument RD1)
 clu_rd2    equ $00FFD27D           ; GROUP: T3 level drop (from T1 instrument RD2)
+clu_chord  equ $00FFD27E           ; GROUP CHORD: latched (hi<<4|lo) T2/T3 semitone offsets from T1's C command (0=off)
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
@@ -7006,6 +7007,7 @@ engine_play_reset:
     move.b  #$FF, (a0)+
     dbra    d0, .rps
     move.b  #0, g_wait                     ; W row-override off
+    move.b  #0, clu_chord                 ; GROUP CHORD: no chord latched until a C sets one
     lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
     move.w  #(c_cphase+NCH)-lq_b0-1, d0
 .rlq:
@@ -8950,10 +8952,28 @@ exec_cmd:
     move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_c:
+    moveq   #0, d3                          ; GROUP CHORD: on T1 (track 6) with a CHORD instrument,
+    move.b  c_track(a6), d3                 ;   C sets the T2/T3 offsets (latched), NOT a T1 arp
+    cmpi.b  #6, d3
+    bne.s   .cc_arp
+    moveq   #0, d2                          ; the ROW's instrument (c_instr isn't loaded until after commands)
+    move.b  (1,a1,d1.w), d2
+    cmpi.b  #$FF, d2
+    bne.s   .cc_havei
+    move.b  c_instr(a6), d2                ; empty IN column -> keep the current instrument
+.cc_havei:
+    mulu.w  #INSTR_SIZE, d2
+    lea     instrum, a4
+    adda.w  d2, a4
+    cmpi.b  #3, (i_type,a4)                ; TONE + GROUP == CHORD?
+    bne.s   .cc_arp
+    cmpi.b  #7, (i_cluster,a4)
+    bne.s   .cc_arp
+    move.b  (3,a1,d1.w), clu_chord         ; latch (hi<<4|lo) for T2/T3; T1's own chord stays 0 (root)
+    bra     .cmddone
+.cc_arp:
     move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
     move.b  (3,a1,d1.w), d2               ; C xy = chord offsets / (PERC) operator mask
-    moveq   #0, d3
-    move.b  c_track(a6), d3
     lea     c_chord, a4
     move.b  d2, (a4,d3.w)
     lea     c_cphase, a4
@@ -9396,7 +9416,7 @@ cluster_hook:
     moveq   #0, d0
     move.b  c_track(a6), d0
     cmpi.b  #6, d0                          ; T1 = master -> snapshot
-    bne.s   .chk_slave
+    bne    .chk_slave
     move.w  d2, clu_period
     moveq   #15, d3
     sub.b   d1, d3                          ; level = 15 - atten
@@ -9408,7 +9428,7 @@ cluster_hook:
     lea     instrum, a1
     adda.w  d0, a1
     cmpi.b  #3, (i_type,a1)                ; TONE?
-    bne.s   .chk_x
+    bne    .chk_x
     move.b  (i_cluster,a1), clu_mode
     move.b  (i_crd1,a1), clu_rd1
     move.b  (i_crd2,a1), clu_rd2
@@ -9417,89 +9437,118 @@ cluster_hook:
     rts
 .chk_slave:
     cmpi.b  #7, d0
-    blo.s   .chk_x                          ; F1-F6 (not reached via .square anyway)
+    blo    .chk_x                          ; F1-F6 (not reached via .square anyway)
     cmpi.b  #8, d0
-    bhi.s   .chk_x                          ; NO or beyond -> no group
+    bhi    .chk_x                          ; NO or beyond -> no group
     move.b  clu_mode, d3
-    beq.s   .chk_x                          ; OFF -> slave plays its own note
-    cmpi.b  #7, d3                          ; CHORD -> later commit; leave the slave alone for now
-    beq.s   .chk_x
+    beq    .chk_x                          ; OFF -> slave plays its own note
+    cmpi.b  #7, d3                          ; CHORD -> nibble-driven pitch
+    beq    .chk_chord
     subq.b  #7, d0                          ; d0: 0 = T2, 1 = T3
     moveq   #0, d4                          ; level = clu_vol - RD (clamp >=0)
     move.b  clu_vol, d4
     tst.b   d0
-    bne.s   .chs_rd2
+    bne    .chs_rd2
     sub.b   clu_rd1, d4
-    bra.s   .chs_lvl
+    bra    .chs_lvl
 .chs_rd2:
     sub.b   clu_rd2, d4
 .chs_lvl:
-    bpl.s   .chs_mode
+    bpl    .chs_mode
     moveq   #0, d4
 .chs_mode:
     move.w  clu_period, d2                  ; derive the slave period from T1's final period
     cmpi.b  #1, d3
-    beq.s   .m_uni1
+    beq    .m_uni1
     cmpi.b  #2, d3
-    beq.s   .m_uni2
+    beq    .m_uni2
     cmpi.b  #3, d3
-    beq.s   .m_fifth
+    beq    .m_fifth
     cmpi.b  #4, d3
-    beq.s   .m_power
+    beq    .m_power
     cmpi.b  #5, d3
-    beq.s   .m_oct1
+    beq    .m_oct1
     tst.b   d0                              ; mode 6 = OCTAVE2
-    beq.s   .p_octup                        ;   T2 = octave up
+    beq    .p_octup                        ;   T2 = octave up
     add.w   d2, d2                          ;   T3 = octave down
-    bra.s   .p_clamp
+    bra    .p_clamp
 .m_oct1:
     tst.b   d0
-    beq.s   .p_octup                        ; T2 = octave up
-    bra.s   .p_silent                       ; T3 unused
+    beq    .p_octup                        ; T2 = octave up
+    bra    .p_silent                       ; T3 unused
 .m_power:
     tst.b   d0
-    beq.s   .p_fifth                        ; T2 = fifth up
-    bra.s   .p_octup                        ; T3 = octave up
+    beq    .p_fifth                        ; T2 = fifth up
+    bra    .p_octup                        ; T3 = octave up
 .m_fifth:
     tst.b   d0
-    beq.s   .p_fifth                        ; T2 = fifth up
-    bra.s   .p_silent                       ; T3 unused
+    beq    .p_fifth                        ; T2 = fifth up
+    bra    .p_silent                       ; T3 unused
 .m_uni1:
     tst.b   d0
-    beq.s   .p_up1
+    beq    .p_up1
     subq.w  #1, d2                          ; T3 = period - 1
-    bra.s   .p_clamp
+    bra    .p_clamp
 .m_uni2:
     tst.b   d0
-    beq.s   .p_up2
+    beq    .p_up2
     subq.w  #2, d2                          ; T3 = period - 2
-    bra.s   .p_clamp
+    bra    .p_clamp
 .p_up1:
     addq.w  #1, d2                          ; T2 = period + 1
-    bra.s   .p_clamp
+    bra    .p_clamp
 .p_up2:
     addq.w  #2, d2                          ; T2 = period + 2
-    bra.s   .p_clamp
+    bra    .p_clamp
 .p_octup:
     lsr.w   #1, d2                          ; period >> 1 = octave up
-    bra.s   .p_clamp
+    bra    .p_clamp
 .p_fifth:
     moveq   #0, d0                          ; period * 2 / 3 = a (just) fifth up
     move.w  d2, d0
     add.w   d0, d0
     divu.w  #3, d0
     move.w  d0, d2
-    bra.s   .p_clamp
+    bra    .p_clamp
+.chk_chord:                               ; d0 = track (7=T2 hi nibble, 8=T3 lo nibble)
+    moveq   #0, d3
+    move.b  clu_chord, d3
+    cmpi.b  #7, d0
+    bne    .cch_t3
+    lsr.b   #4, d3                          ; T2 -> high nibble, uses RD1
+    move.b  clu_rd1, d4
+    bra    .cch_n
+.cch_t3:
+    andi.b  #$0F, d3                        ; T3 -> low nibble, uses RD2
+    move.b  clu_rd2, d4
+.cch_n:
+    tst.b   d3
+    beq    .p_silent                       ; nibble 0 -> voice off
+    add.w   d3, d3                          ; semi_ratio[n] (word LUT)
+    lea     semi_ratio, a1
+    moveq   #0, d0
+    move.w  (a1,d3.w), d0                   ; ratio (8.8)
+    move.w  clu_period, d3
+    mulu.w  d3, d0                          ; period * ratio
+    lsr.l   #8, d0                          ; >> 8
+    move.w  d0, d2                          ; slave period = period * 2^(-n/12)
+    move.b  clu_vol, d3                     ; level = clu_vol - RD
+    sub.b   d4, d3
+    bpl    .cch_lv
+    moveq   #0, d3
+.cch_lv:
+    move.b  d3, d4                          ; d4 = level for the shared tail
+    bra    .p_clamp
 .p_silent:
     moveq   #0, d4                          ; unused voice -> silent
 .p_clamp:
     tst.w   d2                              ; clamp period 1..1023
-    bgt.s   .pc_hi
+    bgt    .pc_hi
     moveq   #1, d2
-    bra.s   .pc_at
+    bra    .pc_at
 .pc_hi:
     cmpi.w  #1023, d2
-    bls.s   .pc_at
+    bls    .pc_at
     move.w  #1023, d2
 .pc_at:
     moveq   #15, d1                          ; atten = 15 - level
@@ -14086,6 +14135,9 @@ fm_fnum:
     dc.w 644, 682, 723, 766, 811, 859, 910, 965, 1022, 1083, 1147, 1215
 fm_fnum_pal:                              ; NTSC fnums * (NTSC ym clock / PAL ym clock) = *1.009205 (PAL clock is lower)
     dc.w 650, 688, 730, 773, 818, 867, 918, 974, 1031, 1093, 1158, 1226
+    even
+semi_ratio:                               ; GROUP CHORD: period * 2^(-n/12) in 8.8 fixed (n = semitones up, 1..15)
+    dc.w 256, 242, 228, 215, 203, 192, 181, 171, 161, 152, 144, 136, 128, 121, 114, 108
     even
 
 vdp_regs:
