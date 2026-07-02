@@ -233,6 +233,38 @@ Type-specific fields (vibrato/sweep/tremolo on PSG, the noise MODE/RATE, the KIT
 the WAVE selector) appear only for the types that use them. A command in a PHRASE overrides
 the matching field for that note.
 
+### GROUP — stacking T2/T3 onto T1 (TONE only)
+
+A **TONE** instrument played on **T1** can take over **T2** and **T3** and drive them from
+T1 — fat detuned unisons, fifths, octaves and chords, all from a single melody line. Set it
+with the **GROUP** field on the TONE instrument; when it's not OFF, two extra fields **RD1 /
+RD2** appear below it. T2/T3 then follow T1's timing, envelope, sweep and vibrato, and their
+own phrase notes are ignored while the group is active (leave those columns empty). It only
+engages on **T1** — the same instrument played on T2 or T3 sounds as a normal tone.
+
+| GROUP | T2 | T3 |
+|---|---|---|
+| **OFF** | — | — (all three independent) |
+| **UNISON1 / 2** | T1 period **+1 / +2** | period **−1 / −2** (detuned unison) |
+| **FIFTH** | a fifth above T1 | silent |
+| **POWER** | a fifth above | an octave above |
+| **OCTAVE1** | an octave above | silent |
+| **OCTAVE2** | an octave above | an octave **below** |
+| **CHORD** | `C` high nibble | `C` low nibble (see below) |
+
+UNISON detunes by nudging the raw 10-bit tone-counter register, so it's a gentle few-cents
+shimmer low down and spreads wider toward the top of the range — chip character; pick the
+level that suits your register.
+
+**RD1 / RD2** drop T2 / T3 below T1's level (`0` = same as T1, `F` = silent), echo-style —
+so a two/three-voice stack doesn't overpower the mix.
+
+**CHORD** is driven by the **`C` command** on T1's phrase: the two nibbles are semitone
+offsets — **high = T2, low = T3**, and `0` in a nibble keeps that voice silent. `C 47` = T2
++4 (major third) and T3 +7 (fifth), a major triad over T1's root. The chord **latches** (it
+holds across the following notes until you change it, so the command column stays free for
+other commands); `C 00` clears it. In CHORD mode `C` no longer arps — T1 stays on its root.
+
 ---
 
 ## 6. The FM editor (INSTR, FM type)
@@ -335,7 +367,7 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 
 | Cmd | Name | What it does | Voices |
 |---|---|---|---|
-| `C` | Chord / arp | Loop through note, +x, +y semitones each tick (`C00` off) | FM + PSG |
+| `C` | Chord / arp | Loop through note, +x, +y semitones each tick (`C00` off); on a **T1 GROUP=CHORD** instrument it instead sets the T2/T3 chord (§5) | FM + PSG |
 | `F` | Finetune | Signed micro-detune (period / F-number units) | PSG + FM |
 | `P` | Pitch bend | Continuous bend, signed rate per tick; persists until `P00` | PSG + FM |
 | `L` | Slide | Glide (portamento) to this note at a given rate | PSG + FM |
