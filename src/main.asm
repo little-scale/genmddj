@@ -348,6 +348,9 @@ ip_vib     equ 14                   ; vibrato (packed)
 ip_trm     equ 15                   ; tremolo (packed)
 ip_mode    equ 18                   ; NOISE: 0 white, 1 periodic  (offsets 16/17 unused now)
 ip_rate    equ 19                   ; NOISE: 0-2 = clk/512,1024,2048; 3 = pitched (T3)
+i_cluster  equ 20                   ; TONE: cluster mode 0=OFF 1=UNI1 2=UNI2 3=FIFTH 4=POWER 5=OCT1 6=OCT2 7=CHORD (T1 drives T2/T3)
+i_crd1     equ 21                   ; TONE cluster: T2 level drop below T1 (0-15), echo RD1-style
+i_crd2     equ 22                   ; TONE cluster: T3 level drop below T1 (0-15), echo RD2-style
 ; WAVE instrument fields (i_type 2) overlay the PSG SWP/VIB/TRM bytes + 16/17 (one type per instr)
 iw_wave    equ 13                   ; which base wave (0-15)
 iw_warp    equ 14                   ; phase skew 0-F
@@ -2022,7 +2025,14 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
 .crkit:
     cmpi.b  #3, d0
     bne.s   .crk1
-    moveq   #11, d1                         ; TONE: 1 + 10 fields
+    moveq   #12, d1                         ; TONE: INST + TYPE + 10 fields + CLUSTER (row 12)
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    tst.b   (i_cluster,a1,d0.w)             ; CLUSTER != OFF -> + RD1/RD2 (rows 13/14)
+    beq.s   .crtd
+    moveq   #14, d1
+.crtd:
+    rts
 .crk1:
     cmpi.b  #4, d0
     bne.s   .crp
@@ -2635,7 +2645,7 @@ edit_psg:
     rts
 .ep_t:
     cmpi.b  #1, cur_row
-    bne.s   .ep_field
+    bne     .ep_field
     lea     instrum, a3                    ; row 1 = TYPE
     moveq   #0, d0
     move.b  cur_instr, d0
@@ -2672,6 +2682,12 @@ edit_psg:
     move.b  #3, (ip_dcy,a3)                ; ENV: gentle release
     move.b  #8, (iw_pitch,a3)              ; PITCH centred (in tune)
 .ep_nwav:
+    cmpi.b  #3, d0                          ; switched to TONE -> cluster fields default OFF
+    bne.s   .ep_ntone
+    clr.b   (i_cluster,a3)
+    clr.b   (i_crd1,a3)
+    clr.b   (i_crd2,a3)
+.ep_ntone:
     cmpi.b  #5, d0                          ; switched to PERC -> seed cowbell-style frequencies
     bne.s   .ep_twd
     bsr     init_perc_defaults
@@ -2710,11 +2726,35 @@ edit_psg:
     bra     adj_field
 .ep_nkit:
     cmpi.b  #2, (i_type,a3)                ; WAVE -> the WAVE field set
-    beq.s   .ep_wavef
+    beq     .ep_wavef
 .ep_psgf:
     moveq   #0, d0
     move.b  cur_row, d0
     subq.b  #2, d0                          ; field index
+    cmpi.b  #3, (i_type,a3)                ; TONE + idx>=10 -> cluster fields (not in psg_off)
+    bne.s   .ep_psgstd
+    cmpi.b  #10, d0
+    blo.s   .ep_psgstd
+    beq.s   .ep_eclu
+    cmpi.b  #11, d0
+    bne.s   .ep_erd2
+    lea     (i_crd1,a3), a1                ; idx 11 = RD1 (T2 level drop)
+    moveq   #15, d3
+    moveq   #4, d4
+    bra     adj_field
+.ep_erd2:
+    lea     (i_crd2,a3), a1                ; idx 12 = RD2 (T3 level drop)
+    moveq   #15, d3
+    moveq   #4, d4
+    bra     adj_field
+.ep_eclu:
+    lea     (i_cluster,a3), a1             ; idx 10 = CLUSTER: cycle 0-7, redraw (field count changes)
+    moveq   #7, d3
+    moveq   #1, d4
+    bsr     adj_field
+    move.b  #1, need_clear
+    rts
+.ep_psgstd:
     lea     psg_off, a1
     moveq   #0, d1
     move.b  (a1,d0.w), d1
@@ -5728,7 +5768,73 @@ PSG_TOP equ 6                             ; PSG field list top row
 ; TONE/NOISE instrument page: INST/TYPE header + a data-driven field list
 render_tone:
     moveq   #10, d7                        ; VOL ATK HLD DCY TSP SWP VIB TRM TBL TBS
-    bra.s   render_psg
+    bsr     render_psg                     ; the shared 10 base fields
+    lea     instrum, a3                    ; --- appended cluster fields (TONE only) ---
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3
+    moveq   #20, d5                         ; CLUSTER label at row 20 (after the TBS group + gap)
+    move.w  d5, d3
+    moveq   #1, d4
+    lea     str_clu, a1
+    bsr     print_at
+    moveq   #0, d1                          ; value = cluster_lbl[i_cluster]
+    move.b  (i_cluster,a3), d1
+    andi.w  #7, d1
+    lsl.w   #2, d1
+    lea     cluster_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #0, d2
+    cmpi.b  #12, cur_row                   ; CLUSTER = field idx 10 -> cur_row 12
+    bne.s   .rt_c
+    moveq   #$60, d2
+.rt_c:
+    move.w  d5, d3
+    moveq   #8, d4
+    bsr     print_hl
+    tst.b   (i_cluster,a3)                  ; RD1/RD2 shown only when CLUSTER != OFF
+    beq.s   .rt_done
+    moveq   #21, d5                         ; RD1 (T2 level drop)
+    move.w  d5, d3
+    moveq   #1, d4
+    lea     str_crd1, a1
+    bsr     print_at
+    moveq   #0, d1
+    move.b  (i_crd1,a3), d1
+    moveq   #0, d2
+    cmpi.b  #13, cur_row
+    bne.s   .rt_r1
+    moveq   #$60, d2
+.rt_r1:
+    bsr     clu_hex1
+    moveq   #22, d5                         ; RD2 (T3 level drop)
+    move.w  d5, d3
+    moveq   #1, d4
+    lea     str_crd2, a1
+    bsr     print_at
+    moveq   #0, d1
+    move.b  (i_crd2,a3), d1
+    moveq   #0, d2
+    cmpi.b  #14, cur_row
+    bne.s   .rt_r2
+    moveq   #$60, d2
+.rt_r2:
+    bsr     clu_hex1
+.rt_done:
+    rts
+clu_hex1:                                 ; d5=row, d1=value(0-15), d2=highlight -> hex1 at (row, col8)
+    moveq   #0, d3                          ; clear high word first (VDP command must not carry garbage)
+    move.w  d5, d3
+    lsl.w   #6, d3
+    addi.w  #8, d3
+    add.w   d3, d3
+    swap    d3
+    ori.l   #$40000003, d3
+    move.l  d3, (a0)
+    move.b  d1, d3
+    move.b  d2, d4
+    bra     draw_hex1
 render_noise:
     moveq   #12, d7                        ; + MODE RATE
 render_psg:                               ; d7 = field count; a0 = VDP_CTRL
@@ -13668,10 +13774,22 @@ str_r512:   dc.b "512     ",0
 str_r1k:    dc.b "1K      ",0
 str_r2k:    dc.b "2K      ",0
 str_pitch:  dc.b "PITCHED ",0
+str_clu:    dc.b "CLUSTER",0
+str_crd1:   dc.b "RD1",0
+str_crd2:   dc.b "RD2",0
+str_cl_off: dc.b "OFF     ",0               ; padded 8 so a shorter value overwrites cleanly
+str_cl_un1: dc.b "UNISON1 ",0
+str_cl_un2: dc.b "UNISON2 ",0
+str_cl_5th: dc.b "FIFTH   ",0
+str_cl_pow: dc.b "POWER   ",0
+str_cl_oc1: dc.b "OCTAVE1 ",0
+str_cl_oc2: dc.b "OCTAVE2 ",0
+str_cl_chd: dc.b "CHORD   ",0
     even
 type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi, str_t_perc
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
+cluster_lbl: dc.l str_cl_off, str_cl_un1, str_cl_un2, str_cl_5th, str_cl_pow, str_cl_oc1, str_cl_oc2, str_cl_chd
 voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_tbl, str_tbs, str_algo, str_fb, str_ams, str_fms, str_psw  ; 11
 voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_tbl, i_tbs, i_algo, i_fb, i_ams, i_fms, i_psweep
 voice_max:  dc.b 15, 15, 3, 255, 31, 15, 7, 7, 3, 7, 255
