@@ -154,6 +154,9 @@ clip_rows  equ $00FFE435           ; clipboard block height (1 for a single fiel
 clip_cols  equ $00FFE436           ; clipboard block width
 clip_col0  equ $00FFE437           ; clipboard source start column (paste keeps columns -> type-safe)
 clip_buf   equ $00FFE438           ; clipboard cell payload (row-major); 160 B = 16 rows (SONG cursor cap) x NCH
+    ifgt (clip_buf+160)-$00FFE5E0
+    fail clip_buf overruns the stack gap (E5E0-E7FF is the 68k stack -- do not allocate there)
+    endc
 echo_mode  equ $00FFE4D8           ; ECHO: 0 off, 1 F2, 2 F2+F3, 3 T2, 4 T2+T3
 echo_tap1  equ $00FFE4D9           ; tap-1 delay (engine ticks; -> groove ticks when grooves land)
 echo_tap2  equ $00FFE4DA           ; tap-2 delay
@@ -245,6 +248,9 @@ c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override 
 e_set      equ $00FFD414           ; E command: 1 if E re-sloped this row (note-on keeps c_eatk/c_edcy, else clears)
 c_slide    equ $00FFD650           ; L command: per-channel portamento offset, word array (PSG period or FM fnum units; ramps to 0). NOTE: a WORD array (NCH*2 bytes) -- kept in the free $D650+ block so it can't overrun the groove/sync/sram vars at $D420+ (the engine_play_reset clear spans c_slide+c_lrate = NCH*3 bytes)
 c_lrate    equ $00FFD664           ; L command: per-channel slide rate (byte array, immediately after c_slide so the clear covers both; 0 = no glide)
+    ifne (c_lrate-c_slide)-(NCH*2)
+    fail c_lrate must sit NCH*2 after c_slide (engine_play_reset clears the pair as one span)
+    endc
 c_lfopitch equ $00FFD66E           ; FM LFO TUNE target: per-channel pitch (fnum) offset, word array (right after c_lrate; cleared each tick by fmlfo_tick + by engine_play_reset)
 c_rtvol    equ $00FFD682           ; R command: per-channel volume drop per retrigger (x nibble; 0 = no decay), NCH bytes
 c_rtdrop   equ $00FFD68C           ; R command: per-channel accumulated retrigger attenuation (0-15), reset each row, NCH bytes
@@ -292,7 +298,6 @@ dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory 
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
-opt_songcol equ $00FFD435           ; (vestigial)
 files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR sub-menu is open
 menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=CANCEL)
 files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
@@ -4212,7 +4217,6 @@ render_instr:
     move.w  d0, VDP_DATA
     rts
 
-FM_VHDR equ 6                             ; (unused; the VOICE: label was removed)
 FM_VTOP equ 6                             ; voice params start here (no VOICE: label now)
 FM_OHDR equ 17                            ; operator grid header (shifted +1 for the TBL/TBS rows)
 FM_OTOP equ 18                            ; operator grid (absorbs the old free row below it)
@@ -9249,12 +9253,8 @@ env_ch:                                   ; a6 = channel
     lea     tbl_ram, a1
     move.b  (t_tsp,a1,d3.w), c_ttsp(a6)   ; signed TSP -> fm_freq_send (drives op4 on PERC)
     move.b  #$FF, c_tvol(a6)              ; default: no VOL override
-    moveq   #0, d1                          ; PERC reads the TSP column ONLY -- VOL must not touch the patch
-    move.b  c_instr(a6), d1
-    mulu.w  #INSTR_SIZE, d1
-    lea     instrum, a4
-    cmpi.b  #5, (i_type,a4,d1.w)
-    beq     .e_done
+    cmpi.b  #5, (i_type,a4)                ; PERC reads the TSP column ONLY -- VOL must not touch
+    beq     .e_done                        ;   the patch (a4 still = instrum[c_instr] from above)
     move.b  (t_vol,a1,d3.w), c_tvol(a6)   ; non-PERC FM: VOL column ($FF = no change) -> carrier-TL override
     bra     .e_done
 .ec_psg:
@@ -9583,9 +9583,14 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     bsr     psg_xcap                       ; X command: cap the PSG level (clobbers d1/a1)
     moveq   #15, d1
     sub.b   d0, d1                        ; attenuation = 15 - volume
-    bsr     psg_tremolo                   ; d1 += tremolo LFO
+    lea     instrum, a4                    ; a4 = instrum[c_instr] once for tremolo + vibrato
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a4
+    bsr     psg_tremolo                   ; d1 += tremolo LFO (a4 = instrument)
     move.w  c_period(a6), d2
-    bsr     psg_vibrato                   ; d2 += vibrato LFO (preserves d1)
+    bsr     psg_vibrato                   ; d2 += vibrato LFO (a4 = instrument; preserves d1)
     moveq   #0, d0                          ; F/P fine pitch -> period. SUBTRACT: a bigger SN76489
     move.b  c_track(a6), d0                 ;   period = a LOWER note, so +pfine must shorten the
     lea     c_pfine, a1                      ;   period to raise pitch -- same direction as FM's F-num
@@ -9723,12 +9728,7 @@ compose_noise:                            ; a6=ch; a3/d6=PSG buf
 ; phase (c_modph) advances by speed each tick, indexing a 16-step signed sine.
 ; SMSGGDJ-style vibrato: triangle LFO on the period, phase += speed*4, 32 steps,
 ; depth -> exponential amplitude (vib_amp), delta = +-amp period units.
-psg_vibrato:                              ; a6=ch, d2=period (in/out); preserves d1
-    lea     instrum, a4
-    moveq   #0, d0
-    move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    adda.w  d0, a4
+psg_vibrato:                              ; a6=ch, a4=instrument, d2=period (in/out); preserves d1
     moveq   #0, d0
     move.b  (ip_vib,a4), d0
     move.w  d0, d3
@@ -9760,12 +9760,7 @@ vib_tri:    dc.b 0,2,4,6,8,10,12,14,16,14,12,10,8,6,4,2     ; 32-step signed tri
 ; TRM = (speed<<4)|depth; own LFO phase (c_modph2). Preserves d2.
 ; SMSGGDJ-style tremolo: a one-directional triangular volume DIP (never louder
 ; than peak), phase += speed*4, 32 steps, dip = depth*tri(0..16..0)/16 (max = depth).
-psg_tremolo:                              ; a6=ch, d1=attenuation (in/out)
-    lea     instrum, a4
-    moveq   #0, d0
-    move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    adda.w  d0, a4
+psg_tremolo:                              ; a6=ch, a4=instrument, d1=attenuation (in/out)
     moveq   #0, d0
     move.b  (ip_trm,a4), d0
     move.w  d0, d3
