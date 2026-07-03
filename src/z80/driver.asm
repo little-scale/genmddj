@@ -18,8 +18,10 @@
 ;
 ; The DAC cadence is YM2612 Timer A (TA_24/TA_25 below); while a sample plays
 ; a tight loop paces one PCM byte per overflow, interleaving one bounded unit of
-; SCB/mailbox work per pass (see 'tight'). The sample state lives in the shadow
-; register set; D_PTR/D_REM/D_STEP/D_HALF RAM cells below are vestigial.
+; SCB/mailbox work per pass (see 'tight'). ALL sample/wave playback state lives in
+; the SHADOW register set (hl'=ptr/phase, de'=remaining/increment, c'=step, b'=half);
+; the primary set keeps b=SCB seq, c=mailbox rotation, d=DAC trig seq, e=T27VAL.
+; Every routine called from the loops must preserve b/c/d/e.
 ; ============================================================
 
 .MEMORYMAP
@@ -49,21 +51,18 @@ BANKS 1
 .DEFINE SCB_DPTR  $1FB3     ; starting window pointer (LE word)
 .DEFINE SCB_DLEN  $1FB5     ; length (LE word)
 .DEFINE D_PLAY    $1FC0     ; 1 = a sample is streaming
-.DEFINE D_PTR     $1FC1     ; current window read pointer
-.DEFINE D_REM     $1FC3     ; bytes remaining
-.DEFINE D_BANK    $1FC5     ; current window bank
+.DEFINE D_BANK    $1FC5     ; current window bank (word; bank_next increments + re-latches)
 .DEFINE SCB_DSTEP $1FB8     ; window advance per feed (1/2/4 = 1x/2x/4x)
 .DEFINE SCB_DHALF $1FB9     ; 1 = 0.5x (feed each byte twice)
-.DEFINE D_STEP    $1FC8
-.DEFINE D_HALF    $1FC9
-.DEFINE D_HFLIP   $1FCA     ; half-rate toggle
+; ($1FC1-$1FC4, $1FC8-$1FCA freed 2026-07-03: ptr/remaining/step/half state moved into the
+;  shadow registers -- see the header note. D_PLAY + D_BANK are the only live cells here.)
 ; --- wavetable mode (32-byte wave looped from local RAM via a phase accumulator) ---
 ; In the SCB mailbox region (the 68k reliably writes here). The YM-write area now lives in
 ; free RAM at $1000, so the mailbox DAC/wave control bytes can never be clobbered by it.
 .DEFINE WV_TRIG   $1FCB     ; wave trigger seq (68k bumps it)
 .DEFINE WV_INC    $1FCC     ; phase increment, 8.8 fixed (LE word)
 .DEFINE WV_BUF    $1FD0     ; 32-byte baked wave buffer ($1FD0-$1FEF)
-.DEFINE WV_PHASE  $1FF0     ; phase accumulator, 8.8 fixed (LE word)
+; ($1FF0-$1FF1 freed: the wave phase accumulator lives in hl' while wave mode is active)
 .DEFINE D_WMODE   $1FF2     ; 1 = wave-loop mode (else ROM PCM)
 .DEFINE WV_LAST   $1FF3     ; last wave trigger processed
 .DEFINE WV_OFF    $1FF4     ; 68k bumps this to stop the wave (park DAC, leave wave mode)
@@ -102,8 +101,6 @@ start:
     ld   (D_WMODE), a           ; not in wave mode
     ld   (WV_TRIG), a
     ld   (WV_LAST), a
-    ld   (WV_PHASE), a          ; phase accumulator starts at step 0
-    ld   (WV_PHASE+1), a
     ld   (WV_OFF), a
     ld   (WV_OLAST), a
     ld   (CH3_SPC), a           ; CH3 special mode off at boot
@@ -201,6 +198,10 @@ mn_play:
     ; fall through
 
 ; ==== tight loop (sample playing): Timer-A-paced feed + ONE bounded work unit per pass.
+; TIMING INVARIANT: consecutive YM data writes rely on the loop overhead for the chip's
+; ~80-cycle busy time -- the shortest path between two su_tri data writes is ~100-120
+; cycles (unit + dispatch + status poll). If you trim the loop below that, add explicit
+; padding in su_fin. The addr->data settle inside a triple is covered by the two nops.
 ; The worst-case gap between Timer-A status reads stays under one sample period, so
 ; overflows are never merged (= the old feed's dropped-sample pitch-down). A pass that
 ; feeds does NO other work; SCB writes and mailbox checks ride the passes in between. ====
@@ -349,6 +350,10 @@ tt_next:
 ; ---- arm the sliced executor on a new SCB: snapshot counts + pointers, fold CH3 into $27 ----
 scb_arm:
     ld   a, (SCB_CNT)
+    cp   31                     ; PSG mailbox is $1F02-$1F1F = 30 bytes; clamp a malformed
+    jr   c, +                   ;   count so the drain can't walk into SCB_YMCNT
+    ld   a, 30
++:
     ld   (SL_PSGN), a
     ld   hl, SCB_DATA
     ld   (SL_PSGP), hl
