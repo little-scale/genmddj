@@ -115,11 +115,12 @@ start:
     ld   (CT_PSG), a
     ld   (CT_YM), a
     ld   (CT_FEED), a
-    ld   (CT_FEED+1), a
     ld   b, a                   ; b = last SCB seq processed
+    ld   c, a                   ; c = tight-loop mailbox rotation index
     ld   d, a                   ; d = last dac trigger
     ld   a, $15
     ld   (T27VAL), a            ; Timer-A reset value (CH3 special folded in at each SCB arm)
+    ld   e, a                   ; e = T27VAL cached (the tight loop's quick flag-clear)
 
     ld   a, $9F                 ; silence all 4 PSG channels
     ld   (PSG), a
@@ -151,6 +152,8 @@ start:
     ld   (YM_A0), a
     ld   a, $05
     ld   (YM_D0), a
+    ld   a, $27                 ; park the YM address at $27: the tight loop's flag-clear is a
+    ld   (YM_A0), a             ;   SINGLE data write (minimises the read->clear race window)
 
 ; ==== relaxed loop (no sample playing): mailbox checks + a blocking SCB drain ====
 main:
@@ -193,6 +196,8 @@ mn_play:
     ld   a, (D_PLAY)            ; a sample/wave started -> switch to the paced tight loop
     or   a
     jr   z, main
+    ld   a, $27                 ; park the YM address for the tight loop's quick clear
+    ld   (YM_A0), a
     ; fall through
 
 ; ==== tight loop (sample playing): Timer-A-paced feed + ONE bounded work unit per pass.
@@ -203,11 +208,10 @@ tight:
     ld   a, (YM_A0)             ; status: bit 0 = Timer A overflow
     bit  0, a
     jr   z, tt_unit
-    ld   a, $27                 ; feed pass: reset the flag (precomputed value -- CH3 folded in)...
-    ld   (YM_A0), a
-    ld   a, (T27VAL)
-    ld   (YM_D0), a
-    ld   a, (D_WMODE)           ; ...and push one PCM/wave byte. The sample state lives in the
+    ld   a, e                   ; feed pass: clear the flag NOW -- the address is parked at $27,
+    ld   (YM_D0), a             ;   so this lands ~30 cycles after the read. Any wider gap races a
+                                ;   following overflow into the clear and silently drops a sample.
+    ld   a, (D_WMODE)           ; ...then push one PCM/wave byte. The sample state lives in the
     or   a                      ;    SHADOW registers (hl'=ptr de'=rem c'=step b'=half) -- the
     jr   nz, tt_wave            ;    jitter-critical path owns them (DESIGN.md invariant).
     exx                         ; --- PCM byte from the ROM window ---
@@ -254,12 +258,11 @@ tf_end:
     ld   (YM_D0), a
 tf_done:
     exx
-    ld   hl, CT_FEED            ; diag: count every fed byte (the feed-rate probe)
+    ld   a, $27                 ; re-park the YM address for the next quick clear
+    ld   (YM_A0), a
+    ld   hl, CT_FEED            ; diag: count every fed byte (one byte; probes use mod-256 diffs)
     inc  (hl)
-    jr   nz, tt_next
-    inc  hl
-    inc  (hl)
-    jr   tt_next
+    jp   tt_next
 tt_wave:
     exx                         ; --- wave byte: WV_BUF[(phase>>8) & 31], phase += inc ---
     ld   a, $2A                 ;    (hl'=phase, de'=increment; b'/c' scratch in wave mode)
@@ -274,15 +277,25 @@ tt_wave:
     add  hl, de
     jr   tf_done
 tt_unit:
-    call scb_unit               ; one queued SCB write (PSG byte or YM triple)...
-    jr   nz, tt_next
-    ld   a, (MB_ROT)            ; ...or, drained: ONE mailbox check, rotating 0-4
+    ld   a, (SL_PSGN)           ; one queued SCB write (PSG byte or YM triple), dispatched inline
+    or   a
+    jr   z, +
+    call su_psg
+    jr   tt_next
++:
+    ld   a, (SL_YMN)
+    or   a
+    jr   z, ++
+    call su_tri
+    jr   tt_next
+++:
+    ld   a, c                   ; ...or, drained: ONE mailbox check, rotating 0-4 (c-resident)
     inc  a
     cp   5
     jr   c, +
     xor  a
 +:
-    ld   (MB_ROT), a
+    ld   c, a
     or   a
     jr   z, tt_ck_dac
     dec  a
@@ -350,6 +363,7 @@ scb_arm:
     or   $40
 +:
     ld   (T27VAL), a
+    ld   e, a                   ; refresh the cached copy (the tight loop clears from e)
     ret
 
 ; ---- execute ONE pending SCB write. Returns NZ if it did work, Z when the list is empty.
@@ -359,7 +373,18 @@ scb_unit:
     ld   a, (SL_PSGN)
     or   a
     jr   z, su_ym
-    dec  a                      ; one PSG byte
+    call su_psg
+    or   1                      ; NZ = did work
+    ret
+su_ym:
+    ld   a, (SL_YMN)
+    or   a
+    ret  z                      ; Z = nothing pending
+    call su_tri
+    or   1                      ; NZ = did work
+    ret
+su_psg:                         ; write one PSG byte (a = SL_PSGN, nonzero)
+    dec  a
     ld   (SL_PSGN), a
     ld   hl, (SL_PSGP)
     ld   a, (hl)
@@ -368,13 +393,9 @@ scb_unit:
     ld   (SL_PSGP), hl
     ld   hl, CT_PSG
     inc  (hl)
-    or   1                      ; NZ = did work
     ret
-su_ym:
-    ld   a, (SL_YMN)
-    or   a
-    ret  z                      ; Z = nothing pending
-    dec  a                      ; one YM triple: part, reg, value
+su_tri:                         ; write one YM triple (a = SL_YMN, nonzero)
+    dec  a
     ld   (SL_YMN), a
     ld   hl, (SL_YMP)
     ld   a, (hl)
@@ -400,6 +421,8 @@ su_p2:
     inc  hl
     ld   (YM_D1), a
 su_fin:
+    ld   a, $27                 ; re-park the YM address (the tight loop's quick clear relies on it)
+    ld   (YM_A0), a
     ld   (SL_YMP), hl
     ld   hl, CT_YM
     inc  (hl)
@@ -432,6 +455,8 @@ dac_arm:
     exx
     ld   a, 1
     ld   (D_PLAY), a
+    ld   a, $27                 ; re-park for the tight loop's quick clear
+    ld   (YM_A0), a
     ret
 
 ; ---- arm wave-loop mode: enable the DAC, mark wave mode. The phase (hl') persists across
@@ -453,6 +478,8 @@ wave_arm:
     ld   a, 1
     ld   (D_WMODE), a
     ld   (D_PLAY), a
+    ld   a, $27                 ; re-park for the tight loop's quick clear
+    ld   (YM_A0), a
     ret
 
 ; ---- stop a sample/wave but LEAVE the DAC enabled, parked at centre ($80). No $2B toggle => no
