@@ -8478,6 +8478,14 @@ advance_ch:                               ; a6 = channel
     tst.b   e_set                          ; no E this row -> drop the envelope re-slope (back to the instrument)
     bne.s   .cre
     lea     c_eatk, a0
+    cmpi.b  #$FF, (a0,d0.w)                ; was an E active? FM needs a repatch to restore
+    beq.s   .cre1                          ;   the instrument's true AR/RR on this note
+    cmpi.b  #6, d0
+    bhs.s   .cre1
+    lea     pshadow, a0
+    move.b  #$FF, (a0,d0.w)
+    lea     c_eatk, a0
+.cre1:
     move.b  #$FF, (a0,d0.w)
     lea     c_edcy, a0
     move.b  #$FF, (a0,d0.w)
@@ -9108,7 +9116,7 @@ exec_cmd:
     move.b  #$FF, c_trow(a6)             ; restart: the note-on step / next tick lands on row 0
     move.b  #1, a_set                      ; note-on must not reload the instrument's i_tbl over it
     bra     .cmddone
-.cmd_e:                                   ; E xy = AHD envelope re-slope: x=attack, y=decay ticks/step (PSG/WAVE; FM AR/RR TODO)
+.cmd_e:                                   ; E xy = envelope re-slope: PSG/WAVE x=attack y=decay ticks/step; FM carrier AR/RR (per-row)
     moveq   #0, d3
     move.b  c_track(a6), d3
     move.b  (3,a1,d1.w), d0               ; xy
@@ -9120,6 +9128,10 @@ exec_cmd:
     lea     c_edcy, a4
     move.b  d2, (a4,d3.w)
     move.b  #1, e_set                       ; E on this row -> note-on keeps the re-slope (else it clears)
+    cmpi.b  #6, d3                          ; FM track (F1-F6) -> force a repatch: the carrier AR/RR
+    bhs    .cmddone                        ;   override is applied in emit_ch_patch
+    lea     pshadow, a4
+    move.b  #$FF, (a4,d3.w)
     bra     .cmddone
 .cmd_l:                                   ; L xx = slide/portamento glide rate; note-on arms the offset (PSG: slide_arm in period units; FM: fm_slide_arm in fnum units, within-octave)
     move.b  (3,a1,d1.w), d2               ; xx = glide rate
@@ -9996,6 +10008,24 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
     lsl.b   #6, d1
     move.b  (4,a3,d4.w), d0
     or.b    d1, d0
+    moveq   #0, d1                          ; E command: carrier AR = 31-2x while c_eatk is set
+    move.b  (i_algo,a3), d1                 ;   (x = attack "ticks/step", 0 = instant -- mirrors the PSG)
+    andi.w  #7, d1
+    lea     carrier_mask, a4
+    btst    d6, (a4,d1.w)
+    beq.s   .ecp_noea
+    moveq   #0, d1
+    move.b  c_track(a6), d1
+    lea     c_eatk, a4
+    move.b  (a4,d1.w), d1
+    cmpi.b  #$FF, d1
+    beq.s   .ecp_noea
+    add.b   d1, d1
+    neg.b   d1
+    addi.b  #31, d1                          ; 31, 29 .. 1
+    andi.b  #%11000000, d0                  ; keep RS
+    or.b    d1, d0
+.ecp_noea:
     move.b  #$50, d3
     bsr     .ecp_emit
     move.b  (5,a3,d4.w), d1                 ; $60: (AM<<7)|D1R
@@ -10011,6 +10041,26 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
     lsl.b   #4, d1
     move.b  (8,a3,d4.w), d0
     or.b    d1, d0
+    moveq   #0, d1                          ; E command: carrier RR = 15-y (min 1) while c_edcy is set
+    move.b  (i_algo,a3), d1
+    andi.w  #7, d1
+    lea     carrier_mask, a4
+    btst    d6, (a4,d1.w)
+    beq.s   .ecp_noed
+    moveq   #0, d1
+    move.b  c_track(a6), d1
+    lea     c_edcy, a4
+    move.b  (a4,d1.w), d1
+    cmpi.b  #$FF, d1
+    beq.s   .ecp_noed
+    neg.b   d1
+    addi.b  #15, d1                          ; 15 .. 0
+    bne.s   .ecp_edok
+    moveq   #1, d1                           ; RR 0 = never releases -> floor at 1
+.ecp_edok:
+    andi.b  #%11110000, d0                  ; keep SL
+    or.b    d1, d0
+.ecp_noed:
     move.b  #$80, d3
     bsr     .ecp_emit
     addq.w  #1, d6
