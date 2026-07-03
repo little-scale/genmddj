@@ -102,4 +102,8 @@ shot: $(ROM) $(RETROSHOT)
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run shot clean
+.PHONY: all run shot clean test
+
+# headless regression tests (needs tools/emu/retroshot + the genesis_plus_gx core)
+test: $(ROM)
+	python3 tools/test/runtests.py
