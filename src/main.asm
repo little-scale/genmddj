@@ -12085,7 +12085,64 @@ scatter_globals:                           ; head slot -> scattered globals
     movea.l (a0)+, a2
     move.b  (a1)+, (a2)
     dbra    d0, .sg
+    bsr     sanitize_song                  ; loaded pools -> clamp indices (see below)
     movem.l (sp)+, d0/a0-a2
+    rts
+
+; clamp every pool index in the just-loaded song so a valid-checksum but wrongly-BUILT
+; save (a buggy converter, a hand-edit) can't index outside the pools at play time --
+; the engine reads phrase IN / chain phrase# / song chain# unclamped on the hot path.
+; Invalid refs go to $FF (empty); an out-of-range phrase command goes to 0 (none).
+sanitize_song:
+    movem.l d0-d1/a0, -(sp)
+    lea     song, a0                       ; song cells: chain# < NCHAINS or $FF
+    move.w  #NSONGROWS*NCH-1, d0
+.sz_sg:
+    move.b  (a0), d1
+    cmpi.b  #$FF, d1
+    beq.s   .sz_sg1
+    cmpi.b  #NCHAINS, d1
+    blo.s   .sz_sg1
+    move.b  #$FF, (a0)
+.sz_sg1:
+    addq.l  #1, a0
+    dbra    d0, .sz_sg
+    lea     chains, a0                     ; chain steps: phrase# < NPHRASES or $FF (tsp byte = any)
+    move.w  #NCHAINS*16-1, d0
+.sz_ch:
+    move.b  (a0), d1
+    cmpi.b  #$FF, d1
+    beq.s   .sz_ch1
+    cmpi.b  #NPHRASES, d1
+    blo.s   .sz_ch1
+    move.b  #$FF, (a0)
+.sz_ch1:
+    addq.l  #2, a0
+    dbra    d0, .sz_ch
+    lea     phrases, a0                    ; phrase rows: note < 96 or $FF; IN < NINSTR or $FF; cmd <= 26
+    move.w  #NPHRASES*16-1, d0
+.sz_ph:
+    move.b  (a0), d1                        ; note
+    cmpi.b  #$FF, d1
+    beq.s   .sz_p1
+    cmpi.b  #96, d1
+    blo.s   .sz_p1
+    move.b  #$FF, (a0)
+.sz_p1:
+    move.b  1(a0), d1                       ; instrument
+    cmpi.b  #$FF, d1
+    beq.s   .sz_p2
+    cmpi.b  #NINSTR, d1
+    blo.s   .sz_p2
+    move.b  #$FF, 1(a0)
+.sz_p2:
+    cmpi.b  #27, 2(a0)                      ; command 0-26
+    blo.s   .sz_p3
+    move.b  #0, 2(a0)
+.sz_p3:
+    addq.l  #4, a0
+    dbra    d0, .sz_ph
+    movem.l (sp)+, d0-d1/a0
     rts
 
 ; sram_setup: d0.b = 0-based slot -> a1 = SRAM physical base, d5.l = byte stride; maps SRAM.
