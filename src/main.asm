@@ -269,7 +269,8 @@ SCR_PHRASE equ 0
 SCR_CHAIN  equ 1
 SCR_SONG   equ 2
 SCR_INSTR  equ 3
-SCR_FM     equ 4                    ; (vestigial: the FM editor now lives inside INSTR)
+SCR_FM     equ 4                    ; RETIRED id (FM editor lives inside INSTR; unreachable -- kept only
+                                    ;   as the hole in the id-indexed tables scr_pos/vrow/hcol/letter)
 SCR_TABLE  equ 5                    ; macro table editor (right of INSTR)
 ; placeholder screens (>= SCR_ECHO have no editable grid) -- the map satellites
 SCR_ECHO   equ 6                    ; below TABLE
@@ -900,8 +901,6 @@ VBlankInt:
     beq.s   .pninst
     cmpi.b  #SCR_TABLE, d1
     beq.s   .pntb
-    cmpi.b  #SCR_FM, d1
-    beq.s   .pninst                          ; FM -> instrument number
     cmpi.b  #SCR_SONG, d1
     bne.s   .pn                              ; other placeholder screens -> 0
     move.b  song_page, d0                    ; SONG -> visible page number (00..0E)
@@ -1363,9 +1362,7 @@ input_tick:
     beq     .done
     move.b  d5, d2
     bsr     edit_value
-    cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM edit -> re-apply patch (heard next note)
-    beq.s   .reapply
-    cmpi.b  #SCR_INSTR, cur_screen
+    cmpi.b  #SCR_INSTR, cur_screen        ; INSTR edit -> re-apply patch (heard next note)
     bne.s   .ne
 .reapply:
     tst.b   cur_row                        ; row 0 = INST# + LIBRARY-slot selectors: selecting an instrument or
@@ -1982,8 +1979,6 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     cmpi.b  #SCR_GROOVE, d0
     beq.s   .rmgroove                        ; GROOVE: selector + 16 tick rows
     bhs.s   .zero                            ; other placeholder screens: cursor locked at row 0
-    cmpi.b  #SCR_FM, d0
-    beq.s   .fm
     cmpi.b  #SCR_INSTR, d0
     beq.s   .fm
     cmpi.b  #SCR_TABLE, d0
@@ -2081,8 +2076,6 @@ col_max:                                  ; -> d1 = highest column index for cur
     beq     .sg
     cmpi.b  #SCR_INSTR, d1
     beq     .instr                       ; long branch: the .fm block below grew (bank column)
-    cmpi.b  #SCR_FM, d1
-    beq     .fm
     cmpi.b  #SCR_TABLE, d1
     bne.s   .cmch
     moveq   #3, d1                        ; TABLE: 4 columns (VOL TSP CMD PRM)
@@ -3000,9 +2993,7 @@ edit_value:
 .ev_go:
     cmpi.b  #SCR_TABLE, cur_screen        ; TABLE: edit the cursor cell
     beq     edit_table
-    cmpi.b  #SCR_FM, cur_screen           ; INSTR/FM editor: dispatch by instrument type
-    beq.s   .instr
-    cmpi.b  #SCR_INSTR, cur_screen
+    cmpi.b  #SCR_INSTR, cur_screen        ; INSTR editor: dispatch by instrument type
     bne.s   .notinstr
 .instr:
     lea     instrum, a1
@@ -3215,9 +3206,7 @@ edit_instr:
 do_insert:
     cmpi.b  #SCR_FILES, cur_screen         ; FILES: B-tap runs the open sub-menu action
     beq     files_action
-    cmpi.b  #SCR_INSTR, cur_screen         ; INSTR/FM: B-tap on a library button = LOAD/SAVE
-    beq.s   .di_bank
-    cmpi.b  #SCR_FM, cur_screen
+    cmpi.b  #SCR_INSTR, cur_screen         ; INSTR: B-tap on a library button = LOAD/SAVE
     bne.s   .di_nb
 .di_bank:                                  ; bank buttons on row 1: col 2 LOAD, col 3 SAVE, col 5 ROM LOAD (cols 1,4 = slots)
     cmpi.b  #1, cur_row
@@ -6791,10 +6780,8 @@ play_context:                             ; C+B: toggle audition of the current 
 .pc_ph:
     cmpi.b  #SCR_PHRASE, d0
     beq.s   .pc_phsolo
-    cmpi.b  #SCR_INSTR, d0                ; INSTR/FM (e.g. entered via C+-> from a phrase note):
-    beq.s   .pc_phsolo                    ;   replay the phrase/track we came from -- cur_phrase +
-    cmpi.b  #SCR_FM, d0                   ;   cur_chan persist across the jump (INSTR edits cur_instr)
-    bne.s   .pc_done                      ; other screens: nothing to audition
+    cmpi.b  #SCR_INSTR, d0                ; INSTR (e.g. entered via C+-> from a phrase note): replay
+    bne.s   .pc_done                      ;   the phrase/track we came from (cur_phrase/cur_chan persist)
 .pc_phsolo:
     move.b  #2, play_mode                 ; PHRASE/INSTR: solo this track's phrase
 .pc_go:
