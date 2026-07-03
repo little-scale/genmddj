@@ -106,4 +106,5 @@ clean:
 
 # headless regression tests (needs tools/emu/retroshot + the genesis_plus_gx core)
 test: $(ROM)
+	python3 tools/test/check_tools.py
 	python3 tools/test/runtests.py
