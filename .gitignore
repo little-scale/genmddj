@@ -39,6 +39,7 @@ tools/*_custom.bin
 #   SAVEFORMAT.md  — SRAM/.gmdj save-format internals
 # (public docs kept tracked: MANUAL.md, CONTROLS.md, PALETTE.md, PRESETS.md)
 RELEASING.md
+IMPROVEMENTS.md
 TESTING.md
 CLAUDE.md
 MIDI.md

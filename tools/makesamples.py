@@ -74,6 +74,9 @@ def load_wav_8bit(path):
     nz = np.where(b != 0x80)[0]
     b = b[:nz[-1] + 1] if len(nz) else b[:0]
     b = np.append(b, np.uint8(0x80))
+    if len(b) > 32767:                                       # Z80 driver length check is signed 15-bit
+        raise SystemExit('%s: pad is %d bytes after resample (max 32767 = %.1fs at %d Hz) '
+                         '-- shorten the source WAV' % (path, len(b), 32767 / DAC_RATE, DAC_RATE))
     return bytes(b)
 
 

@@ -24,7 +24,9 @@ Z80BIN   := $(BUILD)/driver.z80.bin
 SAMPLES  := $(BUILD)/samples.bin
 WAVES    := $(BUILD)/wave_bank.bin
 
-$(SAMPLES): tools/makesamples.py | $(BUILD)
+# FORCE (like the font/wave banks): kit dir names contain spaces, which Make prerequisites
+# can't carry -- so re-bake every build so added/edited WAVs are always picked up.
+$(SAMPLES): tools/makesamples.py FORCE | $(BUILD)
 	python3 tools/makesamples.py samples $(SAMPLES) $(SAMPLEFLAGS)
 
 # FORCE (like the factory bank): so adding/changing/removing tools/font_custom.bin always re-bakes the font.
