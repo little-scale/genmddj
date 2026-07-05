@@ -13110,6 +13110,23 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     lea     str_o_full, a1
     bsr     print_at
 .rf_nofull:
+    tst.b   cont_pending                    ; CONT: "CUED nnn" when a beat-quantized swap is armed
+    beq.s   .rf_ncued
+    moveq   #4, d3
+    moveq   #22, d4
+    lea     str_cued, a1
+    bsr     print_at
+    move.l  #$42360003, (a0)               ; row 4, col 27 (after "CUED ")
+    moveq   #0, d0                          ; rows until fire = 16 - cont_ref's current row
+    move.b  cont_ref, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a1
+    adda.w  d0, a1
+    moveq   #16, d3
+    sub.b   c_row(a1), d3
+    moveq   #0, d4
+    bsr     draw_dec3
+.rf_ncued:
     move.l  #$44000003, (a0)               ; --- divider (row 8, below the map): " SONGS NN " centred ---
     moveq   #40-1, d3
 .rf_dash:
@@ -13822,7 +13839,13 @@ cont_load_service:
     moveq   #0, d0
     move.b  cont_target, d0
     bsr     cont_do_load
+    move.b  #1, vdirty                     ; fired -> refresh FILES (clear the CUED readout)
+    bra.s   .cls_done
 .cls_out:
+    cmpi.b  #SCR_FILES, cur_screen         ; still armed while on FILES -> live CUED countdown
+    bne.s   .cls_done
+    move.b  #1, vdirty
+.cls_done:
     movem.l (sp)+, d0-d7/a0-a6
 .cls_ret:
     rts
@@ -14543,6 +14566,7 @@ str_p_new:  dc.b "NEW",0
 str_p_slot: dc.b "SLOT",0
 str_p_lfo:  dc.b "LFO",0
 str_p_slid: dc.b "SLID",0
+str_cued:   dc.b "CUED ",0
 str_p_save: dc.b "SAVE",0
 str_p_load: dc.b "LOAD",0
 str_saved:    dc.b "SAVED  ",0
