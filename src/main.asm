@@ -280,6 +280,7 @@ SCR_WAVE   equ 9                    ; above INSTR
 SCR_GROOVE equ 10                   ; below CHAIN
 SCR_LFO    equ 11                   ; below INSTR -- FM LFO bank editor
 SCR_FILES  equ 12                   ; below SONG -- the song library (save/load/delete + the list)
+SCR_HELP   equ 13                   ; above TABLE -- a static button-reference help screen
 NSCR       equ 12
 SCR_MAXPOS equ 4                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
@@ -789,6 +790,8 @@ VBlankInt:
     beq     .gecho
     cmpi.b  #SCR_GROOVE, d0                ; GROOVE: selector + 16 tick values
     beq     .ggroove
+    cmpi.b  #SCR_HELP, d0                  ; HELP: static button reference
+    beq     .ghelp
     bhs     .gd                             ; other placeholder screens: header only
     lea     instrum, a1                   ; INSTR: dispatch by instrument type
     moveq   #0, d0
@@ -821,6 +824,9 @@ VBlankInt:
     bra     .gd
 .ggroove:
     bsr     render_groove
+    bra     .gd
+.ghelp:
+    bsr     render_help
     bra     .gd
 .gpsg:
     move.b  (i_type,a1,d0.w), d1          ; a1/d0 still = instrum / cur_instr*48
@@ -1576,6 +1582,13 @@ grid_nav:                                 ; d1 = vrow delta, d2 = hcol delta
     beq     .gn_ret                        ; empty cell (a gap) -> no move; don't hop to the next screen
     cmp.b   cur_screen, d0
     beq     .gn_ret                        ; wrapped back to self -> no move
+    tst.w   d2                             ; HELP is reachable ONLY vertically (UP from / DOWN to TABLE)
+    beq.s   .gn_okhelp
+    cmpi.b  #SCR_HELP, d0
+    beq     .gn_ret                        ; block a horizontal hop INTO help (WAVE-R / OPTS-L)
+    cmpi.b  #SCR_HELP, cur_screen
+    beq     .gn_ret                        ; block a horizontal hop OUT of help
+.gn_okhelp:
     moveq   #0, d1                          ; target cursor row (0 = top of the new screen)
     cmpi.b  #SCR_LFO, cur_screen           ; LFO -> INSTR on an FM instrument: land on OP1 MUL
     bne.s   .gn_notlfo
@@ -11449,6 +11462,69 @@ draw_dec_s:                               ; d3=signed byte, d4=offset; addr pres
 
 ; NB: no per-render body clear -- clear_grid wipes on entry, and these fields are
 ; fixed-width so they self-overwrite; clearing rows 5-16 every render overran VBlank.
+; ---- HELP: a static button reference (SCR_HELP, reached ONLY by UP from TABLE) ----
+; Body starts row 6; rows 6-7 stay <=33 wide to clear the map-cross (rows 5-7, cols 34-38).
+HELP_NLINES equ 14
+render_help:
+    lea     help_lines, a2                ; a2 -> {row.b, col.b, str.l} table (6-byte entries)
+    moveq   #HELP_NLINES-1, d7
+.rh:
+    moveq   #0, d3
+    move.b  (a2)+, d3                      ; row
+    moveq   #0, d4
+    move.b  (a2)+, d4                      ; col
+    movea.l (a2)+, a1                      ; string pointer
+    movem.l d7/a2, -(sp)
+    bsr     print_at
+    movem.l (sp)+, d7/a2
+    dbra    d7, .rh
+    rts
+    even
+help_lines:
+    dc.b  8,1
+    dc.l  hlp1
+    dc.b  9,1
+    dc.l  hlp2
+    dc.b 10,1
+    dc.l  hlp3
+    dc.b 11,1
+    dc.l  hlp4
+    dc.b 12,1
+    dc.l  hlp5
+    dc.b 14,1
+    dc.l  hlp6
+    dc.b 15,1
+    dc.l  hlp7
+    dc.b 17,1
+    dc.l  hlp8
+    dc.b 18,1
+    dc.l  hlp9
+    dc.b 19,1
+    dc.l  hlp10
+    dc.b 20,1
+    dc.l  hlp11
+    dc.b 21,1
+    dc.l  hlp12
+    dc.b 23,1
+    dc.l  hlp13
+    dc.b 24,1
+    dc.l  hlp14
+hlp1:  dc.b "D-PAD         MOVE CURSOR",0
+hlp2:  dc.b "TAP B         INSERT VALUE ON EMPTY",0
+hlp3:  dc.b "HOLD B +L/R   CHANGE VALUE, SMALL STEP",0
+hlp4:  dc.b "HOLD B +U/D   CHANGE VALUE, BIG STEP",0
+hlp5:  dc.b "HOLD C +DPAD  NAVIGATE TO SCREENS",0
+hlp6:  dc.b "HOLD C TAP B  PLAY / STOP TRACK",0
+hlp7:  dc.b "START         PLAY / STOP ALL",0
+hlp8:  dc.b "HOLD B TAP C  CUT VALUE WITH COPY",0
+hlp9:  dc.b "HOLD A TAP B  SELECT BLOCK WITH D-PAD",0
+hlp10: dc.b "- TAP A ON BLOCK  CUT BLOCK WITH COPY",0
+hlp11: dc.b "- TAP B ON BLOCK  COPY BLOCK",0
+hlp12: dc.b "- TAP C ON BLOCK  CANCEL BLOCK",0
+hlp13: dc.b "TAP B,B  CREATE NEW PH/CH FROM EMPTY",0
+hlp14: dc.b "TAP B,B  CLONE NEW PH/CH FROM EXISTING",0
+    even
+
 render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit idiom
     moveq   #3, d3                          ; read-only build stamp above the fields: VER  <ver> <git>
     moveq   #1, d4
@@ -13994,6 +14070,7 @@ str_scr_proj: dc.b "PROJECT",0
 str_scr_wave: dc.b "WAVFORM",0
 str_scr_grv:  dc.b "GROOVE",0
 str_scr_tb: dc.b "TABLE ",0
+str_scr_help: dc.b "HELP  ",0
 str_hdr_tb: dc.b "   V  TSP CMD",0
     even
 table_scol: dc.b 4, 7, 11, 12             ; V(1) TSP(2) CMD-letter PRM(2) -> "A00" adjacent
@@ -14206,12 +14283,12 @@ ch_config:                                      ; type, p1, p2, p3 per channel
 scr_order:  dc.b SCR_SONG, SCR_CHAIN, SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; map pos -> screen id
 scr_pos:    dc.b 2, 1, 0, 3, $FF, 4         ; screen id -> map pos ($FF = off the row, FM)
 ; 2D map grid (3 rows x 5 cols): vrow*5 + hcol -> screen id ($FF = empty cell)
-scr_grid:   dc.b SCR_OPTS, SCR_PROJ,   $FF, SCR_WAVE, $FF   ; row 0 (above)
+scr_grid:   dc.b SCR_OPTS, SCR_PROJ,   $FF, SCR_WAVE, SCR_HELP ; row 0 (above): HELP above TABLE
             dc.b SCR_SONG, SCR_CHAIN,  SCR_PHRASE, SCR_INSTR, SCR_TABLE  ; row 1 (main)
             dc.b SCR_FILES, SCR_GROOVE, $FF, SCR_LFO,  SCR_ECHO ; row 2 (below): FILES under SONG, LFO under INSTR, ECHO under TABLE
-scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2,2,2   ; screen id -> grid row (..GR LFO FILES)
-scr_hcol:   dc.b 2,1,0,3,3,4,4,0,1,3,1,3,0   ; screen id -> grid col (FILES = col 0)
-scr_letter: dc.b "PCSIFTEOPWGLF"            ; screen id -> map-cross letter (F = FILES)
+scr_vrow:   dc.b 1,1,1,1,1,1,2,0,0,0,2,2,2,0 ; screen id -> grid row (..LFO FILES HELP)
+scr_hcol:   dc.b 2,1,0,3,3,4,4,0,1,3,1,3,0,4 ; screen id -> grid col (FILES=0, HELP=4)
+scr_letter: dc.b "PCSIFTEOPWGLFH"           ; screen id -> map-cross letter (F=FILES, H=HELP)
     even
 scr_tabs:                                   ; {header, name} per screen, indexed by SCR_*
     dc.l str_hdr_ph, str_scr_ph             ; 0  PHRASE
@@ -14227,6 +14304,7 @@ scr_tabs:                                   ; {header, name} per screen, indexed
     dc.l str_hdr_in, str_scr_grv            ; 10 GROOVE
     dc.l str_hdr_in, str_scr_lfo            ; 11 LFO
     dc.l str_hdr_in, str_scr_fi             ; 12 FILES
+    dc.l str_hdr_in, str_scr_help           ; 13 HELP
 
 tri_tile:                                   ; right-pointing playhead (tile $1F)
     dc.l $00000000
