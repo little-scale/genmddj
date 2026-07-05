@@ -602,6 +602,10 @@ Start:
     move.b  #0, bank_slot                ; INSTR SRAM bank slot
     move.b  #0, rom_slot                 ; INSTR ROM factory slot
     move.b  #0, playing                  ; boot stopped
+    move.w  #0, cont_mask                 ; CONT boots OFF (a per-set performance choice, not persisted)
+    move.b  #0, cont_slid
+    move.b  #0, cont_pending
+    move.b  #0, glide_left
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
     move.b  #0, cur_instr
@@ -14047,6 +14051,15 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     moveq   #7, d0
     bsr     proj_confirm
     bne.s   .pa_ret
+    tst.b   playing                       ; CONT: playing + flagged tracks -> arm a beat-quantized swap
+    beq.s   .pa_load_now                  ;   (fires on the carried voice's downbeat, keeps the beat)
+    tst.w   cont_mask
+    beq.s   .pa_load_now
+    moveq   #0, d0
+    move.b  proj_slot, d0
+    bsr     cont_load_arm
+    bra.s   .pa_done
+.pa_load_now:
     bsr     load_song
     bra.s   .pa_done
 .pa_save:
