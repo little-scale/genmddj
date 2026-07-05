@@ -7891,8 +7891,9 @@ midi_note_on:                             ; a6=channel, d1=MIDI note 0-127, d2=v
     move.b  #1, (a4,d3.w)
     rts
 
-midi_note_off:                            ; a6=channel -> release
-    move.b  #0, c_keyon(a6)              ; FM key-off (release); PSG release refined later
+midi_note_off:                            ; a6=channel -> release (matches the gate-expiry path)
+    move.b  #0, c_keyon(a6)              ; FM key-off
+    move.b  #3, c_estate(a6)             ; PSG/noise -> decay/release (env state 3; harmless on FM)
     rts
 
 midi_pgm:                                 ; a6=channel, d1=PC 0-95 (MIDI.md §4.2): flat song/ROM/SRAM
