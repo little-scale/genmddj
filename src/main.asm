@@ -1314,6 +1314,15 @@ input_tick:
     move.b  #1, vdirty
     rts
 .nblk:
+    btst    #6, d4                        ; A held + C tap on SONG -> toggle this track's CONT carry flag
+    beq.s   .ncont
+    btst    #4, d3
+    beq.s   .ncont
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .ncont
+    bsr     cont_toggle_track
+    rts
+.ncont:
     btst    #5, d4                        ; B tap (edge)
     beq.s   .ni
     btst    #4, d3                        ; A held + B tap -> enter block-select (anchor at cursor)
@@ -4166,6 +4175,22 @@ render_sfield:                            ; d5=track col, d6=row, d4=cursor off
     bne.s   .nomark
     move.w  #'X', d0
 .nomark:
+    cmpi.w  #$20, d0                       ; CONT cue in the marker column when no playhead here:
+    bne.s   .cont_cue_done                 ;   '>' if this track is bridging, '*' if flagged to carry
+    move.w  d5, d1
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a2
+    adda.w  d1, a2
+    cmpi.b  #CONT_BRIDGE, c_chain(a2)
+    bne.s   .cont_notbr
+    move.w  #'>', d0
+    bra.s   .cont_cue_done
+.cont_notbr:
+    move.w  cont_mask, d1
+    btst    d5, d1
+    beq.s   .cont_cue_done
+    move.w  #'*', d0
+.cont_cue_done:
     move.w  d0, VDP_DATA
     lea     song, a2                       ; chain# at song[(page*16+row)*NCH + col]
     moveq   #0, d2
@@ -13784,6 +13809,19 @@ cont_load_service:
 .cls_out:
     movem.l (sp)+, d0-d7/a0-a6
 .cls_ret:
+    rts
+
+; Toggle the CONT carry flag of the track under the SONG cursor (cur_col = track 0..NCH-1).
+cont_toggle_track:
+    moveq   #0, d0
+    move.b  cur_col, d0
+    cmpi.b  #NCH, d0
+    bhs.s   .ctt_ret
+    move.w  cont_mask, d1
+    bchg    d0, d1                          ; flip the track's carry bit
+    move.w  d1, cont_mask
+    move.b  #1, vdirty                      ; redraw the SONG marker cues
+.ctt_ret:
     rts
 
 load_song:                                 ; load SRAM slot (proj_slot-1) into the work-RAM image
