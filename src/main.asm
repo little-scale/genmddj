@@ -294,6 +294,29 @@ NPHRASES   equ 192                  ; phrases pool count (bumped 160->192, 2026-
 chains     equ $00FF3A60            ; chains pool (CHAIN_SIZE each)   [+$800 vs old $3260: phrases 160->192]
 CHAIN_SIZE equ 32                   ; 16 steps x (phrase#, transpose)
 NCHAINS    equ 128                  ; chains pool count (bumped 96->128; 1-byte index cap 255)
+; --- CONT: song-to-song continuity (CONT.md). RAM below lives OUTSIDE SAVE_BASE so it
+;     survives a live load. Sentinels are off-grid so the arranger can never produce them. ---
+CONT_BRIDGE equ $FE                 ; c_chain sentinel = "this voice is a CONT bridge" (>= NCHAINS; != $FF inactive)
+NCARRY      equ NCH                 ; max simultaneous carries = every track (cont_mask flags each track on/off)
+NGROOVES    equ 16                  ; real grooves 0..15; groove_sel==16 selects cont_scratch_grv (the glide)
+cont_mask        equ $00FFD760      ; word: bit t set = track t carries across the next load
+cont_slid        equ $00FFD762      ; byte: tempo-glide length in bars (0=instant, 1..16)
+cont_pending     equ $00FFD763      ; byte: 1 = a swap is armed (CUED)
+cont_target      equ $00FFD764      ; byte: target save slot for the armed swap
+cont_ref         equ $00FFD765      ; byte: reference track (lowest carried) for the downbeat edge-detect
+cont_lastrow     equ $00FFD766      ; byte: cont_ref's last c_row (edge-detect 15->0)
+carry_slot       equ $00FFD768      ; NCH bytes: per-track carry-buffer index 0..NCARRY-1, or $FF = not carried
+glide_left       equ $00FFD772      ; byte: bars remaining in the glide (0 = idle)
+glide_from       equ $00FFD773      ; byte: old song average frames-per-row
+glide_to         equ $00FFD774      ; byte: new song average frames-per-row
+glide_acc        equ $00FFD776      ; word: Bresenham accumulator for the per-bar rung step
+cont_scratch_grv equ $00FFD778      ; 16 bytes: the scratch groove rewritten per bar during the glide
+carry_buf        equ $00FFD790                    ; NCARRY*PHRASE_SIZE: snapshotted phrases (survives the load)
+carry_instr      equ carry_buf + NCARRY*PHRASE_SIZE ; NCARRY*64: snapshotted instrument records (auto-scales with NCARRY)
+CONT_RAM_END     equ carry_instr + NCARRY*64       ; guard (INSTR_SIZE=64, literal: defined later): stay below perc_live
+    ifgt CONT_RAM_END-$00FFDFE0
+        fail "CONT RAM overruns into perc_live ($FFDFE0) -- shrink NCARRY or relocate"
+    endc
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
 rle_buf    equ $00FF5D60            ; RLE staging: the free gap above the data block (~25 KB, to env_canvas $C000)
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
@@ -7526,14 +7549,21 @@ retrig_psg_rd:
 ; fixed-tempo path (audio differs only by sub-frame write phase, which is inaudible on hardware).
 groove_cur:                               ; -> d0.b = tick-count for the current row (only d0 changes)
     movem.l d1/a0, -(sp)
+    moveq   #0, d0
+    move.b  groove_pos, d0
+    cmpi.b  #NGROOVES, groove_sel         ; == 16 -> the CONT scratch groove (tempo glide, CONT.md 3.2)
+    beq.s   .gc_scr
     moveq   #0, d1
     move.b  groove_sel, d1
     lsl.w   #4, d1                         ; groove_sel * 16 (GRVLEN)
-    moveq   #0, d0
-    move.b  groove_pos, d0
     add.w   d0, d1
     lea     grooves, a0
     move.b  (a0,d1.w), d0
+    bra.s   .gc_z
+.gc_scr:
+    lea     cont_scratch_grv, a0
+    move.b  (a0,d0.w), d0                 ; cont_scratch_grv[groove_pos]
+.gc_z:
     bne.s   .gc_ok
     moveq   #GROOVE, d0                    ; empty slot -> safe fallback (don't stall on a 0)
 .gc_ok:
@@ -7547,12 +7577,19 @@ groove_step:                              ; advance groove_pos to the next row's
     addq.b  #1, d0
     cmpi.b  #16, d0                        ; GRVLEN -> wrap
     bhs.s   .gs_wrap
+    cmpi.b  #NGROOVES, groove_sel         ; the CONT scratch groove?
+    beq.s   .gs_scr
     moveq   #0, d1                         ; next slot 0 (groove shorter than 16) -> wrap too
     move.b  groove_sel, d1
     lsl.w   #4, d1
     add.w   d0, d1
     lea     grooves, a0
     tst.b   (a0,d1.w)
+    bne.s   .gs_set
+    bra.s   .gs_wrap
+.gs_scr:
+    lea     cont_scratch_grv, a0
+    tst.b   (a0,d0.w)                      ; cont_scratch_grv[pos+1] nonzero -> keep, else wrap
     bne.s   .gs_set
 .gs_wrap:
     moveq   #0, d0
@@ -8307,6 +8344,8 @@ advance_ch:                               ; a6 = channel
     addq.b  #1, d0
     cmpi.b  #16, d0
     blo.s   .gotrow
+    cmpi.b  #CONT_BRIDGE, c_chain(a6)     ; CONT bridge: loop its own private phrase (keep c_phrase)
+    beq.s   .cont_bridgeloop
     cmpi.b  #2, play_mode                 ; phrase-solo: loop the phrase
     bne.s   .nextchain
     moveq   #0, d0
@@ -8322,6 +8361,10 @@ advance_ch:                               ; a6 = channel
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
     beq     nt_done
     moveq   #0, d0
+.cont_bridgeloop:
+    moveq   #0, d0                          ; CONT bridge wrap: row 0, keep c_phrase; skip the play-count
+    move.b  d0, c_row(a6)                   ; (c_phrase points at the private carry buffer, not the pool)
+    bra.s   .nophs
 .gotrow:
     move.b  d0, c_row(a6)
     tst.b   d0                              ; row 0 = a new phrase began on this track
@@ -13435,6 +13478,142 @@ save_song:                                 ; save the work-RAM image to SRAM slo
     clr.b   song_dirty
 .sv_done:
     movem.l (sp)+, d0-d7/a0-a3
+    rts
+
+; ============================================================================
+; CONT: song-to-song continuity (CONT.md). Snapshot the masked voices before a
+; live load, then re-plant them as looping "bridges" after it so the groove never
+; stops. v1: the bridge mechanism + a LIVE-style entry (non-carried voices go
+; silent). The beat-quantized arm/fire, the tempo glide, and the SONG-restart
+; entry are the next increments.
+; ============================================================================
+
+; Snapshot every masked, active track: assign a packed carry slot and copy its
+; current phrase -> carry_buf[slot] and instrument -> carry_instr[slot] (both
+; outside SAVE_BASE, so they survive the load). carry_slot[track] = slot / $FF.
+cont_snapshot_all:
+    movem.l d5-d7/a0-a1/a6, -(sp)
+    lea     carry_slot, a0                 ; carry_slot[] <- $FF (none)
+    moveq   #NCH-1, d7
+.csa_clr:
+    move.b  #$FF, (a0)+
+    dbra    d7, .csa_clr
+    moveq   #0, d6                          ; d6 = cont_mask (loaded once; snapshot_one preserves it)
+    move.w  cont_mask, d6
+    moveq   #0, d5                          ; next free slot
+    moveq   #0, d7                          ; track index
+.csa_loop:
+    btst    d7, d6
+    beq.s   .csa_next                       ; track not flagged
+    cmpi.b  #NCARRY, d5
+    bhs.s   .csa_next                       ; pool full -> drop the excess
+    move.w  d7, d0                          ; a6 = &ch_state[track]
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
+    cmpi.b  #$FF, c_chain(a6)              ; inactive track -> nothing to carry
+    beq.s   .csa_next
+    lea     carry_slot, a0                 ; carry_slot[track] = slot
+    move.b  d5, (a0,d7.w)
+    bsr     cont_snapshot_one              ; d5=slot, a6=channel
+    addq.b  #1, d5
+.csa_next:
+    addq.b  #1, d7
+    cmpi.b  #NCH, d7
+    blo.s   .csa_loop
+    movem.l (sp)+, d5-d7/a0-a1/a6
+    rts
+
+cont_snapshot_one:                         ; d5=slot, a6=channel. Clobbers d0-d1/a0-a1.
+    movea.l c_phrase(a6), a0               ; source phrase (ptr into the phrases pool)
+    move.w  d5, d0
+    mulu.w  #PHRASE_SIZE, d0
+    lea     carry_buf, a1
+    adda.w  d0, a1                          ; dest = carry_buf[slot]
+    moveq   #PHRASE_SIZE-1, d1
+.cso_p:
+    move.b  (a0)+, (a1)+
+    dbra    d1, .cso_p
+    lea     instrum, a0                    ; source instrument = instrum[c_instr]
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a0
+    move.w  d5, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     carry_instr, a1
+    adda.w  d0, a1                          ; dest = carry_instr[slot]
+    moveq   #INSTR_SIZE-1, d1
+.cso_i:
+    move.b  (a0)+, (a1)+
+    dbra    d1, .cso_i
+    rts
+
+; Plant (run AFTER the load): each carried track becomes a bridge -- its snapshot
+; instrument goes to a reserved live slot (NINSTR-1-slot), c_phrase points at the
+; private phrase with its IN columns patched to that slot, and CONT_BRIDGE is set.
+; Non-carried tracks are silenced (v1 LIVE-style entry).
+cont_plant_all:
+    movem.l d0-d7/a0-a1/a6, -(sp)
+    moveq   #0, d7                          ; track index
+.cpa_loop:
+    move.w  d7, d0                          ; a6 = &ch_state[track]
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
+    lea     carry_slot, a0
+    moveq   #0, d5
+    move.b  (a0,d7.w), d5                  ; slot for this track ($FF = not carried)
+    cmpi.b  #$FF, d5
+    bne.s   .cpa_bridge
+    move.b  #$FF, c_chain(a6)             ; not carried -> silence
+    move.b  #0, c_vol(a6)
+    move.b  #0, c_estate(a6)
+    move.b  #0, c_keyon(a6)
+    bra     .cpa_next
+.cpa_bridge:
+    moveq   #NINSTR-1, d4                  ; reserved slot = NINSTR-1-slot (top-down)
+    sub.b   d5, d4
+    move.w  d5, d0                          ; copy carry_instr[slot] -> instrum[reserved]
+    mulu.w  #INSTR_SIZE, d0
+    lea     carry_instr, a0
+    adda.w  d0, a0
+    move.w  d4, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    moveq   #INSTR_SIZE-1, d1
+.cpa_ci:
+    move.b  (a0)+, (a1)+
+    dbra    d1, .cpa_ci
+    move.w  d5, d0                          ; c_phrase = &carry_buf[slot]
+    mulu.w  #PHRASE_SIZE, d0
+    lea     carry_buf, a0
+    adda.w  d0, a0
+    move.l  a0, c_phrase(a6)
+    lea     1(a0), a1                       ; patch the 16 IN columns -> reserved slot
+    moveq   #16-1, d1
+.cpa_in:
+    move.b  d4, (a1)
+    addq.l  #4, a1
+    dbra    d1, .cpa_in
+    move.b  #CONT_BRIDGE, c_chain(a6)     ; sentinels
+    move.b  d4, c_instr(a6)
+    move.b  #$FF, c_tbl(a6)                ; a bridge runs no macro table (table data is gone)
+.cpa_next:
+    addq.b  #1, d7
+    cmpi.b  #NCH, d7
+    blo     .cpa_loop
+    movem.l (sp)+, d0-d7/a0-a1/a6
+    rts
+
+; Driver: swap to save slot d0 (1-based) live -- snapshot, load, plant. The v1
+; test/prototype path; the beat-quantized fire + glide + SONG entry wrap this.
+cont_do_load:                              ; d0 = target save slot (1-based)
+    move.b  d0, proj_slot
+    bsr     cont_snapshot_all
+    bsr     load_song
+    bsr     cont_plant_all
     rts
 
 load_song:                                 ; load SRAM slot (proj_slot-1) into the work-RAM image

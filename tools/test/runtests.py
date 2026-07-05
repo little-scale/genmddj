@@ -171,6 +171,19 @@ KIT_SONG = """    tst.b   $00FFD500
 .tkdone:
 """
 
+# CONT: the stress song with T1 (track 6) flagged as a carry, and a frame inject that
+# plants the carried voices as looping bridges at frame 30 (no real load -- proves the
+# bridge mechanism: snapshot -> plant, carried voice keeps sounding from its private
+# buffer + reserved-slot instrument, non-carried voices silenced). See CONT.md.
+CONT_SONG = STRESS_SONG.replace('.tstdone:', '    move.w  #$0040, cont_mask\n.tstdone:')
+CONT_FIRE = """    move.w  g_ticks, d0
+    cmpi.w  #30, d0
+    bne.s   .cfskip
+    bsr     cont_snapshot_all
+    bsr     cont_plant_all
+.cfskip:
+"""
+
 # ---- build/run machinery ----------------------------------------------------------
 
 def build_rom(name, boot_inject=None, frame_inject=None):
@@ -251,6 +264,25 @@ def t_scb_delivery():
     assert dym  >= 20, 'YM triples not flowing (%d moving frames)' % dym
     return 'PSG %d + YM %d moving frames of 64' % (dpsg, dym)
 
+def t_cont_bridge():
+    """CONT: a carried voice, planted as a bridge, keeps sounding from its private buffer;
+    non-carried voices are silenced (the core song-to-song continuity mechanism)."""
+    rom = build_rom('cont_bridge', boot_inject=CONT_SONG, frame_inject=CONT_FIRE + SCB_LOGGER)
+    ram = run_rom(rom, 64)
+    ch = lambda t: 0xE000 + t*40
+    t6c   = ram[ch(6)+20]                                   # T1 c_chain
+    t6ph  = int.from_bytes(ram[ch(6)+16:ch(6)+20], 'big')   # T1 c_phrase
+    t6ins = ram[ch(6)+33]                                   # T1 c_instr
+    t6vol = ram[ch(6)+4]                                    # T1 c_vol
+    t0c, t0ky, t0vol = ram[ch(0)+20], ram[ch(0)+30], ram[ch(0)+4]
+    assert t6c == 0xFE, 'bridge sentinel not set (c_chain=$%02X)' % t6c
+    assert 0xFFD790 <= t6ph < 0xFFD7D0, 'bridge c_phrase not in carry_buf ($%08X)' % t6ph
+    assert t6ins == 31, 'bridge c_instr not the reserved slot (%d)' % t6ins
+    assert t6vol > 0, 'bridge is silent (c_vol=%d)' % t6vol
+    assert t0c == 0xFF and t0ky == 0 and t0vol == 0, \
+        'non-carried F1 not silenced (chain=$%02X keyon=%d vol=%d)' % (t0c, t0ky, t0vol)
+    return 'T1 bridged (c_vol=%d, private phrase), F1 silenced' % t6vol
+
 def t_boot_smoke():
     """The ROM boots to a rendered SONG screen (non-blank display, engine idle-clean)."""
     rom = build_rom('boot_smoke')
@@ -268,6 +300,7 @@ TESTS = [
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
     ('scb_delivery', t_scb_delivery),
+    ('cont_bridge',  t_cont_bridge),
 ]
 
 def main():
