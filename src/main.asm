@@ -7745,6 +7745,7 @@ engine_tick:
     andi.b  #15, live_bar
     bne.s   .no_barq                       ; new master bar -> resolve at-bar queued launches
     bsr     live_resolve_bar
+    bsr     cont_glide_step               ; CONT: step the tempo glide one rung per master bar
 .no_barq:
     moveq   #NCH-1, d7
     lea     ch_state, a6
@@ -13613,8 +13614,107 @@ cont_plant_all:
 cont_do_load:                              ; d0 = target save slot (1-based)
     move.b  d0, proj_slot
     bsr     cont_snapshot_all
-    bsr     load_song
+    bsr     cont_groove_avg               ; capture the OLD tempo (avg frames/row) for the glide
+    move.b  d0, glide_from
+    bsr     load_song                     ; overwrites the song; sets groove_sel = proj_groove
+    bsr     cont_groove_avg               ; the NEW tempo
+    move.b  d0, glide_to
     bsr     cont_plant_all
+    bsr     cont_glide_start              ; ramp old->new over SLID bars (if they differ)
+    rts
+
+; --- tempo glide: genmddj is groove-as-tempo, so glide a flat "scratch" groove (selected by
+;     groove_sel==NGROOVES) one rung per master bar from the old avg to the new (CONT.md 3.2). ---
+cont_groove_avg:                           ; -> d0.b = average frames/row of the active groove
+    movem.l d1-d3/a0, -(sp)
+    moveq   #0, d1
+    move.b  groove_sel, d1
+    cmpi.b  #NGROOVES, d1
+    blo.s   .cga_real
+    lea     cont_scratch_grv, a0
+    bra.s   .cga_sum
+.cga_real:
+    lsl.w   #4, d1
+    lea     grooves, a0
+    adda.w  d1, a0
+.cga_sum:
+    moveq   #0, d0                          ; sum
+    moveq   #0, d2                          ; count of nonzero slots
+    moveq   #16-1, d3
+.cga_l:
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    beq.s   .cga_skip
+    add.w   d1, d0
+    addq.w  #1, d2
+.cga_skip:
+    dbra    d3, .cga_l
+    tst.w   d2
+    beq.s   .cga_z
+    divu.w  d2, d0
+    andi.l  #$0000FFFF, d0                 ; quotient (low word); drop the remainder
+    bra.s   .cga_out
+.cga_z:
+    moveq   #GROOVE, d0                      ; empty -> fallback
+.cga_out:
+    movem.l (sp)+, d1-d3/a0
+    rts
+
+cont_scratch_fill:                         ; d0.b -> fill all 16 cont_scratch_grv slots
+    movem.l d0-d1/a0, -(sp)
+    lea     cont_scratch_grv, a0
+    moveq   #16-1, d1
+.csf_l:
+    move.b  d0, (a0)+
+    dbra    d1, .csf_l
+    movem.l (sp)+, d0-d1/a0
+    rts
+
+cont_glide_start:                          ; arm the glide if SLID>0, tempos differ, and not clock-slaved
+    move.b  #0, glide_left
+    tst.b   cont_slid
+    beq.s   .cgs_ret
+    move.b  glide_from, d0
+    cmp.b   glide_to, d0
+    beq.s   .cgs_ret                        ; already matched
+    move.b  opt_sync, d0                    ; SYNC IN(3)/MIDI(4)/IN24(5) own tempo externally -> no glide
+    cmpi.b  #3, d0
+    bhs.s   .cgs_ret
+    move.b  cont_slid, glide_left
+    move.b  #NGROOVES, groove_sel           ; select the scratch groove
+    move.b  glide_from, d0
+    bsr     cont_scratch_fill
+.cgs_ret:
+    rts
+
+cont_glide_step:                           ; once per master bar: step the ramp, hand off at the end
+    tst.b   glide_left
+    beq.s   .cgt_ret
+    subq.b  #1, glide_left
+    bne.s   .cgt_interp
+    move.b  proj_groove, groove_sel         ; ramp done -> restore the real groove
+    rts
+.cgt_interp:
+    movem.l d0-d3, -(sp)
+    moveq   #0, d1                          ; total bars
+    move.b  cont_slid, d1
+    moveq   #0, d0                          ; bars remaining
+    move.b  glide_left, d0
+    moveq   #0, d2
+    move.b  glide_from, d2
+    moveq   #0, d3
+    move.b  glide_to, d3
+    sub.w   d3, d2                          ; from - to (signed)
+    muls.w  d0, d2                          ; * remaining
+    tst.w   d1
+    beq.s   .cgt_flat
+    divs.w  d1, d2                          ; / total
+.cgt_flat:
+    add.w   d3, d2                          ; + to = current tempo
+    move.b  d2, d0
+    bsr     cont_scratch_fill
+    movem.l (sp)+, d0-d3
+.cgt_ret:
     rts
 
 ; Arm a beat-quantized swap to save slot d0: cont_ref = the lowest flagged track, whose

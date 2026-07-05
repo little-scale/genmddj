@@ -193,6 +193,17 @@ CONT_ARM = """    move.w  g_ticks, d0
 .caskip:
 """
 
+# arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
+CONT_GLIDE_ARM = """    move.w  g_ticks, d0
+    cmpi.w  #5, d0
+    bne.s   .cgaskip
+    move.b  #2, cont_slid
+    move.b  #4, glide_from
+    move.b  #10, glide_to
+    bsr     cont_glide_start
+.cgaskip:
+"""
+
 # ---- build/run machinery ----------------------------------------------------------
 
 def build_rom(name, boot_inject=None, frame_inject=None):
@@ -303,6 +314,18 @@ def t_cont_quantize():
     assert fired[0xE104] == 0xFE, 'fired but did not plant the bridge (c_chain=$%02X)' % fired[0xE104]
     return 'armed, held past frame 60, fired on a later downbeat'
 
+def t_cont_glide():
+    """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
+    back to the real groove (genmddj is groove-as-tempo, so tempo IS the scratch groove)."""
+    rom = build_rom('cont_glide', boot_inject=STRESS_SONG, frame_inject=CONT_GLIDE_ARM)
+    armed = run_rom(rom, 40)
+    assert armed[0xD420] == 16, 'glide did not select the scratch groove (groove_sel=%d)' % armed[0xD420]
+    assert armed[0xD778] == 4, 'scratch groove not seeded with the old tempo (%d)' % armed[0xD778]
+    done = run_rom(rom, 260)
+    assert done[0xD420] != 16, 'glide never handed back (groove_sel still 16)'
+    assert done[0xD772] == 0, 'glide_left not drained (%d)' % done[0xD772]
+    return 'scratch armed at 4 f/row, ramped, handed off after SLID bars'
+
 def t_boot_smoke():
     """The ROM boots to a rendered SONG screen (non-blank display, engine idle-clean)."""
     rom = build_rom('boot_smoke')
@@ -322,6 +345,7 @@ TESTS = [
     ('scb_delivery', t_scb_delivery),
     ('cont_bridge',  t_cont_bridge),
     ('cont_quantize', t_cont_quantize),
+    ('cont_glide',   t_cont_glide),
 ]
 
 def main():
