@@ -305,6 +305,7 @@ cont_pending     equ $00FFD763      ; byte: 1 = a swap is armed (CUED)
 cont_target      equ $00FFD764      ; byte: target save slot for the armed swap
 cont_ref         equ $00FFD765      ; byte: reference track (lowest carried) for the downbeat edge-detect
 cont_lastrow     equ $00FFD766      ; byte: cont_ref's last c_row (edge-detect 15->0)
+cont_fast        equ $00FFD767      ; byte: 1 = a CONT live load in progress -> dir_load skips the read-back checksum
 carry_slot       equ $00FFD768      ; NCH bytes: per-track carry-buffer index 0..NCARRY-1, or $FF = not carried
 glide_left       equ $00FFD772      ; byte: bars remaining in the glide (0 = idle)
 glide_from       equ $00FFD773      ; byte: old song average frames-per-row
@@ -606,6 +607,7 @@ Start:
     move.b  #0, cont_slid
     move.b  #0, cont_pending
     move.b  #0, glide_left
+    move.b  #0, cont_fast
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
     move.b  #0, cur_instr
@@ -12887,6 +12889,8 @@ dir_load:                                  ; d0 = directory entry index -> load 
     move.l  #(SAVE_DATA/4), d0
     bsr     rle_unpack
 .dl_done2:
+    tst.b   cont_fast                        ; CONT live load: skip the read-back checksum (jam-first; the
+    bne.s   .dl_ok                           ;   blob was checksummed at save time -- ~4 frames off the stall)
     bsr     data_checksum                   ; verify the stored checksum before committing the load
     lea     dir_ent, a0
     move.w  14(a0), d0                       ; entry's stored csum
@@ -13684,8 +13688,10 @@ cont_do_load:                              ; d0 = target directory entry index -
     bsr     cont_groove_avg               ; capture the OLD tempo (avg frames/row) for the glide
     move.b  d0, glide_from
     move.w  (sp)+, d0
+    move.b  #1, cont_fast                  ; fast path: dir_load skips the read-back checksum for the live seam
     bsr     dir_load                      ; decompress the song over SAVE_BASE (the real, compressed loader);
                                           ;   scatter_globals + groove_sel = proj_groove happen inside
+    move.b  #0, cont_fast
     tst.b   proj_mode                     ; SONG (0): restart the new song from its top (non-carried voices
     bne.s   .cdl_live                      ;   play it beat-matched); LIVE: only the bridges sound
     move.b  #0, play_from
