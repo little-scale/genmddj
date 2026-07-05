@@ -13678,12 +13678,14 @@ cont_plant_all:
 
 ; Driver: swap to save slot d0 (1-based) live -- snapshot, load, plant. The v1
 ; test/prototype path; the beat-quantized fire + glide + SONG entry wrap this.
-cont_do_load:                              ; d0 = target save slot (1-based)
-    move.b  d0, proj_slot
+cont_do_load:                              ; d0 = target directory entry index -> load it live
+    move.w  d0, -(sp)                      ; keep the target across the snapshot + groove read
     bsr     cont_snapshot_all
     bsr     cont_groove_avg               ; capture the OLD tempo (avg frames/row) for the glide
     move.b  d0, glide_from
-    bsr     load_song                     ; overwrites the song; sets groove_sel = proj_groove
+    move.w  (sp)+, d0
+    bsr     dir_load                      ; decompress the song over SAVE_BASE (the real, compressed loader);
+                                          ;   scatter_globals + groove_sel = proj_groove happen inside
     tst.b   proj_mode                     ; SONG (0): restart the new song from its top (non-carried voices
     bne.s   .cdl_live                      ;   play it beat-matched); LIVE: only the bridges sound
     move.b  #0, play_from
@@ -14094,16 +14096,7 @@ proj_action:                              ; B-tap on PROJECT: trigger the GO fie
     moveq   #7, d0
     bsr     proj_confirm
     bne.s   .pa_ret
-    tst.b   playing                       ; CONT: playing + flagged tracks -> arm a beat-quantized swap
-    beq.s   .pa_load_now                  ;   (fires on the carried voice's downbeat, keeps the beat)
-    tst.w   cont_mask
-    beq.s   .pa_load_now
-    moveq   #0, d0
-    move.b  proj_slot, d0
-    bsr     cont_load_arm
-    bra.s   .pa_done
-.pa_load_now:
-    bsr     load_song
+    bsr     load_song                     ; legacy raw-slot load (PROJECT path; the live CONT load is on FILES)
     bra.s   .pa_done
 .pa_save:
     clr.b   proj_armed
@@ -14159,6 +14152,22 @@ files_action:                             ; B-tap on FILES: run the selected sub
     clr.b   new_named                        ; saved -> the (empty) slot resets to "(EMPTY)"
     bra     .oa_done
 .oa_load:
+    tst.b   playing                          ; CONT: playing + flagged -> arm a beat-quantized live swap
+    beq.s   .oa_load_stop                     ;   (no transport stop, no immediate load); else stop-and-load
+    tst.w   cont_mask
+    beq.s   .oa_load_stop
+    bsr     dir_count                        ; resolve the cursor selection to a directory entry index
+    moveq   #0, d1
+    move.b  opt_song, d1
+    cmp.l   d0, d1
+    bcc.s   .oa_load_stop                    ; the (empty) slot -> can't CONT into a blank; fall to normal
+    move.l  d1, d0
+    bsr     dir_nth
+    tst.l   d0
+    bmi     .oa_done
+    bsr     cont_load_arm                    ; d0 = dir entry index -> queue the swap (CUED on FILES)
+    bra     .oa_done
+.oa_load_stop:
     bsr     files_stop
     bsr     dir_count                        ; d0 = song count
     moveq   #0, d1
