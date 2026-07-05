@@ -313,7 +313,8 @@ glide_acc        equ $00FFD776      ; word: Bresenham accumulator for the per-ba
 cont_scratch_grv equ $00FFD778      ; 16 bytes: the scratch groove rewritten per bar during the glide
 carry_buf        equ $00FFD790                    ; NCARRY*PHRASE_SIZE: snapshotted phrases (survives the load)
 carry_instr      equ carry_buf + NCARRY*PHRASE_SIZE ; NCARRY*64: snapshotted instrument records (auto-scales with NCARRY)
-CONT_RAM_END     equ carry_instr + NCARRY*64       ; guard (INSTR_SIZE=64, literal: defined later): stay below perc_live
+carry_row        equ carry_instr + NCARRY*64       ; NCARRY bytes: snapshotted c_row (within-phrase phase, for beat-match)
+CONT_RAM_END     equ carry_row + NCARRY            ; guard (INSTR_SIZE=64 literal): stay below perc_live
     ifgt CONT_RAM_END-$00FFDFE0
         fail "CONT RAM overruns into perc_live ($FFDFE0) -- shrink NCARRY or relocate"
     endc
@@ -13549,6 +13550,9 @@ cont_snapshot_one:                         ; d5=slot, a6=channel. Clobbers d0-d1
 .cso_i:
     move.b  (a0)+, (a1)+
     dbra    d1, .cso_i
+    move.w  d5, d0                          ; save the within-phrase phase for a beat-matched replant
+    lea     carry_row, a1
+    move.b  c_row(a6), (a1,d0.w)
     rts
 
 ; Plant (run AFTER the load): each carried track becomes a bridge -- its snapshot
@@ -13568,7 +13572,9 @@ cont_plant_all:
     move.b  (a0,d7.w), d5                  ; slot for this track ($FF = not carried)
     cmpi.b  #$FF, d5
     bne.s   .cpa_bridge
-    move.b  #$FF, c_chain(a6)             ; not carried -> silence
+    tst.b   proj_mode                     ; not carried: SONG (0) -> engine_play_reset already restarted
+    beq     .cpa_next                      ;   it on the new song; LIVE -> silence (performer brings it in)
+    move.b  #$FF, c_chain(a6)
     move.b  #0, c_vol(a6)
     move.b  #0, c_estate(a6)
     move.b  #0, c_keyon(a6)
@@ -13602,6 +13608,9 @@ cont_plant_all:
     move.b  #CONT_BRIDGE, c_chain(a6)     ; sentinels
     move.b  d4, c_instr(a6)
     move.b  #$FF, c_tbl(a6)                ; a bridge runs no macro table (table data is gone)
+    move.w  d5, d0                          ; restore the snapshot phase (beat-match; plays out from here)
+    lea     carry_row, a0
+    move.b  (a0,d0.w), c_row(a6)
 .cpa_next:
     addq.b  #1, d7
     cmpi.b  #NCH, d7
@@ -13617,6 +13626,11 @@ cont_do_load:                              ; d0 = target save slot (1-based)
     bsr     cont_groove_avg               ; capture the OLD tempo (avg frames/row) for the glide
     move.b  d0, glide_from
     bsr     load_song                     ; overwrites the song; sets groove_sel = proj_groove
+    tst.b   proj_mode                     ; SONG (0): restart the new song from its top (non-carried voices
+    bne.s   .cdl_live                      ;   play it beat-matched); LIVE: only the bridges sound
+    move.b  #0, play_from
+    bsr     engine_play_reset
+.cdl_live:
     bsr     cont_groove_avg               ; the NEW tempo
     move.b  d0, glide_to
     bsr     cont_plant_all

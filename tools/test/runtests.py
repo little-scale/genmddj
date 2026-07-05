@@ -294,14 +294,11 @@ def t_cont_bridge():
     t6ph  = int.from_bytes(ram[ch(6)+16:ch(6)+20], 'big')   # T1 c_phrase
     t6ins = ram[ch(6)+33]                                   # T1 c_instr
     t6vol = ram[ch(6)+4]                                    # T1 c_vol
-    t0c, t0ky, t0vol = ram[ch(0)+20], ram[ch(0)+30], ram[ch(0)+4]
     assert t6c == 0xFE, 'bridge sentinel not set (c_chain=$%02X)' % t6c
     assert 0xFFD790 <= t6ph < 0xFFD7D0, 'bridge c_phrase not in carry_buf ($%08X)' % t6ph
     assert t6ins == 31, 'bridge c_instr not the reserved slot (%d)' % t6ins
     assert t6vol > 0, 'bridge is silent (c_vol=%d)' % t6vol
-    assert t0c == 0xFF and t0ky == 0 and t0vol == 0, \
-        'non-carried F1 not silenced (chain=$%02X keyon=%d vol=%d)' % (t0c, t0ky, t0vol)
-    return 'T1 bridged (c_vol=%d, private phrase), F1 silenced' % t6vol
+    return 'T1 bridged (c_vol=%d, reads its private phrase)' % t6vol
 
 def t_cont_quantize():
     """CONT: an armed swap HOLDS until the carried voice's phrase downbeat, then fires
@@ -312,7 +309,9 @@ def t_cont_quantize():
     fired = run_rom(rom, 220)
     assert fired[0xD763] == 0, 'CONT never fired (still armed at frame 220)'
     assert fired[0xE104] == 0xFE, 'fired but did not plant the bridge (c_chain=$%02X)' % fired[0xE104]
-    return 'armed, held past frame 60, fired on a later downbeat'
+    # SONG mode: the non-carried F1 (track 0) is RESTARTED on the new song, not silenced
+    assert fired[0xE014] != 0xFF, 'non-carried F1 silenced in SONG mode (should restart, c_chain=$%02X)' % fired[0xE014]
+    return 'armed, held past frame 60, fired on a downbeat; F1 restarted (SONG entry)'
 
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
