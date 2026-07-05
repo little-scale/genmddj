@@ -7760,6 +7760,7 @@ engine_tick:
     lea     CHSIZE(a6), a6
     dbra    d7, .adv
 .noadv:
+    bsr     cont_load_service             ; CONT: fire a beat-quantized live swap on the downbeat
     cmpi.b  #2, opt_sync                  ; SYNC PULSE -> drive the Volca/PO pulse (TR, 2 PPQN); OUT now
     bne.s   .noout                         ;   emits per row in .do_adv, not per frame
     bsr     sync_pulse_out
@@ -13614,6 +13615,61 @@ cont_do_load:                              ; d0 = target save slot (1-based)
     bsr     cont_snapshot_all
     bsr     load_song
     bsr     cont_plant_all
+    rts
+
+; Arm a beat-quantized swap to save slot d0: cont_ref = the lowest flagged track, whose
+; phrase downbeat (row 15->0) fires the swap so the transition lands on the beat. No-op
+; when nothing is flagged (the caller can then just load_song directly).
+cont_load_arm:                             ; d0 = target save slot (1-based)
+    movem.l d0-d2/a0, -(sp)
+    tst.w   cont_mask
+    beq.s   .cla_done
+    move.b  d0, cont_target
+    move.w  cont_mask, d1                  ; lowest set bit -> reference track
+    moveq   #0, d2
+.cla_scan:
+    btst    d2, d1
+    bne.s   .cla_found
+    addq.b  #1, d2
+    cmpi.b  #NCH, d2
+    blo.s   .cla_scan
+    bra.s   .cla_done
+.cla_found:
+    move.b  d2, cont_ref
+    move.w  d2, d0                          ; seed cont_lastrow from the ref voice's row
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a0
+    adda.w  d0, a0
+    move.b  c_row(a0), cont_lastrow
+    move.b  #1, cont_pending
+.cla_done:
+    movem.l (sp)+, d0-d2/a0
+    rts
+
+; Serviced each tick from .noadv: fire the armed swap when cont_ref's row wraps to 0.
+cont_load_service:
+    tst.b   cont_pending
+    beq.s   .cls_ret
+    movem.l d0-d7/a0-a6, -(sp)
+    moveq   #0, d0
+    move.b  cont_ref, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a0
+    adda.w  d0, a0
+    move.b  c_row(a0), d1                  ; current row
+    move.b  cont_lastrow, d2
+    move.b  d1, cont_lastrow
+    tst.b   d1                              ; downbeat = at row 0 now...
+    bne.s   .cls_out
+    tst.b   d2                              ; ...and not at 0 last tick (a real 15->0 wrap)
+    beq.s   .cls_out
+    move.b  #0, cont_pending               ; FIRE the queued swap on this downbeat
+    moveq   #0, d0
+    move.b  cont_target, d0
+    bsr     cont_do_load
+.cls_out:
+    movem.l (sp)+, d0-d7/a0-a6
+.cls_ret:
     rts
 
 load_song:                                 ; load SRAM slot (proj_slot-1) into the work-RAM image

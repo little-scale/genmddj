@@ -184,6 +184,15 @@ CONT_FIRE = """    move.w  g_ticks, d0
 .cfskip:
 """
 
+# arm a beat-quantized swap at frame 5 (fires later, on the carried voice's downbeat)
+CONT_ARM = """    move.w  g_ticks, d0
+    cmpi.w  #5, d0
+    bne.s   .caskip
+    moveq   #1, d0
+    bsr     cont_load_arm
+.caskip:
+"""
+
 # ---- build/run machinery ----------------------------------------------------------
 
 def build_rom(name, boot_inject=None, frame_inject=None):
@@ -283,6 +292,17 @@ def t_cont_bridge():
         'non-carried F1 not silenced (chain=$%02X keyon=%d vol=%d)' % (t0c, t0ky, t0vol)
     return 'T1 bridged (c_vol=%d, private phrase), F1 silenced' % t6vol
 
+def t_cont_quantize():
+    """CONT: an armed swap HOLDS until the carried voice's phrase downbeat, then fires
+    (beat-quantized) -- not the instant LOAD is pressed."""
+    rom = build_rom('cont_quantize', boot_inject=CONT_SONG, frame_inject=CONT_ARM)
+    held = run_rom(rom, 60)
+    assert held[0xD763] == 1, 'CONT fired before a downbeat (cont_pending cleared early)'
+    fired = run_rom(rom, 220)
+    assert fired[0xD763] == 0, 'CONT never fired (still armed at frame 220)'
+    assert fired[0xE104] == 0xFE, 'fired but did not plant the bridge (c_chain=$%02X)' % fired[0xE104]
+    return 'armed, held past frame 60, fired on a later downbeat'
+
 def t_boot_smoke():
     """The ROM boots to a rendered SONG screen (non-blank display, engine idle-clean)."""
     rom = build_rom('boot_smoke')
@@ -301,6 +321,7 @@ TESTS = [
     ('kit_endstop',  t_kit_endstop),
     ('scb_delivery', t_scb_delivery),
     ('cont_bridge',  t_cont_bridge),
+    ('cont_quantize', t_cont_quantize),
 ]
 
 def main():
