@@ -7766,8 +7766,63 @@ midi_mode_change:                          ; SYNC mode entered/left MIDI -> sile
     move.b  #0, $00A1000B                 ; left MIDI -> release the lines; play-start re-sets per mode
     rts
 
-midi_poll:                                ; STUB until the ESP32-S3 2-wire link exists (MIDI.md §3).
-    rts                                   ; the wire feeds midi_dispatch; dispatch is testable now by injection.
+MIDI_CAP    equ 16     ; max events drained per frame -- bounds midi_poll's shift-in time
+MIDI_SETTLE equ 8      ; midi_clock_bit inter-edge settle (dbra count; ~10us; HW-tunable)
+
+; Clock buffered events off the ESP32-S3 wire and dispatch them (MIDI.md §3.3).
+; genmddj is the clock master: TR (bit5 of $A10005) = CLK output, TH (bit6) = DAT
+; input (pins configured $20 by midi_mode_change). Per event the S3 presents a
+; leading flag bit (1 -> a fixed 3-byte frame follows; 0 -> queue empty); the
+; inter-frame gap serves as the idle gap that (re)aligns the S3 to the flag.
+midi_poll:                                ; SYNC=MIDI: shift in events -> midi_dispatch
+    lea     $00A10005, a0                 ; controller port-2 data reg
+    move.b  #$00, (a0)                    ; CLK low = idle (the frame gap already let the S3 arm the flag)
+    moveq   #MIDI_CAP-1, d7               ; cap events this frame
+.mp_loop:
+    bsr     midi_clock_bit                ; d0 = leading flag bit
+    tst.b   d0
+    beq.s   .mp_done                      ; 0 -> queue empty
+    bsr     midi_clock_byte
+    move.b  d0, d4                        ; status = type<<4 | channel
+    bsr     midi_clock_byte
+    move.b  d0, d5                        ; data 1
+    bsr     midi_clock_byte
+    move.b  d0, d6                        ; data 2
+    move.b  d4, d0
+    move.b  d5, d1
+    move.b  d6, d2
+    move.w  d7, -(sp)                     ; dispatch clobbers d0-d4/a0/a4/a6 -> save the loop counter
+    bsr     midi_dispatch
+    move.w  (sp)+, d7
+    lea     $00A10005, a0                 ; restore the port pointer (midi_pgm reuses a0)
+    dbra    d7, .mp_loop
+.mp_done:
+    move.b  #$00, (a0)                    ; leave CLK low (idle)
+    rts
+
+; 2-wire shift-in (MIDI.md §3.1): genmddj pulses CLK, samples DAT on the rising
+; edge; the S3 changes DAT on the falling edge. MSB first. a0 = $A10005 throughout.
+midi_clock_byte:                          ; -> d0.b = one byte, MSB first
+    moveq   #8-1, d3
+    moveq   #0, d1                         ; accumulator
+.cby:
+    bsr     midi_clock_bit                ; d0 = next bit
+    add.b   d1, d1                         ; acc <<= 1
+    or.b    d0, d1
+    dbra    d3, .cby
+    move.b  d1, d0
+    rts
+
+midi_clock_bit:                           ; -> d0.b = sampled DAT bit (0/1)
+    move.b  #$20, (a0)                    ; CLK high (bit5): rising edge -> sample the presented bit
+    move.b  (a0), d0                       ; read DAT (bit6) while CLK is high
+    move.b  #$00, (a0)                    ; CLK low: falling edge -> the S3 sets up the next bit
+    moveq   #MIDI_SETTLE, d2              ; settle: let the S3's edge ISR update DAT before the next rising edge
+.cbi:
+    dbra    d2, .cbi
+    lsr.b   #6, d0                          ; DAT is bit 6 -> bit 0
+    andi.b  #1, d0
+    rts
 
 ; --- MIDI event dispatch (MIDI.md §3.4) -- d0=status (type<<4|chan), d1=data1, d2=data2 ---
 midi_dispatch:
