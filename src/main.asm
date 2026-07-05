@@ -2056,7 +2056,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     movem.l (sp)+, d0/d2-d3
     rts
 .rmproj:
-    moveq   #3, d1                          ; TMPO TSP MODE LFO (NAME is read-only here -- rename only in FILES)
+    moveq   #4, d1                          ; TMPO TSP MODE LFO SLID (NAME is read-only -- rename in FILES)
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
@@ -12044,6 +12044,18 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     add.w   d2, d3
     move.w  d3, VDP_DATA
 .plf_d:
+    moveq   #10, d3                          ; SLID: CONT tempo-glide length in bars (0=instant, 1-16)
+    moveq   #1, d4
+    lea     str_p_slid, a1
+    bsr     print_at
+    move.l  #$45100003, (a0)                ; row 10, col 8
+    moveq   #0, d4
+    cmpi.b  #4, cur_row
+    bne.s   .psld
+    moveq   #$60, d4
+.psld:
+    move.b  cont_slid, d3
+    bsr     draw_hex2
     moveq   #11, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
     moveq   #1, d4
     lea     str_saved, a1
@@ -13954,7 +13966,15 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     beq.s   .ep_mode
     cmpi.b  #3, d0
     beq.s   .ep_lfo
+    cmpi.b  #4, d0
+    beq.s   .ep_slid
     rts                                       ; NAME is read-only on PROJECT (rename only in FILES)
+.ep_slid:
+    move.b  #0, song_dirty                  ; CONT (SLID) is a performance choice -> not saved, don't dirty
+    lea     cont_slid, a1
+    moveq   #16, d3                          ; 0-16 bars
+    moveq   #1, d4
+    bra     adj_field
 .ep_mode:
     lea     proj_mode, a1
     moveq   #1, d3
@@ -14522,6 +14542,7 @@ str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0
 str_p_slot: dc.b "SLOT",0
 str_p_lfo:  dc.b "LFO",0
+str_p_slid: dc.b "SLID",0
 str_p_save: dc.b "SAVE",0
 str_p_load: dc.b "LOAD",0
 str_saved:    dc.b "SAVED  ",0
