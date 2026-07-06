@@ -7929,10 +7929,13 @@ midi_clock_bit:                           ; -> d0.b = sampled DAT bit (0/1)
     ; -> the S3 wires straight to GPIO4 with a pull-up, no divider (same electrical regime as the
     ; Link/counter lines). Waveform is unchanged (idle-low, pulse-high, sample-on-rising), so the
     ; S3 responder is byte-identical. $A10005 bit5 stays 0 throughout (set in midi_mode_change).
-    move.b  #$00, $00A1000B               ; CLK high: RELEASE TR (input) -> pull-up drives it high (rising edge)
-    move.b  (a0), d0                       ; read DAT (bit6, S3-driven; set up on the previous falling edge)
-    move.b  #$20, $00A1000B               ; CLK low: DRIVE TR low (output, data=0) -> falling edge; S3 sets next bit
-    moveq   #MIDI_SETTLE, d2              ; settle: let the S3's edge ISR update DAT before the next rising edge
+    move.b  #$00, $00A1000B               ; CLK high: RELEASE TR (input) -> pull-up drives it high
+    moveq   #MIDI_SETTLE, d2              ; HIGH-phase settle (open-drain): the line rises via the S3 pull-up
+.cbh:                                     ;   (an RC ramp, not a fast push-pull edge), so hold it high long
+    dbra    d2, .cbh                       ;   enough to reach a valid logic 1 -- else the release pulse is too
+    move.b  (a0), d0                       ;   brief, no clean high->low happens, and the S3 sees no edge (edges=0).
+    move.b  #$20, $00A1000B               ; CLK low: DRIVE TR low (output, data=0) -> clean falling edge; S3 sets next bit
+    moveq   #MIDI_SETTLE, d2              ; LOW-phase settle: let the S3's edge ISR present the next bit
 .cbi:
     dbra    d2, .cbi
     lsr.b   #6, d0                          ; DAT is bit 6 -> bit 0
