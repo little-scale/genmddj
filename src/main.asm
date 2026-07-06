@@ -115,9 +115,16 @@ btap_frame equ $00FFE3AE           ; g_ticks at the last B-tap (word) -- double-
 btap_addr  equ $00FFE3B0           ; field address of the last B-tap (long) -- double-tap = same cell
 DBLTAP_FRAMES equ 24               ; max frames between B-taps to count as a double-tap (~0.40s NTSC / 0.48s PAL)
 pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
-patch_done equ $00FFE3BE           ; 1 = an FM operator patch was emitted this tick (budget 1/tick)
-PATCH_CAP  equ 16                  ; max ym_count before emitting a ~30-write patch (SCB headroom)
-YM_CAP     equ 43                  ; max ym_count before a note's freq/key (per-tick work budget; buffer at $1000 holds 256)
+patch_done equ $00FFE3BE           ; count of FM operator patches emitted this tick (budget MAXPATCH/tick)
+MAXPATCH   equ 2                   ; max full operator patches per tick. Dense multi-channel repatch rows
+                                   ;   serialise across this many ticks (was hard 1/tick). Ceiling ~3-4:
+                                   ;   each patch is ~28 triples and the whole SCB must flush inside one
+                                   ;   frame (~139-triple drain budget with the su_fin busy guard).
+PATCH_CAP  equ 40                  ; max ym_count before emitting a ~28-write patch (fits 2 patches: the
+                                   ;   2nd is still allowed at d5~28; a 3rd is blocked here AND by MAXPATCH)
+YM_CAP     equ 64                  ; max ym_count before a note's freq/key (per-tick work budget; raised
+                                   ;   with PATCH_CAP so 2 patches + keys don't spuriously defer same-instr
+                                   ;   key-ons. Buffer at $1000 holds 256; 64 triples flush in ~6.8 ms)
 lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $B0 value (FB<<3|ALGO)
 lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
 lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
@@ -7705,7 +7712,7 @@ sync_in_delta:                            ; IN: -> d3.b = engine ticks to run th
     rts
 
 engine_tick:
-    move.b  #0, patch_done                ; FM operator-patch budget: one per tick
+    move.b  #0, patch_done                ; FM operator-patch budget: reset the per-tick counter (MAXPATCH/tick)
     move.b  opt_sync, d0                  ; detect MIDI-takeover entry/exit (silence + pin reconfig)
     cmp.b   sync_shadow, d0
     beq.s   .smc_done
@@ -10018,12 +10025,12 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     lea     pshadow, a4
     cmp.b   (a4,d0.w), d1
     beq.s   .cf_keys                        ; that patch already loaded on this channel -> just key
-    tst.b   patch_done
-    bne     .cf_defer
+    cmpi.b  #MAXPATCH, patch_done           ; already emitted MAXPATCH patches this tick? -> defer (retry next)
+    bhs     .cf_defer
     cmpi.w  #PATCH_CAP, d5
     bhi     .cf_defer
     move.b  d1, (a4,d0.w)                   ; pshadow[track] = instrument loaded (Y or own); a later plain
-    move.b  #1, patch_done                  ;   note then has pshadow != c_instr -> re-patches = Y reverts
+    addq.b  #1, patch_done                  ;   note then has pshadow != c_instr -> re-patches = Y reverts
     bsr     emit_ch_patch                   ; d1 = chosen instrument's operator patch (before key-on)
     bra.s   .cf_emit
 .cf_keys:
@@ -10062,11 +10069,11 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     bne.s   .nrepatch
     tst.b   perc_repatch
     beq.s   .nrepatch
-    tst.b   patch_done                      ; respect the 1-patch/tick + SCB budget
-    bne.s   .nrepatch
+    cmpi.b  #MAXPATCH, patch_done            ; respect the MAXPATCH/tick + SCB budget
+    bhs.s   .nrepatch
     cmpi.w  #PATCH_CAP, d5
     bhi.s   .nrepatch
-    move.b  #1, patch_done
+    addq.b  #1, patch_done
     move.b  #0, perc_repatch
     move.b  c_instr(a6), d1
     bsr     emit_ch_patch
