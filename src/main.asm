@@ -69,6 +69,8 @@ g_seq      equ $00FFE201
 cur_row    equ $00FFE202
 cur_col    equ $00FFE203
 key_prev   equ $00FFE204
+key_raw    equ $00FFD320           ; pad debounce: last frame's RAW read (pre-debounce)
+key_stab   equ $00FFD321           ; pad debounce: 1-frame-confirmed stable button state
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -570,6 +572,8 @@ Start:
     move.b  #0, cur_row
     move.b  #0, cur_col
     move.b  #0, key_prev
+    move.b  #0, key_raw
+    move.b  #0, key_stab
     move.b  #0, key_rpt
     move.b  #0, dpad_prev
     move.b  #48, last_note
@@ -1269,6 +1273,20 @@ screen_ptr:
 ; ============================================================
 input_tick:
     bsr     pad_read
+    ; Asymmetric debounce: accept a PRESS immediately (a fast audition tap held <2 frames
+    ; must still register), but confirm a RELEASE over two frames. A release-bounce (a lone
+    ; high as the contact opens) lands inside that confirm window and only holds key_stab
+    ; high, so it can't fabricate a low->high press edge -> no phantom second note.
+    ;   key_stab = raw | (key_stab & (raw | key_raw))
+    move.b  key_raw, d1                  ; last frame's raw read
+    move.b  d0, key_raw                  ; stash this raw read for next frame
+    move.b  d0, d2
+    or.b    d1, d2                       ; d2 = raw | key_raw  (high now or last frame)
+    move.b  key_stab, d3
+    and.b   d2, d3                       ; hold a bit high unless it's been low two frames
+    or.b    d0, d3                       ; ...but a high raw sets it now (press = immediate)
+    move.b  d3, key_stab
+    move.b  d3, d0                        ; feed the rest of input off the debounced state
     move.b  d0, d3
     move.b  key_prev, d4
     move.b  d3, key_prev
