@@ -7869,7 +7869,8 @@ midi_mode_change:                          ; SYNC mode entered/left MIDI -> sile
     bsr     midi_panic                      ; all-notes-off (clean slate on entry and on exit)
     cmpi.b  #4, opt_sync
     bne.s   .mmc_off
-    move.b  #$20, $00A1000B               ; MIDI: TR(5)=CLK output, TH(6)=DAT input (HW-unverified, MIDI.md §3.1)
+    move.b  #$00, $00A10005               ; TR data latch = 0: open-drain CLK only ever drives LOW, never 5V
+    move.b  #$20, $00A1000B               ; MIDI idle: TR(5)=output-low = CLK low; TH(6)=DAT input (MIDI.md §3.1)
     rts
 .mmc_off:
     move.b  #0, $00A1000B                 ; left MIDI -> release the lines; play-start re-sets per mode
@@ -7923,9 +7924,14 @@ midi_clock_byte:                          ; -> d0.b = one byte, MSB first
     rts
 
 midi_clock_bit:                           ; -> d0.b = sampled DAT bit (0/1)
-    move.b  #$20, (a0)                    ; CLK high (bit5): rising edge -> sample the presented bit
-    move.b  (a0), d0                       ; read DAT (bit6) while CLK is high
-    move.b  #$00, (a0)                    ; CLK low: falling edge -> the S3 sets up the next bit
+    ; CLK is OPEN-DRAIN: TR only ever drives LOW; the HIGH comes from an external 3V3 pull-up
+    ; when TR is released to input/high-Z. So genmddj never sources 5V into the S3's clock input
+    ; -> the S3 wires straight to GPIO4 with a pull-up, no divider (same electrical regime as the
+    ; Link/counter lines). Waveform is unchanged (idle-low, pulse-high, sample-on-rising), so the
+    ; S3 responder is byte-identical. $A10005 bit5 stays 0 throughout (set in midi_mode_change).
+    move.b  #$00, $00A1000B               ; CLK high: RELEASE TR (input) -> pull-up drives it high (rising edge)
+    move.b  (a0), d0                       ; read DAT (bit6, S3-driven; set up on the previous falling edge)
+    move.b  #$20, $00A1000B               ; CLK low: DRIVE TR low (output, data=0) -> falling edge; S3 sets next bit
     moveq   #MIDI_SETTLE, d2              ; settle: let the S3's edge ISR update DAT before the next rising edge
 .cbi:
     dbra    d2, .cbi
