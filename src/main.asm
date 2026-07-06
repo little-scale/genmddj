@@ -206,7 +206,7 @@ env_prevy  equ $00FFE3CE           ; envelope rasteriser: last plotted y (connec
 env_pts    equ $00FFE3D0           ; envelope breakpoints: 5 x (word) , a (word) pairs
 env_canvas equ $00FFC000           ; envelope bitmap (ENV_TILES tiles, MD 4bpp); 4 KB
 opt_vid    equ $00FFE3E4           ; OPTIONS: video region 0=NTSC 1=PAL 2=AUTO
-opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI(unimpl, HIDDEN from the field) 5=IN24 (2-bit 24PPQN, ESP bridge)
+opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN(1/row) 4=MIDI(note takeover, ESP32-S3 bridge) 5=IN24 (2-bit 24PPQN, ESP bridge)
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 opt_clon   equ $00FFD759           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases) -- relocated off $E3E7 (collided with proj_tmpo!)
 opt_audit  equ $00FFD75A           ; OPTIONS: note-entry audition (prelisten) 0=OFF 1=ON (default ON) -- was $E3E8 (collided with proj_tsp!)
@@ -12146,20 +12146,8 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     moveq   #5, d3                          ; OFF/OUT/PULSE/IN/MIDI/IN24
     moveq   #1, d4
 .eo_apply:
-    bsr     adj_field
-    cmpi.b  #2, cur_row                   ; SYNC field (row 2): skip the unimplemented MIDI mode (4)
-    bne.s   .eo_done
-    cmpi.b  #4, opt_sync
-    bne.s   .eo_done
-    btst    #3, d2                          ; Right or Up = stepping up -> IN24 (5); else -> IN (3)
-    bne.s   .eo_skup
-    btst    #0, d2
-    bne.s   .eo_skup
-    move.b  #3, opt_sync
-    bra.s   .eo_done
-.eo_skup:
-    move.b  #5, opt_sync
-.eo_done:
+    bsr     adj_field                       ; SYNC cycles OFF/OUT/PULSE/IN/MIDI/IN24 -- MIDI now selectable
+                                            ;   (ESP32-S3 note-takeover bridge wired + flashed 2026-07-06)
     bsr     resolve_vid                     ; VID edits take effect immediately (region + VDP mode + tempo)
     bsr     apply_palette                   ; re-apply UI palette (harmless for VID/SYNC)
     bsr     save_config                     ; persist OPTIONS to SRAM
@@ -12259,9 +12247,6 @@ load_config:                               ; called at boot (after sram_init) + 
 .lcauon:
     move.b  #1, opt_audit
 .lcsync:
-    cmpi.b  #4, opt_sync                    ; MIDI is unimplemented + hidden -> heal a stale config to IN
-    bne.s   .lcunmap
-    move.b  #3, opt_sync
 .lcunmap:
     move.b  #0, $A130F1
 .lcdone:
