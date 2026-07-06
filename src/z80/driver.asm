@@ -426,6 +426,18 @@ su_p2:
     inc  hl
     ld   (YM_D1), a
 su_fin:
+    ; YM2612 post-write busy guard. Hold the bus idle after the data write so the byte
+    ; latches before the $27 re-park below -- and, crucially, before control returns to the
+    ; tight loop where a Timer-A DAC feed pass ($2A write) may touch the chip. Without this,
+    ; at the 10653 Hz feed rate a feed lands INSIDE a heavy FM repatch's busy window and
+    ; corrupts a register; because the feed phase free-runs vs the 60 Hz SCB drain, WHICH
+    ; write is hit drifts every loop -> the patch "doesn't sound the same each loop".
+    ; ~64 cyc: one padded work unit still fits inside one Timer-A period (~336 cyc), so the
+    ; DAC feed is never delayed past a sample (declick / no dropped-sample pitch-down intact).
+    ; Tune the count on hardware if the busy window proves shorter/longer.
+    .REPT 16
+    nop
+    .ENDR
     ld   a, $27                 ; re-park the YM address (the tight loop's quick clear relies on it)
     ld   (YM_A0), a
     ld   (SL_YMP), hl
