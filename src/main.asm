@@ -932,6 +932,7 @@ VBlankInt:
     bra     .gd
 .gsg:
     bsr     render_song
+    bsr     render_cont_hdr
     bsr     render_song_playing
     bra     .gd
 .gph:
@@ -4163,6 +4164,47 @@ render_song:
     bne.s   .rl
     rts
 
+; CONT carry/bridge markers on the SONG arrangement header (row 3), one per track just
+; to the RIGHT of its F1../NO label (in the gap column): '>' while this track is bridging,
+; '*' if it is flagged to carry across the next load (A+C), else blank. One glyph per
+; track -- not down the whole column. Mirrors SMSGGDJ's header cue (CONT.md). a0 = VDP_CTRL.
+CONT_HDRROW equ 3
+render_cont_hdr:
+    movem.l d0-d2/a1-a2, -(sp)
+    moveq   #0, d2                          ; track 0..NCH-1
+.chl:
+    lea     song_scol, a1                  ; VDP addr -> (row 3, song_scol[track]+2)
+    moveq   #0, d0
+    move.b  (a1,d2.w), d0
+    addq.w  #2, d0                          ; the gap column just past the 2-char track label
+    move.w  #CONT_HDRROW*64, d1
+    add.w   d1, d0
+    add.w   d0, d0
+    swap    d0
+    ori.l   #$40000003, d0
+    move.l  d0, (a0)
+    move.w  d2, d1                          ; channel = ch_state + track*CHSIZE
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a2
+    adda.w  d1, a2
+    move.w  #$20, d0                        ; default = blank (clears a toggled-off marker)
+    cmpi.b  #CONT_BRIDGE, c_chain(a2)      ; bridging right now -> '>'
+    bne.s   .ch_flag
+    move.w  #'>', d0
+    bra.s   .ch_put
+.ch_flag:
+    move.w  cont_mask, d1                   ; flagged to carry -> '*'
+    btst    d2, d1
+    beq.s   .ch_put
+    move.w  #'*', d0
+.ch_put:
+    move.w  d0, VDP_DATA
+    addq.b  #1, d2
+    cmpi.b  #NCH, d2
+    bne.s   .chl
+    movem.l (sp)+, d0-d2/a1-a2
+    rts
+
 ; live "now playing" note readout under each SONG track (row 23). a0 = VDP_CTRL.
 render_song_playing:
     movem.l d3-d7/a1-a2, -(sp)
@@ -4270,23 +4312,7 @@ render_sfield:                            ; d5=track col, d6=row, d4=cursor off
     bne.s   .nomark
     move.w  #'X', d0
 .nomark:
-    cmpi.w  #$20, d0                       ; CONT cue in the marker column when no playhead here:
-    bne.s   .cont_cue_done                 ;   '>' if this track is bridging, '*' if flagged to carry
-    move.w  d5, d1
-    mulu.w  #CHSIZE, d1
-    lea     ch_state, a2
-    adda.w  d1, a2
-    cmpi.b  #CONT_BRIDGE, c_chain(a2)
-    bne.s   .cont_notbr
-    move.w  #'>', d0
-    bra.s   .cont_cue_done
-.cont_notbr:
-    move.w  cont_mask, d1
-    btst    d5, d1
-    beq.s   .cont_cue_done
-    move.w  #'*', d0
-.cont_cue_done:
-    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA                    ; playhead / X / blank -- CONT cues now live on the header (render_cont_hdr)
     lea     song, a2                       ; chain# at song[(page*16+row)*NCH + col]
     moveq   #0, d2
     move.b  song_page, d2
@@ -11468,6 +11494,17 @@ print_at:
 .pd:
     rts
 
+; write NUL-terminated string a1 at the CURRENT VDP write address (no address reset,
+; unlike print_at) -- for stitching strings + numbers on one line. Clobbers d1/a1.
+put_str:
+    move.b  (a1)+, d1
+    beq.s   .qs_done
+    andi.w  #$00FF, d1
+    move.w  d1, VDP_DATA
+    bra.s   put_str
+.qs_done:
+    rts
+
 ; like print_at but adds d2 (char offset, e.g. $60 for highlight) to each tile
 print_hl:                                 ; a1=str, d3=row, d4=col, d2=char offset
     moveq   #0, d0
@@ -13454,29 +13491,18 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     lea     str_o_full, a1
     bsr     print_at
 .rf_nofull:
-    tst.b   cont_pending                    ; CONT: "CUED nnn" when a beat-quantized swap is armed
-    beq.s   .rf_ncued
-    moveq   #4, d3
-    moveq   #22, d4
-    lea     str_cued, a1
-    bsr     print_at
-    move.l  #$42360003, (a0)               ; row 4, col 27 (after "CUED ")
-    moveq   #0, d0                          ; rows until fire = 16 - cont_ref's current row
-    move.b  cont_ref, d0
-    mulu.w  #CHSIZE, d0
-    lea     ch_state, a1
-    adda.w  d0, a1
-    moveq   #16, d3
-    sub.b   c_row(a1), d3
-    moveq   #0, d4
-    bsr     draw_dec3
-.rf_ncued:
-    move.l  #$44000003, (a0)               ; --- divider (row 8, below the map): " SONGS NN " centred ---
+    move.l  #$44000003, (a0)               ; --- divider rule (row 8, below the map) ---
     moveq   #40-1, d3
 .rf_dash:
     move.w  #'-', VDP_DATA
     dbra    d3, .rf_dash
-    move.l  #$441E0003, (a0)
+    ; CONT owns the rule when a transition is live (SMSGGDJ-style): "CUED nn IN xxx"
+    ; while a swap is armed, then "MATCH IN nnn" while the tempo glides; else "SONGS nn".
+    tst.b   cont_pending
+    bne     .rf_cued
+    tst.b   glide_left
+    bne     .rf_match
+    move.l  #$441E0003, (a0)               ; " SONGS NN " centred on the rule
     move.w  #' ', VDP_DATA
     move.w  #'S', VDP_DATA
     move.w  #'O', VDP_DATA
@@ -13497,7 +13523,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     move.w  d4, VDP_DATA
     move.w  #' ', VDP_DATA
     cmpi.w  #16, d5
-    bls.s   .rf_pgd
+    bls     .rf_pgd
     move.l  #$44420003, (a0)
     move.w  #'P', VDP_DATA
     moveq   #0, d3
@@ -13512,6 +13538,50 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     lsr.w   #4, d3
     add.w   #'0', d3
     move.w  d3, VDP_DATA
+    bra     .rf_pgd                          ; SONGS/page path done -> skip the CONT handlers
+.rf_cued:                                    ; "CUED nn IN xxx": nn = target slot, xxx = rows until fire
+    move.l  #$441A0003, (a0)                ; row 8, col 13 (inset on the rule)
+    lea     str_cued, a1
+    bsr     put_str
+    moveq   #0, d3
+    move.b  cont_target, d3
+    moveq   #0, d4
+    bsr     draw_hex2                        ; nn = target slot (hex, console-style)
+    lea     str_cont_in, a1
+    bsr     put_str                          ; " IN "
+    moveq   #0, d0                          ; xxx = 16 - the ref track's within-phrase row
+    move.b  cont_ref, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a1
+    adda.w  d0, a1
+    moveq   #16, d3
+    sub.b   c_row(a1), d3
+    moveq   #0, d4
+    bsr     draw_dec3
+    bra     .rf_pgd
+.rf_match:                                   ; "MATCH IN nnn": rows of tempo glide remaining
+    move.l  #$441A0003, (a0)                ; row 8, col 13
+    lea     str_match_in, a1
+    bsr     put_str
+    moveq   #0, d0                          ; nnn = glide_left*16 - ref track's within-phrase row
+    move.b  glide_left, d0
+    lsl.w   #4, d0
+    moveq   #0, d1
+    move.b  cont_ref, d1
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a1
+    adda.w  d1, a1
+    moveq   #0, d1
+    move.b  c_row(a1), d1
+    sub.w   d1, d0
+    cmpi.w  #255, d0                        ; clamp to the 3-digit field
+    bls.s   .rf_m_ok
+    move.w  #255, d0
+.rf_m_ok:
+    move.b  d0, d3
+    moveq   #0, d4
+    bsr     draw_dec3
+    bra     .rf_pgd
 .rf_pgd:
     moveq   #0, d2                          ; --- slot list (rows 7..22) ---  target = opt_song
     move.b  opt_song, d2
@@ -14924,6 +14994,8 @@ str_p_slot: dc.b "SLOT",0
 str_p_lfo:  dc.b "LFO",0
 str_p_slid: dc.b "SLID",0
 str_cued:   dc.b "CUED ",0
+str_cont_in: dc.b " IN ",0
+str_match_in: dc.b "MATCH IN ",0
 str_p_save: dc.b "SAVE",0
 str_p_load: dc.b "LOAD",0
 str_saved:    dc.b "SAVED  ",0
