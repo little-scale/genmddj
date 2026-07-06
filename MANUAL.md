@@ -62,8 +62,11 @@ Think of it as:
 | **C** + **B** | **Play from here / solo** the current thing (§3). On FILES it opens the action menu |
 | **Start** | **Play / stop.** SONG mode plays the whole song from the top; LIVE mode launches the cursor row |
 | **B** + **Start** | If SYNC = IN/IN24, arm **WAIT** for the incoming clock; otherwise a plain Start |
+| **A** hold ~3 s (alone) | Open / close the **HELP** screen — an on-console button reference, from any screen (§3) |
 
-You never have to time two simultaneous presses.
+You never have to time two simultaneous presses. (The one *deliberate* hold is the ~3-second
+lone-**A** for HELP — any other button or the D-pad cancels the count, so it never clashes
+with A's modifier gestures.)
 
 ### Block select (copy / cut a region)
 
@@ -109,7 +112,7 @@ PHRASE, `C+←` goes to the CHAIN that holds it, again to that SONG cell; `C+→
 note's INSTR):
 
 ```
-   OPTIONS  PROJECT                     WAVE
+   OPTIONS  PROJECT            WAVE      HELP
    SONG     CHAIN    PHRASE    INSTR     TABLE
    FILES    GROOVE             FM LFO    ECHO
 ```
@@ -134,7 +137,12 @@ instrument.
 - **PROJECT** — this song: tempo, transpose, mode, default groove/LFO; the song name
   (read-only here — rename on FILES).
 - **FILES** — save, load and manage songs on the cartridge (below SONG).
-- **OPTIONS** — this machine: video region, sync, palette, clone depth, audition.
+- **OPTIONS** — this machine: video region, sync, palette, clone depth, audition, hints.
+- **HELP** — a read-only, paged **button reference** (above TABLE). **Open it from anywhere by
+  holding A for ~3 seconds** (or `C+↑` from TABLE); the D-pad turns pages (Left/Up = previous,
+  Right/Down = next, wrapping) with a **`N/M` page counter** under the title; hold A again to
+  return to where you were. On the first boot the SONG screen's top row reads
+  **`HOLD A TO VIEW HELP`** for a few seconds as a reminder.
 
 ---
 
@@ -362,6 +370,12 @@ there, the song takes the channel back.
 A command sits in a PHRASE step's **CMD/PRM** columns (or a TABLE row) and shapes that
 note. Edit the letter with **B-hold + ←→** (↑↓ does nothing on a CMD cell); edit the
 parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
+
+> **Hint row.** Whenever the cursor is on a **CMD** or **PRM** cell (PHRASE or TABLE), the
+> bottom screen row shows a one-line reminder of the selected command — e.g. `R` reads
+> *RETRIGGER, PERIOD + DECAY*. The **INSTR** editor has the same row per field. Both are
+> edited in `cmd_hints.txt` / `instr_hints.txt` and share the **OPTIONS → HINTS** toggle
+> (default **ON**).
 
 **Pitch & note**
 

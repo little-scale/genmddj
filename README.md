@@ -114,7 +114,11 @@ progress. Working today:
 
 - The **68k → SCB → Z80** engine, with PSG + full 6-operator FM voices.
 - The complete screen set: **SONG / CHAIN / PHRASE / INSTR / FM / TABLE / WAVE /
-  GROOVE / ECHO / PROJECT / OPTIONS**.
+  GROOVE / ECHO / PROJECT / OPTIONS / HELP**.
+- An on-console **HELP** screen — a paged button reference you open from anywhere by holding
+  **A for ~3 seconds** (the D-pad turns pages). Its text lives in an editable
+  [`help.txt`](help.txt) that the build validates and bakes into the ROM (`tools/makehelp.py`),
+  so a bad edit fails the build instead of clipping on hardware.
 - Grooves, the command set, copy / paste / clone.
 - **GROUP** — a TONE instrument on T1 drives T2/T3 for detuned unisons, fifths, power
   chords, octaves and chords from a single line.

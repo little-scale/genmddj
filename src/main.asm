@@ -71,6 +71,13 @@ cur_col    equ $00FFE203
 key_prev   equ $00FFE204
 key_raw    equ $00FFD320           ; pad debounce: last frame's RAW read (pre-debounce)
 key_stab   equ $00FFD321           ; pad debounce: 1-frame-confirmed stable button state
+help_page  equ $00FFD322           ; HELP screen: current page 0..HELP_PAGES-1 (d-pad turns it)
+help_actr  equ $00FFD323           ; HELP hotkey: frames A has been held alone (-> toggle HELP at HELP_HOLD)
+help_prev  equ $00FFD324           ; HELP hotkey: last non-HELP screen, restored on exit
+hint_ctr   equ $00FFD326           ; boot: frames left showing "HOLD A TO VIEW HELP" on SONG row0 (word)
+help_pgbuf equ $00FFD328           ; HELP page indicator scratch: "N/M",0 (4 bytes)
+hint_linebuf equ $00FFD32C         ; INSTR hint bottom-row scratch: the ">"..."<" bar + 0 (44 bytes)
+hint_last  equ $00FFD358           ; INSTR hint: last-drawn field key (cur_row:cur_col); $FFFF = redraw
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -210,6 +217,7 @@ opt_sync   equ $00FFE3E5           ; OPTIONS: DE-9 sync 0=OFF 1=OUT 2=PULSE 3=IN
 opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 opt_clon   equ $00FFD759           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases) -- relocated off $E3E7 (collided with proj_tmpo!)
 opt_audit  equ $00FFD75A           ; OPTIONS: note-entry audition (prelisten) 0=OFF 1=ON (default ON) -- was $E3E8 (collided with proj_tsp!)
+opt_hints  equ $00FFD75B           ; OPTIONS: show INSTR per-field hints 0=OFF 1=ON (default ON)
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
@@ -581,6 +589,10 @@ Start:
     move.b  #0, key_prev
     move.b  #0, key_raw
     move.b  #0, key_stab
+    move.b  #0, help_page
+    move.b  #0, help_actr
+    move.b  #0, help_prev
+    move.w  #$FFFF, hint_last
     move.b  #0, key_rpt
     move.b  #0, dpad_prev
     move.b  #48, last_note
@@ -650,6 +662,7 @@ Start:
     move.b  #0, opt_pal                   ;   UI palette 0
     move.b  #0, opt_clon                   ;   clone depth = SLIM
     move.b  #1, opt_audit                   ;   note-entry audition ON by default
+    move.b  #1, opt_hints                   ;   INSTR field hints ON by default
     bsr     sram_probe                    ; detect SRAM layout (odd-byte/linear) + size for the readout (no data loaded)
     bsr     sram_init                     ; clear the song directory if this cart isn't initialised yet (fresh/garbage SRAM)
     bsr     load_config                   ; restore saved OPTIONS over the boot defaults (was never called -> didn't persist)
@@ -796,15 +809,35 @@ VBlankInt:
     move.w  d0, VDP_DATA
     dbra    d1, .nm_sgnm
 .nm_nosg:
+    cmpi.b  #SCR_HELP, cur_screen          ; HELP: page indicator "N/M" after the title (row1 col7)
+    bne.s   .nohelppg
+    lea     help_pgbuf, a1                 ; build "N/M",0 -> current page / total (single-digit)
+    moveq   #0, d0
+    move.b  help_page, d0
+    addq.b  #1, d0
+    addi.b  #'0', d0                        ; current page -> ASCII digit
+    move.b  d0, (a1)+
+    move.b  #$2F, (a1)+                     ; '/'  (numeric: the #'/' char literal mis-assembles in vasm)
+    moveq   #HELP_PAGES, d0
+    addi.b  #'0', d0                        ; total pages -> ASCII digit (from help.i; adapts to help.txt)
+    move.b  d0, (a1)+
+    move.b  #0, (a1)
+    moveq   #2, d3                        ; row 2 (just under the HELP title)
+    moveq   #1, d4                        ; col 1
+    lea     help_pgbuf, a1
+    bsr     print_at
+.nohelppg:
     cmpi.b  #SCR_PROJ, cur_screen          ; entering PROJECT (full redraw): recompute unsaved state
     bne.s   .nc_dc
     bsr     check_dirty
 .nc_dc:
     move.b  #0, need_clear
+    move.w  #$FFFF, hint_last             ; full redraw -> re-draw the INSTR hint bar on re-entry
     move.b  #1, vdirty                    ; re-render next frame (header self-heals)
     move.b  #1, env_dirty
     moveq   #1, d7
 .nc:
+    bsr     hint_tick                     ; boot HELP hint: count down + revert row0 to the title
     bsr     get_playrow                   ; playhead position for this screen
     move.b  d0, play_row
     tst.b   d7
@@ -905,6 +938,7 @@ VBlankInt:
     bsr     render_phrase
     bsr     render_track_playing
 .gd:
+    bsr     hint_bar_draw                 ; bottom-row hint: INSTR fields + PHRASE/TABLE commands (no-op elsewhere)
     addq.w  #1, g_ticks                  ; tick counter (4 hex) at row0 col35
     move.l  #$40460003, (a0)
     move.w  g_ticks, d2
@@ -1095,10 +1129,11 @@ splash_tick:                              ; a0 = VDP_CTRL; incremental draw + co
     addq.w  #1, d2
     cmpi.w  #14, d2
     bne.s   .ce
-    moveq   #0, d3                        ; restore GENMDDJ title at row0 col1
+    moveq   #0, d3                        ; boot: show the HELP hint at row0 col1 for ~3s (reverts to title)
     moveq   #1, d4
-    lea     str_title, a1
+    lea     str_hint_help, a1
     bsr     print_at
+    move.w  #HINT_FRAMES, hint_ctr        ; hint_tick counts this down, then restores the GENMDDJ title
     move.w  #0, g_ticks                   ; tick count starts when the UI loads
     move.b  #0, in_splash
     move.b  #1, need_clear                ; redraw the UI next frame
@@ -1299,6 +1334,8 @@ input_tick:
     move.b  d3, key_prev
     not.b   d4
     and.b   d3, d4                       ; button edges
+    bsr     help_hotkey                  ; hold A alone ~HELP_HOLD frames -> toggle HELP (any screen <-> HELP)
+    bne     .done                        ; toggled this frame -> skip the rest of the dispatch
     btst    #7, d4                        ; Start -> toggle transport
     beq.s   .nstart
     btst    #5, d3                        ; B held + Start -> SYNC IN: arm WAIT for the incoming clock
@@ -1376,11 +1413,13 @@ input_tick:
     bsr     do_insert                     ; B tap alone -> insert/audition
 .ni:
     btst    #5, d3                        ; B held -> edit modifier
-    bne.s   .bheld
+    bne     .bheld
     btst    #6, d3                        ; else C held -> project modifier
     bne     .cheld
     btst    #4, d3                        ; else A held -> channel switch
     bne     .aheld
+    cmpi.b  #SCR_HELP, cur_screen          ; HELP is read-only: plain d-pad turns the page
+    beq     .helpcur
     cmpi.b  #SCR_WAVE, cur_screen          ; WAVE: plain Left/Right moves the step cursor
     beq.s   .wavecur
     tst.b   d5                            ; neither: d-pad moves cursor
@@ -1403,6 +1442,31 @@ input_tick:
     addq.b  #1, cur_wstep
     move.b  #1, vdirty
 .wvcdone:
+    rts
+.helpcur:                                 ; HELP: d-pad turns pages (Right/Down = next, Left/Up = prev, wrap)
+    tst.b   d5
+    beq     .done
+    moveq   #0, d0
+    move.b  help_page, d0
+    move.b  d5, d1
+    andi.b  #%00001010, d1                  ; Down(bit1) or Right(bit3) -> next page
+    beq.s   .hc_prev
+    addq.b  #1, d0
+    cmpi.b  #HELP_PAGES, d0
+    blo.s   .hc_set
+    moveq   #0, d0                          ; wrap past the last page -> page 0
+    bra.s   .hc_set
+.hc_prev:
+    tst.b   d0                              ; Up(bit0) or Left(bit2) -> prev page
+    bne.s   .hc_dec
+    moveq   #HELP_PAGES-1, d0               ; wrap below page 0 -> last page
+    bra.s   .hc_set
+.hc_dec:
+    subq.b  #1, d0
+.hc_set:
+    move.b  d0, help_page
+    move.b  #1, need_clear                  ; page content differs -> clear + redraw
+    move.b  #1, vdirty
     rts
 .bheld:
     cmpi.b  #SCR_WAVE, cur_screen          ; WAVE: own pen/draw/preset gestures
@@ -2069,7 +2133,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #0, d1
     rts
 .rmopts:
-    moveq   #5, d1                          ; OPTIONS: VIDEO CLOCK SYNC PALETTE CLON AUDIT
+    moveq   #6, d1                          ; OPTIONS: VIDEO CLOCK SYNC PALETTE CLON AUDIT HINTS
     rts
 .rmfiles:
     tst.b   sram_layout
@@ -3939,7 +4003,7 @@ clear_grid:                               ; a0=VDP_CTRL; blank header + grid + e
     move.w  #' ', VDP_DATA
     dbra    d3, .col
     addq.w   #1, d2
-    cmpi.w  #24, d2                        ; rows 3..26 (canvas + OP labels)
+    cmpi.w  #25, d2                        ; rows 3..27 (canvas + OP labels + the INSTR hint row)
     bne.s   .row
     rts
 
@@ -11424,6 +11488,189 @@ print_hl:                                 ; a1=str, d3=row, d4=col, d2=char offs
 .phd:
     rts
 
+; boot HELP hint: for ~HINT_FRAMES frames after load, SONG row 0 reads "HOLD A TO VIEW HELP"
+; (armed at splash exit); this counts it down and restores the GENMDDJ title when it expires
+; or the user leaves SONG. a0 = VDP_CTRL. ~3 s NTSC / 3.6 s PAL. Preserves d7 (render-needed).
+HINT_FRAMES equ 180
+HINT_LEN    equ 19                        ; chars in "HOLD A TO VIEW HELP" -- wipe width on revert
+hint_tick:
+    tst.w   hint_ctr
+    beq.s   .ht_ret
+    subq.w  #1, hint_ctr
+    beq.s   .ht_revert                    ; timed out
+    cmpi.b  #SCR_SONG, cur_screen         ; left SONG while it was up -> revert now (hint is SONG-only)
+    beq.s   .ht_ret
+.ht_revert:
+    move.w  #0, hint_ctr
+    lea     VDP_CTRL, a0
+    move.l  #$40020003, (a0)              ; VDP address: row 0, col 1
+    moveq   #HINT_LEN-1, d0
+.ht_wipe:
+    move.w  #$20, VDP_DATA                ; blank the hint's cells first (it is longer than the title)
+    dbra    d0, .ht_wipe
+    moveq   #0, d3
+    moveq   #1, d4
+    lea     str_title, a1
+    bsr     print_at
+.ht_ret:
+    rts
+
+; INSTR per-field hint: draw the current field's hint on the bottom row, inverted and
+; ">> "-prefixed. Keyed by (i_type, cur_row) for the top rows or by the op-grid column;
+; Bottom-row context hint bar (row 27). Shared by the INSTR per-field hints and the
+; PHRASE/TABLE per-command hints. Runs EVERY frame from the render dispatch; it redraws
+; only when the shown hint changes (the hint_last word gate) -- a per-frame full-row
+; redraw would spill VRAM writes past vblank and leave stale chars. need_clear
+; invalidates hint_last ($FFFF) so a screen re-entry always redraws. Gated on opt_hints
+; (blanks the row when off). a0 = VDP_CTRL. No-op on screens without a hint row.
+;   key (d1): INSTR = cur_row<<8|cur_col (high byte <= $10); CMD = $8000|cmdval -- the
+;   $8000 bit keeps the two key spaces disjoint. ptr (a1): the hint string, 0 = blank.
+HINT_ROW   equ 27
+HINT_OPS   equ 10
+hint_bar_draw:
+    cmpi.b  #SCR_INSTR, cur_screen
+    beq     .hb_instr
+    cmpi.b  #SCR_PHRASE, cur_screen         ; PHRASE + TABLE both edit the command set
+    beq     .hb_cmd
+    cmpi.b  #SCR_TABLE, cur_screen
+    beq     .hb_cmd
+    rts                                     ; other screens have no hint row
+; --- INSTR: hint keyed by the field (row:col) ---
+.hb_instr:
+    moveq   #0, d1
+    move.b  cur_row, d1
+    lsl.w   #8, d1
+    move.b  cur_col, d1                     ; d1 = row<<8 | col (change key)
+    lea     instrum, a3
+    moveq   #0, d0
+    move.b  cur_instr, d0
+    mulu.w  #INSTR_SIZE, d0
+    adda.w  d0, a3
+    cmpi.b  #NVOICE+2, cur_row
+    bhs     .hb_op
+    moveq   #0, d0                          ; top rows -> hint_type_ptr[i_type][cur_row]
+    move.b  (i_type,a3), d0
+    cmpi.b  #6, d0                          ; guard a stray type byte
+    bhs     .hb_none
+    lsl.w   #2, d0
+    lea     hint_type_ptr, a1
+    movea.l (a1,d0.w), a1
+    moveq   #0, d0
+    move.b  cur_row, d0
+    lsl.w   #2, d0
+    movea.l (a1,d0.w), a1
+    bra     .hb_apply
+.hb_op:
+    moveq   #0, d0                          ; op grid -> hint_op[cur_col]
+    move.b  cur_col, d0
+    cmpi.b  #HINT_OPS, d0
+    bhs     .hb_none
+    lsl.w   #2, d0
+    lea     hint_op, a1
+    movea.l (a1,d0.w), a1
+    bra     .hb_apply
+.hb_none:
+    suba.l  a1, a1                          ; keep the row:col key, no hint -> blank
+    bra     .hb_apply
+; --- PHRASE / TABLE: hint keyed by the command value under the cursor (CMD/PRM cols) ---
+.hb_cmd:
+    move.b  cur_col, d0
+    subq.b  #2, d0                          ; only the CMD (2) and PRM (3) columns carry a command
+    cmpi.b  #2, d0                          ; cur_col-2 in {0,1} -> pass; else blank
+    bhs     .hb_cmdblank
+    bsr     cmd_cell_addr                   ; a1 -> this row's CMD byte (C set: no cell -- TABLE selector row)
+    bcs     .hb_cmdblank
+    moveq   #0, d0
+    move.b  (a1), d0                        ; command value 0..26
+    cmpi.b  #27, d0
+    bhs     .hb_cmdblank
+    tst.b   d0
+    beq     .hb_cmdblank                    ; 0 = no command ('-')
+    move.w  #$8000, d1
+    move.b  d0, d1                          ; d1 = $8000 | cmdval (change key)
+    lsl.w   #2, d0
+    lea     cmd_hint, a1
+    movea.l (a1,d0.w), a1
+    bra     .hb_apply
+.hb_cmdblank:
+    move.w  #$8000, d1                      ; a single "blank" key so it clears once, then gates
+    suba.l  a1, a1
+; --- shared gate + draw (d1 = key, a1 = hint ptr or 0) ---
+.hb_apply:
+    tst.b   opt_hints
+    bne.s   .hb_gate
+    suba.l  a1, a1                          ; hints off -> blank (position key kept so it clears once)
+.hb_gate:
+    cmp.w   hint_last, d1
+    beq     .hb_ret
+    move.w  d1, hint_last
+    move.l  a1, d0
+    beq     .hb_blank                       ; no hint -> clear the row
+    lea     hint_linebuf, a2               ; build a full 38-col bar: '>' + ' ' + hint + pad + left cap
+    moveq   #38-1, d0                        ;   (numeric codes: '<'/'>' char literals misparse in vasm)
+.hb_fill:
+    move.b  #$20, (a2)+                     ; fill 38 cols with spaces (also self-clears the old hint)
+    dbra    d0, .hb_fill
+    move.b  #0, (a2)                        ; NUL after col 38
+    lea     hint_linebuf, a2
+    move.b  #$3E, (a2)                      ; col 1 = '>' (the font '>' is a filled triangle)
+    addq.l  #2, a2                          ; a2 -> col 3 (past "> ")
+.hb_cp:
+    move.b  (a1)+, d0                       ; copy the hint text (<=35 chars, never reaches col 38)
+    beq.s   .hb_draw
+    move.b  d0, (a2)+
+    bra.s   .hb_cp
+.hb_draw:
+    moveq   #$60, d2                        ; inverse-video: the whole row is one bar
+    moveq   #HINT_ROW, d3
+    moveq   #1, d4
+    lea     hint_linebuf, a1
+    bsr     print_hl
+    move.l  #$4DCC0003, (a0)               ; row 27, col 38: right cap = a filled LEFT triangle --
+    move.w  #$089E, VDP_DATA               ;   inverse '>' ($9E) + h-flip ($0800), since the font '<' is hollow
+.hb_ret:
+    rts
+.hb_blank:
+    bsr     hint_clearrow
+    rts
+hint_clearrow:
+    move.l  #$4D820003, (a0)               ; VDP address: HINT_ROW (27), col 1
+    moveq   #38-1, d0
+.hb_cr:
+    move.w  #$20, VDP_DATA
+    dbra    d0, .hb_cr
+    rts
+
+; -> a1 = current row's CMD byte on PHRASE/TABLE. Carry set = no command cell (the TABLE
+;    row-0 selector). Reads work RAM directly (render context, no Z80 BUSREQ held).
+cmd_cell_addr:
+    cmpi.b  #SCR_PHRASE, cur_screen
+    bne.s   .cca_tbl
+    bsr     cur_phrase_addr                 ; a1 = phrase base
+    moveq   #0, d0
+    move.b  cur_row, d0
+    lsl.w   #2, d0                          ; row * 4 (a phrase row = note/instr/cmd/prm)
+    lea     2(a1,d0.w), a1                  ; + CMD offset (col 2)
+    andi    #$FE, ccr                       ; clear carry -> have a cell
+    rts
+.cca_tbl:
+    moveq   #0, d1
+    move.b  cur_row, d1
+    subq.b  #1, d1                          ; cur_row 1-16 -> table row 0-15
+    bmi.s   .cca_none                       ; row 0 = selector -> no command
+    lea     tbl_ram, a1
+    moveq   #0, d0
+    move.b  cur_table, d0
+    lsl.w   #6, d0                          ; table * 64
+    lsl.w   #2, d1                          ; row * TROW (4)
+    add.w   d1, d0
+    lea     2(a1,d0.w), a1                  ; + t_cmd (2)
+    andi    #$FE, ccr
+    rts
+.cca_none:
+    ori     #$01, ccr                       ; set carry -> no cell
+    rts
+
 ; ============================================================
 ; OPTIONS / PROJECT pages (SMSGGDJ-style field lists)
 ; ============================================================
@@ -11573,67 +11820,116 @@ draw_dec_s:                               ; d3=signed byte, d4=offset; addr pres
 
 ; NB: no per-render body clear -- clear_grid wipes on entry, and these fields are
 ; fixed-width so they self-overwrite; clearing rows 5-16 every render overran VBlank.
-; ---- HELP: a static button reference (SCR_HELP, reached ONLY by UP from TABLE) ----
-; Body starts row 6; rows 6-7 stay <=33 wide to clear the map-cross (rows 5-7, cols 34-38).
-HELP_NLINES equ 14
-render_help:
-    lea     help_lines, a2                ; a2 -> {row.b, col.b, str.l} table (6-byte entries)
-    moveq   #HELP_NLINES-1, d7
-.rh:
-    moveq   #0, d3
-    move.b  (a2)+, d3                      ; row
-    moveq   #0, d4
-    move.b  (a2)+, d4                      ; col
-    movea.l (a2)+, a1                      ; string pointer
-    movem.l d7/a2, -(sp)
-    bsr     print_at
-    movem.l (sp)+, d7/a2
-    dbra    d7, .rh
+; ---- HELP hotkey: hold A alone ~HELP_HOLD frames toggles HELP <-> the current screen ----
+; HELP_HOLD = 150 frames = 2.5 s NTSC / 3.0 s PAL (the 2.5-3 s the design asked for). Counts
+; only a LONE A hold -- any other button or d-pad resets it -- so A-modifier gestures (A+B
+; block-select, A+C CONT flag) never accumulate toward it. Returns Z clear when it toggled.
+HELP_HOLD  equ 150
+help_hotkey:
+    cmpi.b  #SCR_HELP, cur_screen
+    beq.s   .hk_onhelp
+    move.b  cur_screen, help_prev          ; track the last non-HELP screen (restored on exit)
+.hk_onhelp:
+    btst    #4, d3                          ; A held (debounced)?
+    beq.s   .hk_reset
+    move.b  d3, d0
+    andi.b  #$EF, d0                        ; any OTHER button or d-pad held? (mask out A = bit 4)
+    bne.s   .hk_reset                       ;   yes -> not a lone A-hold
+    move.b  help_actr, d0
+    cmpi.b  #HELP_HOLD, d0
+    bhs.s   .hk_no                          ; already fired -> hold until release (no re-fire)
+    addq.b  #1, d0
+    move.b  d0, help_actr
+    cmpi.b  #HELP_HOLD, d0
+    beq.s   .hk_fire                        ; reached the threshold this frame
+.hk_no:
+    moveq   #0, d0                          ; Z set -> did not fire
     rts
-    even
-help_lines:
-    dc.b  8,1
-    dc.l  hlp1
-    dc.b  9,1
-    dc.l  hlp2
-    dc.b 10,1
-    dc.l  hlp3
-    dc.b 11,1
-    dc.l  hlp4
-    dc.b 12,1
-    dc.l  hlp5
-    dc.b 14,1
-    dc.l  hlp6
-    dc.b 15,1
-    dc.l  hlp7
-    dc.b 17,1
-    dc.l  hlp8
-    dc.b 18,1
-    dc.l  hlp9
-    dc.b 19,1
-    dc.l  hlp10
-    dc.b 20,1
-    dc.l  hlp11
-    dc.b 21,1
-    dc.l  hlp12
-    dc.b 23,1
-    dc.l  hlp13
-    dc.b 24,1
-    dc.l  hlp14
-hlp1:  dc.b "D-PAD         MOVE CURSOR",0
-hlp2:  dc.b "TAP B         INSERT VALUE ON EMPTY",0
-hlp3:  dc.b "HOLD B +L/R   CHANGE VALUE, SMALL STEP",0
-hlp4:  dc.b "HOLD B +U/D   CHANGE VALUE, BIG STEP",0
-hlp5:  dc.b "HOLD C +DPAD  NAVIGATE TO SCREENS",0
-hlp6:  dc.b "HOLD C TAP B  PLAY / STOP TRACK",0
-hlp7:  dc.b "START         PLAY / STOP ALL",0
-hlp8:  dc.b "HOLD B TAP C  CUT VALUE WITH COPY",0
-hlp9:  dc.b "HOLD A TAP B  SELECT BLOCK WITH D-PAD",0
-hlp10: dc.b "- TAP A ON BLOCK  CUT BLOCK WITH COPY",0
-hlp11: dc.b "- TAP B ON BLOCK  COPY BLOCK",0
-hlp12: dc.b "- TAP C ON BLOCK  CANCEL BLOCK",0
-hlp13: dc.b "TAP B,B  CREATE NEW PH/CH FROM EMPTY",0
-hlp14: dc.b "TAP B,B  CLONE NEW PH/CH FROM EXISTING",0
+.hk_reset:
+    move.b  #0, help_actr
+    moveq   #0, d0                          ; Z set
+    rts
+.hk_fire:
+    bsr     help_toggle
+    moveq   #1, d0                          ; Z clear -> toggled this frame
+    rts
+
+; toggle HELP <-> the last non-HELP screen (help_prev, tracked each frame by help_hotkey).
+help_toggle:
+    cmpi.b  #SCR_HELP, cur_screen
+    bne.s   .ht_enter
+    move.b  help_prev, cur_screen           ; on HELP -> exit back to where we came from
+    bra.s   .ht_fin
+.ht_enter:
+    move.b  #SCR_HELP, cur_screen
+    move.b  #0, help_page                   ; always open on page 1
+.ht_fin:
+    move.b  #1, need_clear                  ; clear + redraw the destination screen
+    move.b  #1, vdirty
+    rts
+
+; ---- HELP: a button reference, built from help.txt -> build/help.i (makehelp.py) ----
+; The page data (help_pages / help_pN) is generated from the editable help.txt and
+; included with the ROM data (see `include "build/help.i"`). Body draws from row 8 so
+; it clears the map-cross (rows 5-7). Per line: $FF ends the page, $00 = a blank row,
+; $01,$00 = the @VERSION live stamp, else a NUL-terminated string -- drawn inverted
+; (title highlight) if it contains a ':'.
+HELP_ROW0  equ 8
+HELP_COL0  equ 1
+render_help:
+    lea     help_pages, a3
+    moveq   #0, d0
+    move.b  help_page, d0                 ; d-pad-selected page
+    lsl.w   #2, d0                          ; *4 (dc.l pointer table)
+    movea.l (a3,d0.w), a2                  ; a2 = help_pages[help_page] -> page data
+    moveq   #HELP_ROW0, d3                 ; d3 = screen row
+.rh_line:
+    move.b  (a2), d0
+    cmpi.b  #$FF, d0                        ; page terminator?
+    beq.s   .rh_done
+    cmpi.b  #$01, d0                        ; @VERSION marker?
+    beq.s   .rh_ver
+    tst.b   d0                              ; $00 = blank row (empty string)?
+    beq.s   .rh_blank
+    moveq   #0, d2                          ; scan the line for ':' -> title highlight ($60) or 0
+    movea.l a2, a4
+.rh_scan:
+    move.b  (a4)+, d1
+    beq.s   .rh_draw
+    cmpi.b  #':', d1
+    bne.s   .rh_scan
+    moveq   #$60, d2
+.rh_draw:
+    movea.l a2, a1
+    moveq   #HELP_COL0, d4
+    movem.l d3/a2, -(sp)
+    bsr     print_hl                        ; a1=str d3=row d4=col d2=tile offset (0 / $60)
+    movem.l (sp)+, d3/a2
+.rh_adv:
+    tst.b   (a2)+                           ; walk a2 past the NUL terminator
+    bne.s   .rh_adv
+    addq.b  #1, d3
+    bra.s   .rh_line
+.rh_blank:
+    addq.l  #1, a2                          ; skip the empty string's NUL
+    addq.b  #1, d3
+    bra.s   .rh_line
+.rh_ver:                                    ; live version + build stamp
+    moveq   #HELP_COL0, d4
+    lea     ver_str, a1
+    movem.l d3/a2, -(sp)
+    bsr     print_at
+    movem.l (sp)+, d3/a2
+    moveq   #HELP_COL0+6, d4
+    lea     git_hash_str, a1
+    movem.l d3/a2, -(sp)
+    bsr     print_at
+    movem.l (sp)+, d3/a2
+    addq.l  #2, a2                          ; skip the $01 marker + its NUL
+    addq.b  #1, d3
+    bra.s   .rh_line
+.rh_done:
+    rts
     even
 
 render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit idiom
@@ -11758,8 +12054,25 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     add.w   d1, d1                          ; 0/1 -> $7B off-box / $7D on-box
     addi.w  #$7B, d1
     add.w   d2, d1                          ; + highlight (inverse tile)
+    move.w  d1, VDP_DATA                     ; AUDIT box
+    moveq   #13, d3                          ; HINTS (cur_row 6) at row 13 -- toggles the INSTR hint row
+    moveq   #1, d4
+    lea     str_o_hints, a1
+    bsr     print_at
+    move.l  #$46940003, (a0)                ; HINTS toggle box at row 13 col 10
+    moveq   #0, d2
+    cmpi.b  #6, cur_row
+    bne.s   .ohi
+    moveq   #$60, d2
+.ohi:
+    moveq   #0, d1
+    move.b  opt_hints, d1
+    andi.w  #1, d1
+    add.w   d1, d1                          ; 0/1 -> $7B off-box / $7D on-box
+    addi.w  #$7B, d1
+    add.w   d2, d1
     move.w  d1, VDP_DATA
-    rts                                     ; OPTIONS = VID / SYNC / PALETTE / CLON / AUDITION (SRAM/FREE moved to FILES)
+    rts                                     ; OPTIONS = VID / CLOCK / SYNC / PALETTE / CLON / AUDIT / HINTS
 
 ; Apply the two region settings live. VIDEO (opt_vid) -> eff_pal: tempo constant (tempo_k) + VDP
 ; display mode (V28 224-line / V30 240-line). CLOCK (opt_clock) -> pitch tables (note_base/fnum_base).
@@ -12124,13 +12437,21 @@ edit_opts:                                ; B+dpad on OPTIONS: adjust the curren
     bra.s   .eo_apply
 .eo_n3:
     cmpi.b  #4, d0
-    bne.s   .eo_audit
+    bne.s   .eo_n4
     lea     opt_clon, a1                    ; 4 = CLON SLIM/DEEP
     moveq   #1, d3
     moveq   #1, d4
     bra.s   .eo_apply
+.eo_n4:
+    cmpi.b  #6, d0                            ; 6 = HINTS
+    beq.s   .eo_hints
 .eo_audit:
     lea     opt_audit, a1                   ; 5 = AUDIT ON/OFF
+    moveq   #1, d3
+    moveq   #1, d4
+    bra.s   .eo_apply
+.eo_hints:
+    lea     opt_hints, a1                   ; 6 = HINTS ON/OFF (not persisted)
     moveq   #1, d3
     moveq   #1, d4
     bra.s   .eo_apply
@@ -14512,6 +14833,7 @@ Exception:
 ; data
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
+str_hint_help: dc.b "HOLD A TO VIEW HELP",0
 ver_str:    dc.b "V0.14",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
@@ -14579,6 +14901,7 @@ str_o_clon: dc.b "CLONE",0
 str_slim:   dc.b "SLIM ",0
 str_deep:   dc.b "DEEP ",0
 str_o_audit: dc.b "AUDITION",0
+str_o_hints: dc.b "HINTS",0
 str_aud_off: dc.b "OFF",0
 str_aud_on:  dc.b "ON ",0
 str_o_sram: dc.b "SRAM",0
@@ -14870,6 +15193,9 @@ z80_blob:
 z80_blob_end:
     even
     include "build/gitver.i"             ; git_hash_str (build stamp)
+    include "build/help.i"               ; help_pages / help_pN -- HELP screen, from help.txt (makehelp.py)
+    include "build/instr_hints.i"        ; hint_type_ptr / hint_op -- INSTR field hints, from instr_hints.txt
+    include "build/cmd_hints.i"          ; cmd_hint -- PHRASE/TABLE command hints, from cmd_hints.txt
     even
 splash_tiles:
     incbin "build/splash_tiles.bin"

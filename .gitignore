@@ -12,6 +12,10 @@ tools/emu/*.dylib
 tools/emu/*.zip
 tools/emu/retroshot
 tools/__pycache__/
+tools/test/__pycache__/
+
+# nested scratch repo (MIDI ROM diag tool; its own git repo)
+imgrom/
 
 # test saves + scratch (user data, not source)
 *.SRM

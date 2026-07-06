@@ -48,7 +48,22 @@ $(Z80BIN): $(Z80SRC) | $(BUILD)
 SPLASH := $(BUILD)/splash.i
 GITVER := $(BUILD)/gitver.i
 ALGOS  := $(BUILD)/algos.i
+HELP   := $(BUILD)/help.i
+HINTS  := $(BUILD)/instr_hints.i
+CMDHINTS := $(BUILD)/cmd_hints.i
 FACTORY := $(BUILD)/fm_factory.bin
+
+# HELP screen: generated from the editable help.txt; a too-wide/tall line fails the build
+$(HELP): tools/makehelp.py help.txt | $(BUILD)
+	python3 tools/makehelp.py help.txt $(HELP)
+
+# INSTR per-field hints: generated from the editable instr_hints.txt (a too-wide line fails the build)
+$(HINTS): tools/makehints.py instr_hints.txt | $(BUILD)
+	python3 tools/makehints.py instr_hints.txt $(HINTS)
+
+# PHRASE/TABLE per-command hints: generated from the editable cmd_hints.txt
+$(CMDHINTS): tools/makecmdhints.py cmd_hints.txt | $(BUILD)
+	python3 tools/makecmdhints.py cmd_hints.txt $(CMDHINTS)
 
 $(SPLASH): tools/makesplash.py art/genmddj.png | $(BUILD)
 	python3 tools/makesplash.py art/genmddj.png \
@@ -70,7 +85,7 @@ $(GITVER): FORCE | $(BUILD)
 	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
 FORCE:
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(FACTORY) $(WAVES) | $(BUILD)
+$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py

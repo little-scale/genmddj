@@ -1,0 +1,76 @@
+# genmddj HELP screen -- button reference. Edit this text freely; `make` validates
+# it and regenerates build/help.i. Rules: UPPERCASE only (no lowercase glyphs),
+# <= 38 chars/line, <= 20 rows. A blank line is a blank screen row. A line with a
+# `:` renders as an inverted title. `@VERSION` draws the live version + build stamp.
+# `#` starts a comment; `---` starts a new page (page nav not wired yet -> one page).
+# A too-wide/too-tall/quote-containing line fails the build instead of clipping.
+###################################### <- POSSIBLE LENGTH  
+
+NAVIGATION: 
+DPAD           NAVIGATE THE SCREEN
+HOLD C + DPAD  GO TO OTHER SCREENS
+HOLD C TAP B   PLAY / STOP TRACK
+START          PLAY / STOP ALL
+HOLD A         ENTER / EXIT HELP
+
+CELL EDITING: 
+TAP B          INSERT VALUE ON EMPTY
+HOLD B + L/R   EDIT VALUE, SMALL STEP
+HOLD B + U/D   EDIT VALUE, BIG STEP
+HOLD B TAP C   CUT VALUE WITH COPY
+> TAP B,B      PASTE VALUE
+
+---
+BLOCK EDITING: 
+HOLD A TAP B   SELECT BLOCK
+> DPAD         EXTEND BLOCK
+> TAP A        CUT BLOCK WITH COPY
+> TAP B        COPY BLOCK
+> TAP C        CANCEL BLOCK 
+> TAP B,B      PASTE BLOCK
+
+MINT AND CLONE: 
+TAP B,B ON EMPTY
+= MINT NEW PHRASE/CHAIN
+
+TAP B,B ON EXISTING
+= CLONE PHRASE/CHAIN
+
+---
+RELATIONSHIPS: 
+TRACKS DO NOT OWN INSTRUMENTS
+TRACKS DO NOT OWN NOTE DATA
+INSTRUMENTS, NOTE DATA AND TABLES
+ARE ALL GLOBAL POOLS
+
+STRUCTURE: 
+NOTES RESIDE WITHIN PHRASES
+PHRASES RESIDE WITHIN CHAINS
+CHAINS RESIDE ON TRACKS
+
+PHRASES CAN BE USED IN MULTIPLE CHAINS
+CHAINS CAN BE USED ON MULTIPLE TRACKS
+INSTRUMENTS CAN BE USED ON 
+MULTIPLE TRACKS
+
+AUTOMATION:
+TABLES CAN BE DISCRETE AUTOMATION
+LFOS CAN BE CONTINUOUS AUTOMATION
+
+
+---
+GENMDDJ:
+@VERSION
+
+MAX:
+   10 TRACKS
+   32 INSTRUMENTS
+  192 PHRASES
+  128 CHAINS
+  240 SONG ROWS
+61440 NOTE ROWS
+23904 SONG SIZE
+
+SOUND CHIPS: 
+YM2612 FM   (6 CH; 6 FM INC. 1 DAC)
+SN76489 PSG (4 CH; 3 TONE, 1 NOISE)

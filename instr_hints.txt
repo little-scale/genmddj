@@ -1,0 +1,96 @@
+# instr_hints.txt -- one-line help per INSTR field, shown (inverted, ">>"-prefixed) on
+# the bottom row of the instrument editor as the cursor moves. Edit freely; `make`
+# validates it and regenerates build/instr_hints.i. Toggle on-console via OPTIONS -> HINTS.
+#
+# Rules: UPPERCASE only (no lowercase glyphs); <= 35 chars/line (the ">> " prefix is added
+# by the renderer); no double-quotes; a too-wide line fails the build. A blank line = that
+# field has no hint (the row goes blank). Lines within a section are in on-screen field
+# order (top to bottom, then the FM operator-grid columns left to right).
+#
+# Sections map to the field layout in src/main.asm:
+#   [COMMON] rows 0-1 for every type   : INST selector, TYPE
+#   [FM]     voice_lbl (rows 2+)        : HLD VOL PAN TSP TBL TBS ALGO FB AMS FMS SWEEP
+#   [FM.OP]  op grid columns (i_op)     : MUL DT TL RS AR AM D1 D2 RR SL
+#   [TONE]   psg_off (rows 2+)          : VOL ATK HLD DCY TSP SWP VIB TRM TBL TBS MODE RATE
+#   [NOISE]  psg_off (rows 2+)          : same set as TONE
+#   [WAVE]   wave_off (rows 2+)         : WAVE VOL ATK HLD DCY WARP DRIVE FOLD CRUSH TBL TBS
+#   [KIT]    (rows 2+)                  : KIT RATE TSP
+#   [PERC]   (rows 2+)                  : BASE + per-operator frequency
+
+###################################  
+
+[COMMON]
+SONG INSTRUMENT SLOT 00-1F
+INSTR TYPE: FM KIT WAVE TONE NOISE
+
+[FM]
+NOTE LENGTH, LOWER IS SHORTER
+VOLUME 0-F, HIGHER IS LOUDER
+PAN, 0 = OFF, 1 = R, 2 = L, 3 = C
+TRANSPOSE, IN SEMITONES
+TABLE TO RUN, -- FOR OFF OR 00-EF
+TABLE SPEED, 0 FOR NOTE OR TICKS
+ALGORITHM, OP CARRIERS + MODULATORS
+OP1 SELF-FEEDBACK, 0-7
+################################### 
+AMP MOD SENS, 0-3, GLOBAL LFO
+PITCH MOD SENS, 0-7, GLOBAL LFO
+PITCH SWEEP, DEPTH | RATE
+
+[FM.OP]
+MULTIPLE OF FUNDAMENTAL: 0-F
+DETUNE, 0-7 
+TOTAL LEVEL, 0-127, LOWER IS LOUDER
+RATE SCALING 0-3, MAPS FREQ TO ENV
+ATTACK RATE, HIGHER IS FASTER
+DECAY1 RATE, HIGHER IS FASTER
+DECAY2 RATE, HIGHER IS FASTER
+RELEASE RATE, HIGHER IS FASTER
+SUSTAIN LEVEL, LOWER IS LOUDER
+AMP MOD, GLOBAL LFO, ON OR OFF
+
+[TONE]
+VOLUME, 0-F, HIGHER IS LOUDER
+ATTACK TIME, LOWER IS FASTER
+NOTE LENGTH, LOWER IS SHORTER
+DECAY TIME, LOWER IS FASTER
+TRANSPOSE, IN SEMITONES
+PITCH SWEEP, RATE AND DIRECTION
+VIBRATO, RATE | DEPTH
+TREMOLO, RATE | DEPTH
+TABLE TO RUN, -- FOR OFF OR 00-EF
+TABLE SPEED, 0 FOR NOTE OR TICKS
+GROUP MODE, T1 DRIVES T2/T3
+GROUP DETUNE / SPREAD
+
+[NOISE]
+VOLUME, 0-F, HIGHER IS LOUDER
+ATTACK TIME, LOWER IS FASTER
+NOTE LENGTH, LOWER IS SHORTER
+DECAY TIME, LOWER IS FASTER
+TRANSPOSE, IN SEMITONES
+PITCH SWEEP, RATE AND DIRECTION
+VIBRATO, RATE | DEPTH
+TREMOLO, RATE | DEPTH
+TABLE TO RUN, -- FOR OFF OR 00-EF
+TABLE SPEED, 0 FOR NOTE OR TICKS
+NOISE MODE
+NOISE RATE
+
+[WAVE]
+WAVETABLE SHAPE 0-15
+ATTACK, HOLD, DECAY
+VOLUME, 0-F, HIGHER IS LOUDER
+PHASE WARPING
+WAVESHAPING
+OVERDRIVING
+BIT CRUSHING
+
+[KIT]
+DRUM KIT / SAMPLE BANK
+SAMPLE PLAYBACK RATE
+TRANSPOSE, IN SEMITONES
+
+[PERC]
+CH3 4-OP MODE, LOAD BASE PATCH
+PER-OPERATOR FREQUENCY

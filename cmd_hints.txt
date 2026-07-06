@@ -1,0 +1,35 @@
+# cmd_hints.txt -- one-line help per phrase/table COMMAND, shown (inverted, ">"-capped)
+# on the bottom row of the PHRASE and TABLE editors whenever the cursor sits on a
+# command (CMD) or parameter (PRM) cell. Edit freely; `make` validates it and
+# regenerates build/cmd_hints.i. Shares the OPTIONS -> HINTS toggle with the INSTR hints.
+#
+# Rules: UPPERCASE only (no lowercase glyphs); <= 35 chars/line; no double-quotes; a
+# too-wide line fails the build. One line per command letter A..Z, in order (26 lines).
+# A blank line = that command shows no hint. Parameter nibbles are written X (high) / Y (low).
+
+SWITCH / RESTART MACRO TABLE
+WAVE BANK: SELECT WAVE 0-F
+CHORD / ARP: X,Y SEMITONES
+DELAY NOTE-ON BY XX TICKS
+ENVELOPE SLOPE: X ATK, Y DCY
+FINE PITCH, SIGNED OFFSET
+SELECT ACTIVE GROOVE (GLOBAL)
+HOP: JUMP TO ROW XX
+ITERATION GATE, REPEAT MASK
+REPEAT-GATED TRANSPOSE
+NOTE CUT AFTER XX TICKS
+SLIDE / PORTAMENTO, RATE XX
+AMP MOD / TREMOLO DEPTH
+NOISE MODE X / RATE Y
+PAN: X LEFT, Y RIGHT (FM)
+PITCH BEND, SIGNED RATE
+ALGORITHM X + FEEDBACK Y
+RETRIGGER, PERIOD + DECAY
+SAMPLE RATE 0-3 (KIT VOICE)
+TEMPO IN BPM (GLOBAL)
+MODULATOR LEVEL / BRIGHTNESS
+VIBRATO DEPTH (FM)
+ROW LASTS XX FRAMES (GLOBAL)
+VOLUME: CARRIER TL / PSG LVL
+FM LFO DEPTH: X AMS, Y FMS
+RANDOM NOTE GATE, PROB XX
