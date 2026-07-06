@@ -2,6 +2,47 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.15 — 2026-07-07
+
+### Added
+- **CONT — song-to-song continuity.** A LIVE-set performance layer: load the next song
+  without stopping. Per-track **CONT flags** on SONG (toggle + `*` / `>` cues), a
+  **beat-quantized live load** (arm now, fire on the downbeat), **beat-matched bridges**
+  when entering a new song, a **tempo glide** (SLID length on PROJECT) that ramps between
+  songs, and **FILES → LOAD / CUED** wiring. Boots OFF (a per-set choice).
+- **HELP screen** (above TABLE) — a read-only, **paged button reference**. Open it from
+  **any** screen by holding **A ~3 s**; the D-pad turns pages (with an `N/M` counter); the
+  body is generated from an editable `help.txt`. First boot shows `HOLD A TO VIEW HELP`.
+- **On-console hints** — the bottom row shows a one-line reminder for the item under the
+  cursor: per **INSTR** field (per type + FM operator columns) and per **PHRASE/TABLE
+  command**. Edited in `instr_hints.txt` / `cmd_hints.txt`; shared **OPTIONS → HINTS**
+  toggle (default ON).
+- **MIDI input (experimental)** — a 2-wire shift-in (`midi_poll`) feeding note-on/off for
+  FM **and** PSG voices, selectable in **OPTIONS → SYNC**. IN24 clock-sync is
+  hardware-verified; note-takeover is still being brought up on hardware.
+
+### Changed
+- **DAC sample rate doubled** — the Z80 tight-loop feed lifts PCM playback from ~5327 Hz to
+  **10653 Hz** (M9), with a shrunk Timer-A flag-clear race window.
+- **HELP is now data, not code** — generated from `help.txt` at build time.
+
+### Fixed
+- **Audition double-note** on hardware — an asymmetric pad debounce.
+- **YM2612 post-write busy window** is guarded before the `$27` re-park (Z80).
+- **TONE / KIT / NOISE** instruments no longer show phantom FM-operator columns
+  (single-column fields).
+- Pool indices are **sanitised on song load** (guards a corrupt save).
+
+### Engine
+- Up to **MAXPATCH** FM operator patches per tick (was 1).
+- **E command** now re-slopes FM carriers (AR/RR) — the deferred FM half.
+- Retired the vestigial `SCR_FM` screen id.
+
+### Tools
+- **`make test`** — a headless regression harness (DAC pacing, KIT end-stop, SCB delivery,
+  boot smoke) + a **user-tools consistency checker**.
+- New build-time generators: `makehelp.py`, `makehints.py`, `makecmdhints.py`.
+
 ## v0.14 — 2026-07-02
 
 _(v0.13 skipped.)_

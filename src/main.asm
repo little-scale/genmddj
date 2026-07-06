@@ -14834,7 +14834,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_help: dc.b "HOLD A TO VIEW HELP",0
-ver_str:    dc.b "V0.14",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, ...; 0.13 skipped)
+ver_str:    dc.b "V0.15",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
