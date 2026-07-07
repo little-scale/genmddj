@@ -12135,7 +12135,7 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     ; count climbs as you play, the console is decoding -> a silent voice is downstream
     ; (a stale bridge or the note protocol), not the read. Blank line above (row 14).
     cmpi.b  #4, opt_sync
-    bne.s   .oo_nomidi
+    bne.s   .oo_clearmon                     ; not MIDI -> blank the monitor rows (don't leave stale text)
     moveq   #15, d3                          ; static labels only ("MIDI RX", "LAST"); the values are
     moveq   #1, d4                           ; live-refreshed every frame by render_midi_mon (not d7-gated)
     lea     str_o_midirx, a1
@@ -12144,7 +12144,18 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     moveq   #1, d4
     lea     str_o_midilast, a1
     bsr     print_at
-.oo_nomidi:
+    rts
+.oo_clearmon:                                ; blank rows 15-16 cols 1-16 when leaving MIDI mode
+    move.l  #$47820003, (a0)
+    moveq   #16-1, d0
+.oo_cm1:
+    move.w  #' ', VDP_DATA
+    dbra    d0, .oo_cm1
+    move.l  #$48020003, (a0)
+    moveq   #16-1, d0
+.oo_cm2:
+    move.w  #' ', VDP_DATA
+    dbra    d0, .oo_cm2
     rts                                     ; OPTIONS = VID / CLOCK / SYNC / PALETTE / CLON / AUDIT / HINTS
 
 ; MIDI monitor VALUES, redrawn EVERY frame from .gd (not gated on d7) so the count/last
