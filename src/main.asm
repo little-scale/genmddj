@@ -78,6 +78,10 @@ hint_ctr   equ $00FFD326           ; boot: frames left showing "HOLD A TO VIEW H
 help_pgbuf equ $00FFD328           ; HELP page indicator scratch: "N/M",0 (4 bytes)
 hint_linebuf equ $00FFD32C         ; INSTR hint bottom-row scratch: the ">"..."<" bar + 0 (44 bytes)
 hint_last  equ $00FFD358           ; INSTR hint: last-drawn field key (cur_row:cur_col); $FFFF = redraw
+midi_dbg_st equ $00FFD35A          ; MIDI monitor: last decoded status byte (type<<4|chan)
+midi_dbg_d1 equ $00FFD35B          ; MIDI monitor: last decoded data1
+midi_dbg_d2 equ $00FFD35C          ; MIDI monitor: last decoded data2
+midi_dbg_ctr equ $00FFD35E         ; MIDI monitor: rolling decoded-event counter (word; reset on MIDI entry)
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -7961,6 +7965,18 @@ midi_mode_change:                          ; SYNC mode entered/left MIDI -> sile
     bne.s   .mmc_off
     move.b  #$00, $00A10005               ; TR data latch = 0: open-drain CLK only ever drives LOW, never 5V
     move.b  #$20, $00A1000B               ; MIDI idle: TR(5)=output-low = CLK low; TH(6)=DAT input (MIDI.md §3.1)
+    lea     ch_state, a0                  ; seed each channel's default instrument = its index:
+    moveq   #0, d0                        ;   ch1->instr0 .. ch10->instr9 across the 10 Genesis voices
+.mmc_seed:                                ;   (MIDI_LESSONS_FROM_SMSGGDJ §3). Program Change overrides live.
+    move.b  d0, c_instr(a0)
+    lea     CHSIZE(a0), a0
+    addq.b  #1, d0
+    cmpi.b  #NCH, d0
+    bne.s   .mmc_seed
+    move.b  #0, midi_dbg_st               ; fresh MIDI monitor each session (OPTIONS readout, MIDI mode)
+    move.b  #0, midi_dbg_d1
+    move.b  #0, midi_dbg_d2
+    move.w  #0, midi_dbg_ctr
     rts
 .mmc_off:
     move.b  #0, $00A1000B                 ; left MIDI -> release the lines; play-start re-sets per mode
@@ -8034,6 +8050,10 @@ midi_clock_bit:                           ; -> d0.b = sampled DAT bit (0/1)
 
 ; --- MIDI event dispatch (MIDI.md §3.4) -- d0=status (type<<4|chan), d1=data1, d2=data2 ---
 midi_dispatch:
+    move.b  d0, midi_dbg_st               ; MIDI monitor (OPTIONS, MIDI mode): capture the raw frame +
+    move.b  d1, midi_dbg_d1               ; bump the event counter BEFORE any channel/type filtering, so a
+    move.b  d2, midi_dbg_d2               ; climbing counter proves the console decoded something at all
+    addq.w  #1, midi_dbg_ctr              ; (the console half of the two-sided diagnostic, MIDI_LESSONS §6)
     moveq   #0, d3
     move.b  d0, d3
     andi.b  #$0F, d3                       ; MIDI channel 0-15
@@ -12109,6 +12129,38 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     addi.w  #$7B, d1
     add.w   d2, d1
     move.w  d1, VDP_DATA
+    ; MIDI monitor (only in SYNC=MIDI): rolling decoded-event count + last status/d1/d2.
+    ; The console half of the bring-up diagnostic (MIDI_LESSONS_FROM_SMSGGDJ §6): if the
+    ; count climbs as you play, the console is decoding -> a silent voice is downstream
+    ; (a stale bridge or the note protocol), not the read. Blank line above (row 14).
+    cmpi.b  #4, opt_sync
+    bne.s   .oo_nomidi
+    moveq   #15, d3                          ; "MIDI RX " + 4-hex event counter
+    moveq   #1, d4
+    lea     str_o_midirx, a1
+    bsr     print_at
+    move.b  midi_dbg_ctr, d3               ; counter high byte (a0 still at col 9 after the string)
+    moveq   #0, d4
+    bsr     draw_hex2
+    move.b  midi_dbg_ctr+1, d3             ; counter low byte
+    moveq   #0, d4
+    bsr     draw_hex2
+    moveq   #16, d3                          ; "LAST " + status / data1 / data2 (hex)
+    moveq   #1, d4
+    lea     str_o_midilast, a1
+    bsr     print_at
+    move.b  midi_dbg_st, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+    move.w  #' ', VDP_DATA
+    move.b  midi_dbg_d1, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+    move.w  #' ', VDP_DATA
+    move.b  midi_dbg_d2, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+.oo_nomidi:
     rts                                     ; OPTIONS = VID / CLOCK / SYNC / PALETTE / CLON / AUDIT / HINTS
 
 ; Apply the two region settings live. VIDEO (opt_vid) -> eff_pal: tempo constant (tempo_k) + VDP
@@ -14966,6 +15018,8 @@ str_o_ver:  dc.b "VER",0
 str_o_vid:  dc.b "VIDEO",0
 str_o_clock: dc.b "CLOCK",0
 str_o_sync: dc.b "SYNC",0
+str_o_midirx: dc.b "MIDI RX ",0
+str_o_midilast: dc.b "LAST ",0
 str_o_pal:  dc.b "COLOUR",0
 str_o_clon: dc.b "CLONE",0
 str_slim:   dc.b "SLIM ",0
