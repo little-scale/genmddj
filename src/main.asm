@@ -1075,6 +1075,7 @@ VBlankInt:
     bsr     draw_map                      ; map at row5 col35
 ;    bsr     draw_meters                   ; DISABLED: ~50 cells/frame overruns VBlank on the SONG redraw (accurate VDP / hardware). Re-enable after an incremental rework (redraw a bar only on level change).
     bsr     amp_refresh                   ; smooth per-frame AMP bars (LFO screen + playing)
+    bsr     render_midi_mon               ; MIDI monitor: live-refresh RX count/LAST every frame (not d7-gated)
     cmpi.b  #SCR_TABLE, cur_screen        ; animate the TABLE playhead each frame while playing
     bne.s   .ntblph
     tst.b   playing
@@ -12135,20 +12136,33 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     ; (a stale bridge or the note protocol), not the read. Blank line above (row 14).
     cmpi.b  #4, opt_sync
     bne.s   .oo_nomidi
-    moveq   #15, d3                          ; "MIDI RX " + 4-hex event counter
-    moveq   #1, d4
+    moveq   #15, d3                          ; static labels only ("MIDI RX", "LAST"); the values are
+    moveq   #1, d4                           ; live-refreshed every frame by render_midi_mon (not d7-gated)
     lea     str_o_midirx, a1
     bsr     print_at
-    move.b  midi_dbg_ctr, d3               ; counter high byte (a0 still at col 9 after the string)
-    moveq   #0, d4
-    bsr     draw_hex2
-    move.b  midi_dbg_ctr+1, d3             ; counter low byte
-    moveq   #0, d4
-    bsr     draw_hex2
-    moveq   #16, d3                          ; "LAST " + status / data1 / data2 (hex)
+    moveq   #16, d3
     moveq   #1, d4
     lea     str_o_midilast, a1
     bsr     print_at
+.oo_nomidi:
+    rts                                     ; OPTIONS = VID / CLOCK / SYNC / PALETTE / CLON / AUDIT / HINTS
+
+; MIDI monitor VALUES, redrawn EVERY frame from .gd (not gated on d7) so the count/last
+; bytes update live while you watch -- the previous d7-gated draw only refreshed on a
+; cursor move. Absolute VDP addressing (a0 may have moved). Only on OPTIONS + MIDI mode.
+render_midi_mon:
+    cmpi.b  #SCR_OPTS, cur_screen
+    bne.s   .mm_ret
+    cmpi.b  #4, opt_sync
+    bne.s   .mm_ret
+    move.l  #$47920003, VDP_CTRL           ; row15 col9: 4-hex rolling event counter
+    move.b  midi_dbg_ctr, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+    move.b  midi_dbg_ctr+1, d3
+    moveq   #0, d4
+    bsr     draw_hex2
+    move.l  #$480C0003, VDP_CTRL           ; row16 col6: last status / data1 / data2
     move.b  midi_dbg_st, d3
     moveq   #0, d4
     bsr     draw_hex2
@@ -12160,8 +12174,8 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     move.b  midi_dbg_d2, d3
     moveq   #0, d4
     bsr     draw_hex2
-.oo_nomidi:
-    rts                                     ; OPTIONS = VID / CLOCK / SYNC / PALETTE / CLON / AUDIT / HINTS
+.mm_ret:
+    rts
 
 ; Apply the two region settings live. VIDEO (opt_vid) -> eff_pal: tempo constant (tempo_k) + VDP
 ; display mode (V28 224-line / V30 240-line). CLOCK (opt_clock) -> pitch tables (note_base/fnum_base).
