@@ -2,7 +2,31 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## v0.15 — 2026-07-07
+## v0.16 — 2026-07-08
+
+### Added
+- **MIDI note takeover (`SYNC: MIDI`) — now working on real hardware.** The headline: an
+  external MIDI keyboard / DAW plays genmddj's ten voices live over the shared **ESP32-S3 link
+  bridge**, with the sequencer stepped aside. The first ten MIDI channels map 1:1 onto the
+  console voices (**1–6 → F1–F6**, **7–9 → T1–T3**, **10 → NO**), with velocity, pitch-bend and
+  note-off (FM key-off / PSG release). Each voice keeps a console-side "current instrument" — a
+  sticky stand-in for a PHRASE row's INSTR column — seeded on entry to `ch#−1` and changed live
+  by **Program Change** (0–31 song pool / 32–63 ROM factory / 64–95 SRAM). **Hardware-verified
+  on a Mega Drive 2**, and on the sibling **SMSGGDJ** over the same bridge. (MANUAL §13.)
+- **On-screen MIDI monitor** (OPTIONS, in MIDI mode) — a live `MIDI RX nnnn` decoded-event
+  counter + `LAST ss d1 d2` last-frame readout; the console half of the two-sided bring-up
+  diagnostic.
+- **CONT transition cues** — the SONG arrangement header shows a per-track `*` (flagged to
+  carry) / `>` (bridging) marker beside each voice label, and the FILES divider shows
+  `CUED nn IN xxx` then `MATCH IN nnn` while a live song swap is queued / gliding.
+- **HELP command reference** — two new HELP pages listing every A–Z phrase/table command with
+  its one-line description (generated from `cmd_hints.txt`).
+
+### Changed
+- **MIDI CLK is now driven push-pull** (matching SMSGGDJ), not open-drain — the fix that made
+  takeover work on this MD2+S3 rig: open-drain's pull-up RC ramp meant the bridge missed most
+  clock edges, so notes decoded as garbage. Also: per-channel default instruments seeded on
+  MIDI entry; `midi_poll` re-asserts TR=output each frame; `MIDI_SETTLE` 8 → 12.
 
 ### Added
 - **CONT — song-to-song continuity.** A LIVE-set performance layer: load the next song
