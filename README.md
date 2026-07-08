@@ -127,6 +127,11 @@ progress. Working today:
 - **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;
   OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
   **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
+- **MIDI note takeover** (`SYNC: MIDI`) — a MIDI keyboard / DAW plays the ten voices live over
+  the shared **ESP32-S3 link bridge**: the sequencer steps aside and the first 10 MIDI channels
+  map 1:1 onto the console voices (F1–F6, T1–T3, NO), with Program Change / velocity / pitch-bend.
+  **Hardware-verified on a real Mega Drive 2** — and on the sibling **SMSGGDJ** over the same
+  bridge. See the MANUAL's MIDI section for the channel/voice/instrument mapping.
 
 See [MANUAL.md](MANUAL.md) for how to use it.
 

@@ -523,7 +523,7 @@ Settings that belong to the **machine**, not the song (they persist in SRAM):
 
 - **VID** — video region: **AUTO** (default, auto-detect at boot), **PAL**, or **NTSC**.
   Affects tuning and tempo math.
-- **SYNC** — clock sync mode (§13).
+- **SYNC** — clock sync mode, plus **MIDI note takeover** (§13).
 - **PALETTE** — UI colour scheme.
 - **CLONE** — **SLIM** or **DEEP**, how a SONG chain clones (§4).
 - **AUDITION** — note-entry prelisten on PHRASE/INSTR, **ON** by default (§2).
@@ -546,9 +546,58 @@ GGDJ, or analog-clock gear. Set it on **OPTIONS → SYNC**:
   leave IN).
 - **IN24** — follow a **24-PPQN** source (e.g. the **smsggdj-link-esp32** Ableton Link
   bridge); same WAIT-then-lock behaviour.
+- **MIDI** — **note takeover**: an external MIDI keyboard / DAW plays the ten voices live
+  through the ESP32-S3 bridge (this is note input, not a clock — see below).
 
 Cross-sync uses the identical wire protocol both ways: genmddj `OUT` ↔ SMSGGDJ `IN`, and
 either unit's `IN24` follows the Link bridge.
+
+### MIDI note takeover (SYNC = MIDI)
+
+With **SYNC = MIDI**, genmddj becomes a **10-voice MIDI sound module**: the sequencer steps
+aside and an external MIDI keyboard or DAW plays the chip voices live, through the
+**ESP32-S3 link bridge** (the same 3-wire controller-port link the clock sync uses). Keep the
+transport **stopped** — takeover runs on its own. *(Hardware-verified on a Mega Drive 2; the
+sibling SMSGGDJ plays over the identical bridge and protocol.)*
+
+**Channels map 1:1 onto the console voices** — the first ten MIDI channels drive the ten
+voices in order (channels 11–16 are ignored):
+
+| MIDI channel | Console voice | Type |
+|---|---|---|
+| 1–6 | F1–F6 | FM |
+| 7–9 | T1–T3 | PSG square |
+| 10 | NO | PSG noise |
+
+**The instrument is never sent over MIDI.** MIDI carries only the note (+ velocity), Program
+Change, and pitch bend — no patch data. Each voice **remembers its own current instrument on
+the console side**, exactly like a *sticky* version of a PHRASE row's **INSTR** column:
+
+- On entering MIDI mode each channel is seeded to a **default instrument = its channel number
+  − 1**: ch 1 → instrument `00`, ch 2 → `01`, … ch 10 → `09`. This is recomputed **every time
+  you enter MIDI mode**, so it also resets any Program Changes back to the default map.
+- Each incoming note plays that channel's *remembered* instrument; the note number sets the
+  pitch, velocity sets the volume, pitch-bend bends it, and note-off releases the voice.
+
+**Match the instrument type to the voice.** A voice only makes sound if the instrument's type
+fits the hardware: FM voices (ch 1–6) need **FM** instruments, the square voices (ch 7–9) need
+**TONE**, the noise voice (ch 10) needs **NOISE**. A fresh console loads the **all-FM factory
+pool**, so out of the box **only the FM channels (1–6) sound**. To play the PSG voices, put
+TONE instruments in slots `06`–`08` and a NOISE in `09` (or load a song that already has them)
+— matching the default channel→instrument map.
+
+**Program Change** picks a channel's instrument live (wire value is 0-based; most DAWs show it
+1-based, so "Program 1" = PC 0 = slot `00`):
+
+| Program Change | Selects (for that channel) |
+|---|---|
+| 0–31 | On-board **song-pool** instrument `00`–`1F` (just repoints — non-destructive) |
+| 32–63 | A **ROM factory** patch (all FM — no use for the PSG channels) |
+| 64–95 | An **SRAM library** patch |
+
+Because Program Change also has to land on a *type-matching* instrument, the PSG channels can
+only usefully Program-Change to TONE/NOISE instruments you keep in the song pool or SRAM — the
+ROM factory bank is all FM.
 
 ---
 
