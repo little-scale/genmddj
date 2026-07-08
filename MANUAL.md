@@ -546,15 +546,15 @@ GGDJ, or analog-clock gear. Set it on **OPTIONS → SYNC**:
   leave IN).
 - **IN24** — follow a **24-PPQN** source (e.g. the **smsggdj-link-esp32** Ableton Link
   bridge); same WAIT-then-lock behaviour.
-- **MIDI** — **note takeover**: an external MIDI keyboard / DAW plays the ten voices live
-  through the ESP32-S3 bridge (this is note input, not a clock — see below).
+- **MIDI TAKEOVER** — an external MIDI keyboard / DAW plays the ten voices live through the
+  ESP32-S3 bridge (this is note input, **not** a clock — see below).
 
 Cross-sync uses the identical wire protocol both ways: genmddj `OUT` ↔ SMSGGDJ `IN`, and
 either unit's `IN24` follows the Link bridge.
 
-### MIDI note takeover (SYNC = MIDI)
+### MIDI note takeover (SYNC = MIDI TAKEOVER)
 
-With **SYNC = MIDI**, genmddj becomes a **10-voice MIDI sound module**: the sequencer steps
+With **SYNC = MIDI TAKEOVER**, genmddj becomes a **10-voice MIDI sound module**: the sequencer steps
 aside and an external MIDI keyboard or DAW plays the chip voices live, through the
 **ESP32-S3 link bridge** (the same 3-wire controller-port link the clock sync uses). Keep the
 transport **stopped** — takeover runs on its own. *(Hardware-verified on a Mega Drive 2; the

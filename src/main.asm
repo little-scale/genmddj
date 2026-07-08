@@ -12062,6 +12062,11 @@ render_opts:                              ; VID(0) SYNC(1) PAL(2) -- render_kit 
     lsl.w   #2, d1
     lea     sync_lbl, a1
     move.l  (a1,d1.w), a1
+    move.l  #$44140003, (a0)               ; blank the value field (row 8, cols 10-22) first, so the wide
+    moveq   #13-1, d0                       ; "MIDI TAKEOVER" clears when you cycle back to a short mode
+.os_clr:
+    move.w  #' ', VDP_DATA
+    dbra    d0, .os_clr
     moveq   #8, d3                          ; SYNC value at row 8
     moveq   #10, d4
     bsr     print_hl
@@ -15088,7 +15093,7 @@ str_syn_o:  dc.b "OFF  ",0
 str_syn_i:  dc.b "IN   ",0
 str_syn_u:  dc.b "OUT  ",0
 str_syn_p:  dc.b "PULSE",0
-str_syn_m:  dc.b "MIDI ",0
+str_syn_m:  dc.b "MIDI TAKEOVER",0    ; note takeover, NOT a clock mode (field blanked before draw in render_opts)
 str_syn_2:  dc.b "IN24 ",0
 str_md_s:   dc.b "SONG",0
 str_md_live: dc.b "LIVE",0
