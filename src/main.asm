@@ -7984,7 +7984,7 @@ midi_mode_change:                          ; SYNC mode entered/left MIDI -> sile
     rts
 
 MIDI_CAP    equ 16     ; max events drained per frame -- bounds midi_poll's shift-in time
-MIDI_SETTLE equ 8      ; midi_clock_bit inter-edge settle (dbra count; ~10us; HW-tunable)
+MIDI_SETTLE equ 12     ; midi_clock_bit LOW-phase settle (dbra count; matches SMSGGDJ; HW-tunable)
 
 ; Clock buffered events off the ESP32-S3 wire and dispatch them (MIDI.md §3.3).
 ; genmddj is the clock master: TR (bit5 of $A10005) = CLK output, TH (bit6) = DAT
@@ -7993,6 +7993,7 @@ MIDI_SETTLE equ 8      ; midi_clock_bit inter-edge settle (dbra count; ~10us; HW
 ; inter-frame gap serves as the idle gap that (re)aligns the S3 to the flag.
 midi_poll:                                ; SYNC=MIDI: shift in events -> midi_dispatch
     lea     $00A10005, a0                 ; controller port-2 data reg
+    move.b  #$20, $00A1000B               ; TR = OUTPUT (push-pull CLK); re-assert in case play-start (.epr_syncoff) cleared it
     move.b  #$00, (a0)                    ; CLK low = idle (the frame gap already let the S3 arm the flag)
     moveq   #MIDI_CAP-1, d7               ; cap events this frame
 .mp_loop:
@@ -8031,17 +8032,15 @@ midi_clock_byte:                          ; -> d0.b = one byte, MSB first
     rts
 
 midi_clock_bit:                           ; -> d0.b = sampled DAT bit (0/1)
-    ; CLK is OPEN-DRAIN: TR only ever drives LOW; the HIGH comes from an external 3V3 pull-up
-    ; when TR is released to input/high-Z. So genmddj never sources 5V into the S3's clock input
-    ; -> the S3 wires straight to GPIO4 with a pull-up, no divider (same electrical regime as the
-    ; Link/counter lines). Waveform is unchanged (idle-low, pulse-high, sample-on-rising), so the
-    ; S3 responder is byte-identical. $A10005 bit5 stays 0 throughout (set in midi_mode_change).
-    move.b  #$00, $00A1000B               ; CLK high: RELEASE TR (input) -> pull-up drives it high
-    moveq   #MIDI_SETTLE, d2              ; HIGH-phase settle (open-drain): the line rises via the S3 pull-up
-.cbh:                                     ;   (an RC ramp, not a fast push-pull edge), so hold it high long
-    dbra    d2, .cbh                       ;   enough to reach a valid logic 1 -- else the release pulse is too
-    move.b  (a0), d0                       ;   brief, no clean high->low happens, and the S3 sees no edge (edges=0).
-    move.b  #$20, $00A1000B               ; CLK low: DRIVE TR low (output, data=0) -> clean falling edge; S3 sets next bit
+    ; CLK is PUSH-PULL, matching SMSGGDJ's proven takeover (sms_tracker/src/midi.asm) on this
+    ; same MD2(SMS)+S3+bare-3-wire rig. TR stays an OUTPUT ($A1000B=$20, set in midi_mode_change +
+    ; re-asserted in midi_poll); we drive its DATA latch ($A10005 bit5) actively high then low, so
+    ; both edges are fast/clean with NO open-drain RC ramp -- the S3 (NEGEDGE ISR) always sees a
+    ; valid high->low, instead of the open-drain scheme missing edges when the settle was too short
+    ; for the pull-up ramp. Read DAT (TH=bit6) right after the high edge; the bit is already stable.
+    move.b  #$20, (a0)                     ; CLK high: drive TR high (bit5); TH(bit6) stays input
+    move.b  (a0), d0                       ; sample DAT immediately (no high-phase settle needed)
+    move.b  #$00, (a0)                     ; CLK low: drive TR low -> clean falling edge; S3 sets next bit
     moveq   #MIDI_SETTLE, d2              ; LOW-phase settle: let the S3's edge ISR present the next bit
 .cbi:
     dbra    d2, .cbi
