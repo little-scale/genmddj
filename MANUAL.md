@@ -471,6 +471,10 @@ never changed, and audition plays the snapped pitch so you hear what you'll get.
   · HARM(onic min) · MELO(dic min) · P.MAJ / P.MIN (pentatonic) · BLUES · WHOLE`(-tone).
 - Applies to **pitched voices only** — FM, TONE, WAVE, PERC. **KIT** (samples) and **NOISE**
   are never snapped.
+- Quantization is the **last step before the note becomes a frequency**, so everything that
+  shifts a note first is respected: **transpose** (PROJECT TSP, table `TSP`), the **`C` chord
+  arp**, and the **`L` portamento** all land on scale notes (the slide glides *to* the snapped
+  pitch). Sub-semitone effects — fine-tune `F`, bend `P`, vibrato — ride on top afterward.
 - The scale is **saved with the song**, and the **`W` command** (§8) sets it live from a
   phrase (`x` = key, `y` = type).
 

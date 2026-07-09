@@ -8874,21 +8874,15 @@ scale_snap:
 .sn_ret:
     rts
 
+; snap_note: d0.b = note -> snapped note. Same as scale_snap but preserves d1/d2/a1 (ONLY
+; d0 changes), so it drops into the PSG period sites without disturbing their live registers.
+snap_note:
+    movem.l d1-d2/a1, -(sp)
+    bsr     scale_snap
+    movem.l (sp)+, d1-d2/a1
+    rts
+
 note_trigger:                             ; trigger the note-on (a6 = channel); also entered from hold_tick after a delay
-    cmpi.b  #2, c_type(a6)                 ; SCALE snap: skip NOISE (no pitch)
-    beq.s   .nt_noscale
-    lea     instrum, a1
-    moveq   #0, d0
-    move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    cmpi.b  #1, (i_type,a1,d0.w)           ; skip KIT (sample pad, not a pitch)
-    beq.s   .nt_noscale
-    move.b  c_note(a6), d0
-    cmpi.b  #$FF, d0                        ; no note -> nothing to snap
-    beq.s   .nt_noscale
-    bsr     scale_snap                      ; quantize the played note to the PROJECT scale
-    move.b  d0, c_note(a6)
-.nt_noscale:
     moveq   #0, d0                          ; an immediate (re)trigger clears any pending delay
     move.b  c_track(a6), d0
     lea     c_delay, a1
@@ -9038,11 +9032,12 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     move.b  #0, c_vol(a6)
     rts
 .square:
-    moveq   #0, d2                         ; note from the channel (d2 isn't set when hold_tick fires a delayed note)
-    move.b  c_note(a6), d2
-    add.w   d2, d2
+    moveq   #0, d0                         ; note from the channel (d2 isn't set when hold_tick fires a delayed note)
+    move.b  c_note(a6), d0
+    bsr     snap_note                      ; SCALE: quantize -> the slide target + period are the scaled pitch
+    add.w   d0, d0
     movea.l note_base, a2                ; region PSG period table
-    move.w  (a2,d2.w), d2                 ; d2 = new period
+    move.w  (a2,d0.w), d2                 ; d2 = new period (scaled)
     bsr     slide_arm                      ; L: arm portamento from the old c_period to d2 (preserves d2)
     move.w  d2, c_period(a6)
     move.b  #1, c_estate(a6)
@@ -9672,6 +9667,9 @@ env_ch:                                   ; a6 = channel
     bmi.s   .notbl
     cmpi.w  #96, d3
     bhs.s   .notbl
+    move.w  d3, d0                          ; SCALE: quantize the effective note (c_note + table TSP + arp)
+    bsr     snap_note
+    move.w  d0, d3
     add.w   d3, d3
     movea.l note_base, a1                ; region PSG period table
     move.w  (a1,d3.w), c_period(a6)
@@ -9982,13 +9980,19 @@ compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     add.w   d3, d0                          ; offset note = note + arp offset
     cmpi.w  #96, d0
     bhs.s   .fp_clamp                       ; out of range -> no arp this tick
+    bsr     snap_note                      ; SCALE: quantize the arp note AND the base ref (below), so the arp
+    add.w   d0, d0                          ;   lands on a scale note and the period delta stays consistent
+    movea.l note_base, a1
+    move.w  (a1,d0.w), d0                  ; period[snapped arp note]
+    move.w  d0, -(sp)
+    moveq   #0, d0
+    move.b  c_note(a6), d0
+    bsr     snap_note
     add.w   d0, d0
-    movea.l note_base, a1                ; region PSG period table
-    move.w  (a1,d0.w), d0                  ; period[note+offset]
-    moveq   #0, d3
-    move.b  c_note(a6), d3
-    add.w   d3, d3
-    sub.w   (a1,d3.w), d0                  ; - period[note] = delta (higher note -> lower period)
+    movea.l note_base, a1
+    move.w  (a1,d0.w), d3                  ; period[snapped base note]
+    move.w  (sp)+, d0
+    sub.w   d3, d0                          ; delta = arp period - base period
     add.w   d0, d2
 .fp_clamp:
     tst.w   d2                              ; clamp period to [1, 1023]
@@ -10842,7 +10846,8 @@ fm_freq_send:
 
 ; d0 = note (0-95) -> d1 = $A4 value (block<<3 | fnum hi), d2 = $A0 value (fnum lo)
 fm_freq:
-    andi.l  #$0000FFFF, d0
+    bsr     scale_snap                      ; SCALE: quantize the effective note here -- the last step before
+    andi.l  #$0000FFFF, d0                 ; the F-number lookup, after c_note + table TSP + arp (all FM + PERC)
     divu.w  #12, d0                         ; low = block(octave), high = semitone
     move.w  d0, d4                          ; block
     clr.w   d0
@@ -11346,6 +11351,7 @@ wave_play:
 .wp_lo:
     cmpi.w  #96, d0
     bhs     .wpx
+    bsr     snap_note                      ; SCALE: quantize the WAVE note before the increment lookup
     add.w   d0, d0
     movea.l note_base, a2                 ; region wave-increment table (periods block + 192)
     adda.w  #192, a2
