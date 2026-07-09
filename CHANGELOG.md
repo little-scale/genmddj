@@ -2,6 +2,26 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.17 — 2026-07-09
+
+### Added
+- **Scale quantize.** Two PROJECT fields — **KEY** (C…B) and **SCALE** (14 modes: CHROM, MAJOR,
+  MINOR, DORIAN, PHRYG, LYDIAN, MIXO, LOCRIAN, HARM, MELO, P.MAJ, P.MIN, BLUES, WHOLE) — snap
+  every played note onto a scale during **playback**, leaving the written note untouched (a cell
+  can read `C#` but sound as `C`). Quantization is the **last step before the note→frequency
+  lookup**, so transpose (PROJECT/table TSP), the `C` chord arp and the `L` portamento all land
+  in key (the slide glides *to* the snapped pitch); sub-semitone `F`/`P`/vibrato ride on top.
+  Pitched voices only (FM/TONE/WAVE/PERC — never KIT or NOISE). Default **C / CHROMATIC** is a
+  passthrough (normal playback is byte-identical). Saved with the song. (MANUAL §9.)
+- The **`W` command** now sets the scale live from a phrase (`x` = KEY, `y` = TYPE), replacing
+  its little-used "row lasts xx frames" meaning — the MIDI-nibble control for the two fields.
+
+### Changed
+- **OPTIONS** labels the MIDI sync mode **`MIDI TAKEOVER`** (not just `MIDI`), so it reads clearly
+  as note input rather than a clock mode.
+- PROJECT tidy-ups: the SCALE fields sit in their own spaced group, KEY/SCALE **wrap** at the
+  ends, and the vestigial song-name edit cursor (name editing is FILES-only) was removed.
+
 ## v0.16 — 2026-07-08
 
 ### Added

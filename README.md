@@ -132,6 +132,10 @@ progress. Working today:
   map 1:1 onto the console voices (F1–F6, T1–T3, NO), with Program Change / velocity / pitch-bend.
   **Hardware-verified on a real Mega Drive 2** — and on the sibling **SMSGGDJ** over the same
   bridge. See the MANUAL's MIDI section for the channel/voice/instrument mapping.
+- **Scale quantize** — PROJECT **KEY** + **SCALE** fields (14 modes) snap every played note onto
+  a scale during playback (the written note is untouched), applied as the last step before the
+  pitch lookup so transpose, tables, chord arps and portamento all land in key. Pitched voices
+  only; saved with the song; also settable live from a phrase via the `W` command.
 
 See [MANUAL.md](MANUAL.md) for how to use it.
 
