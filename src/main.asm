@@ -12498,14 +12498,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
 .ppn_mclr:
     move.w  #' ', VDP_DATA
     dbra    d5, .ppn_mclr
-    cmpi.b  #4, cur_row                      ; cursor marker (up-triangle) on row 4, below the cur_col char
-    bne.s   .ppn_nocurs
-    moveq   #4, d3
-    moveq   #6, d4
-    add.b   cur_col, d4
-    lea     str_curs, a1
-    bsr     print_at
-.ppn_nocurs:
+    ; (the song name is read-only on PROJECT -- rename only in FILES; no edit cursor here)
     moveq   #5, d3
     moveq   #1, d4
     lea     str_p_tmpo, a1
