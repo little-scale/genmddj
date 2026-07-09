@@ -2609,6 +2609,44 @@ adj_field:
     move.b  d0, (a1)
     rts
 
+; like adj_field but WRAPS around [0,max] (max+1 <-> 0) in both directions -- for cyclic
+; fields (SCALE KEY / TYPE). a1=field, d2=dpad, d3=max, d4=step.
+adj_wrap:
+    moveq   #0, d0
+    move.b  (a1), d0
+    btst    #2, d2                          ; Left -1
+    beq.s   .aw1
+    subq.w  #1, d0
+.aw1:
+    btst    #3, d2                          ; Right +1
+    beq.s   .aw2
+    addq.w  #1, d0
+.aw2:
+    btst    #0, d2                          ; Up +step
+    beq.s   .aw3
+    add.w   d4, d0
+.aw3:
+    btst    #1, d2                          ; Down -step
+    beq.s   .aw4
+    sub.w   d4, d0
+.aw4:
+    moveq   #0, d1                          ; period = max + 1
+    move.b  d3, d1
+    addq.w  #1, d1
+.aw_lo:
+    tst.w   d0                              ; wrap below 0
+    bpl.s   .aw_hi
+    add.w   d1, d0
+    bra.s   .aw_lo
+.aw_hi:
+    cmp.w   d1, d0                          ; wrap at/above the period
+    blo.s   .aw_wr
+    sub.w   d1, d0
+    bra.s   .aw_hi
+.aw_wr:
+    move.b  d0, (a1)
+    rts
+
 ; TBL field: a1 = field addr, d2 = dpad. Cycles [-- ($FF), 0 .. NTABLE-1] with wrap; -- = no table.
 edit_tbl_field:
     move.b  (a1), d0
@@ -12590,11 +12628,11 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
 .psld:
     move.b  cont_slid, d3
     bsr     draw_hex2
-    moveq   #11, d3                          ; SCALE KEY (cur_row 5) at row 11 -- scale root as a note name
+    moveq   #12, d3                          ; SCALE KEY (cur_row 5) at row 12 (blank row after SLID) -- root note
     moveq   #1, d4
     lea     str_p_skey, a1
     bsr     print_at
-    move.l  #$45900003, (a0)                ; row 11, col 8
+    move.l  #$46100003, (a0)                ; row 12, col 8
     moveq   #0, d2
     cmpi.b  #5, cur_row
     bne.s   .pky
@@ -12613,7 +12651,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     andi.w  #$00FF, d3
     add.w   d2, d3
     move.w  d3, VDP_DATA
-    moveq   #12, d3                          ; SCALE TYPE (cur_row 6) at row 12 -- the mode name
+    moveq   #13, d3                          ; SCALE TYPE (cur_row 6) at row 13 -- the mode name
     moveq   #1, d4
     lea     str_p_styp, a1
     bsr     print_at
@@ -12628,7 +12666,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     lsl.w   #2, d1
     lea     scale_names, a1
     move.l  (a1,d1.w), a1
-    moveq   #12, d3
+    moveq   #13, d3
     moveq   #8, d4
     bsr     print_hl
     moveq   #14, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
@@ -14611,15 +14649,15 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     moveq   #1, d4
     bra     adj_field
 .ep_skey:
-    lea     scale_key, a1                   ; SCALE KEY 0-11 (C..B) -- saved global
+    lea     scale_key, a1                   ; SCALE KEY 0-11 (C..B), wraps -- saved global
     moveq   #11, d3
     moveq   #1, d4
-    bra     adj_field
+    bra     adj_wrap
 .ep_stype:
-    lea     scale_type, a1                  ; SCALE TYPE 0..NSCALE-1 -- saved global
+    lea     scale_type, a1                  ; SCALE TYPE 0..NSCALE-1, wraps -- saved global
     moveq   #NSCALE-1, d3
     moveq   #1, d4
-    bra     adj_field
+    bra     adj_wrap
 .ep_mode:
     lea     proj_mode, a1
     moveq   #1, d3
