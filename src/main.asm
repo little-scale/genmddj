@@ -82,6 +82,8 @@ midi_dbg_st equ $00FFD35A          ; MIDI monitor: last decoded status byte (typ
 midi_dbg_d1 equ $00FFD35B          ; MIDI monitor: last decoded data1
 midi_dbg_d2 equ $00FFD35C          ; MIDI monitor: last decoded data2
 midi_dbg_ctr equ $00FFD35E         ; MIDI monitor: rolling decoded-event counter (word; reset on MIDI entry)
+scale_key  equ $00FFD360           ; PROJECT SCALE: root pitch class 0-11 (C..B); saved global (default 0 = C)
+scale_type equ $00FFD361           ; PROJECT SCALE: type 0..NSCALE-1 (0 = CHROMATIC = passthrough); saved global
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -632,6 +634,8 @@ Start:
     move.b  #0, playing                  ; boot stopped
     move.w  #0, cont_mask                 ; CONT boots OFF (a per-set performance choice, not persisted)
     move.b  #0, cont_slid
+    move.b  #0, scale_key                 ; SCALE defaults to C CHROMATIC (no snap); loaded songs override via globals
+    move.b  #0, scale_type
     move.b  #0, cont_pending
     move.b  #0, glide_left
     move.b  #0, cont_fast
@@ -2153,7 +2157,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     movem.l (sp)+, d0/d2-d3
     rts
 .rmproj:
-    moveq   #4, d1                          ; TMPO TSP MODE LFO SLID (NAME is read-only -- rename in FILES)
+    moveq   #6, d1                          ; TMPO TSP MODE LFO SLID SCALE-KEY SCALE-TYPE (NAME read-only)
     rts
 .rmlfo:
     moveq   #NLFO-1, d1                     ; 6 LFO rows
@@ -8603,7 +8607,7 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_g
     cmpi.b  #20, d2                        ; T xx = tempo (BPM, global)
     beq     .cmd_t
-    cmpi.b  #23, d2                        ; W xx = this row lasts xx frames (global)
+    cmpi.b  #23, d2                        ; W xy = set SCALE live (x = KEY, y = TYPE) -- global
     beq     .cmd_w
     cmpi.b  #26, d2                        ; Z xx = random note-gate (play with probability xx/256)
     beq     .cmd_z
@@ -8660,7 +8664,18 @@ advance_ch:                               ; a6 = channel
     move.l  (sp)+, a0
     bra     .cmddone
 .cmd_w:
-    move.b  (3,a1,d1.w), g_wait           ; W xx = this row lasts xx frames (global, one row)
+    move.b  (3,a1,d1.w), d2               ; W xy = live SCALE: x = KEY (0-B), y = TYPE (0..NSCALE-1)
+    move.b  d2, d0
+    lsr.b   #4, d0                          ; x nibble = KEY
+    cmpi.b  #12, d0
+    bhs.s   .cw_type                         ; x >= C -> leave KEY unchanged (lets you set TYPE only)
+    move.b  d0, scale_key
+.cw_type:
+    andi.b  #$0F, d2                         ; y nibble = TYPE
+    cmpi.b  #NSCALE, d2
+    bhs.s   .cw_done                         ; y out of range -> leave TYPE unchanged
+    move.b  d2, scale_type
+.cw_done:
     bra     .cmddone
 .cmd_g:
     move.b  (3,a1,d1.w), d2               ; G xx = switch the active groove (clamp 0-15)
@@ -8820,7 +8835,60 @@ advance_ch:                               ; a6 = channel
     tst.b   d_set                        ; D command: a delayed note-on -> skip; hold_tick fires it later
     beq.s   note_trigger
     rts
+; scale_snap: d0.b = note (0-95) in -> snapped-to-scale note out. Quantizes to the PROJECT
+; SCALE (scale_key root + scale_type). CHROMATIC (type 0) is a passthrough. Clobbers d1/d2/a1.
+scale_snap:
+    tst.b   scale_type
+    beq.s   .sn_ret                        ; CHROMATIC -> no change
+    andi.l  #$000000FF, d0                 ; note (0-95), clean for divu.w
+    move.w  d0, d2                          ; save note
+    divu.w  #12, d0                         ; remainder(hi) = pitch class, quotient(lo) = octave
+    swap    d0
+    andi.l  #$0000000F, d0                 ; d0 = pc (0-11)
+    moveq   #0, d1
+    move.b  scale_key, d1
+    andi.w  #$000F, d1                      ; key nibble (0-11; W command's x rides in the same range)
+    cmpi.w  #12, d1
+    blo.s   .sn_kok
+    moveq   #0, d1                          ; invalid key -> C
+.sn_kok:
+    sub.w   d1, d0                          ; pc - key
+    bpl.s   .sn_pos
+    addi.w  #12, d0                         ; wrap to 0-11
+.sn_pos:                                    ; d0 = rel (root-relative pitch class)
+    moveq   #0, d1
+    move.b  scale_type, d1
+    andi.w  #$000F, d1
+    lsl.w   #2, d1
+    lea     scale_ptr, a1
+    movea.l (a1,d1.w), a1
+    move.b  (a1,d0.w), d1                   ; snapped rel (<= rel: snap down within the octave)
+    andi.w  #$000F, d1
+    sub.w   d1, d0                          ; delta = rel - snapped (0-11)
+    sub.w   d0, d2                          ; note - delta
+    bpl.s   .sn_ok
+    moveq   #0, d2                          ; lowest-octave underflow -> clamp to note 0
+.sn_ok:
+    moveq   #0, d0
+    move.w  d2, d0
+.sn_ret:
+    rts
+
 note_trigger:                             ; trigger the note-on (a6 = channel); also entered from hold_tick after a delay
+    cmpi.b  #2, c_type(a6)                 ; SCALE snap: skip NOISE (no pitch)
+    beq.s   .nt_noscale
+    lea     instrum, a1
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    mulu.w  #INSTR_SIZE, d0
+    cmpi.b  #1, (i_type,a1,d0.w)           ; skip KIT (sample pad, not a pitch)
+    beq.s   .nt_noscale
+    move.b  c_note(a6), d0
+    cmpi.b  #$FF, d0                        ; no note -> nothing to snap
+    beq.s   .nt_noscale
+    bsr     scale_snap                      ; quantize the played note to the PROJECT scale
+    move.b  d0, c_note(a6)
+.nt_noscale:
     moveq   #0, d0                          ; an immediate (re)trigger clears any pending delay
     move.b  c_track(a6), d0
     lea     c_delay, a1
@@ -12523,7 +12591,48 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
 .psld:
     move.b  cont_slid, d3
     bsr     draw_hex2
-    moveq   #11, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
+    moveq   #11, d3                          ; SCALE KEY (cur_row 5) at row 11 -- scale root as a note name
+    moveq   #1, d4
+    lea     str_p_skey, a1
+    bsr     print_at
+    move.l  #$45900003, (a0)                ; row 11, col 8
+    moveq   #0, d2
+    cmpi.b  #5, cur_row
+    bne.s   .pky
+    moveq   #$60, d2
+.pky:
+    moveq   #0, d1
+    move.b  scale_key, d1
+    andi.w  #$0F, d1
+    add.w   d1, d1                            ; key * 2 (2 chars per name)
+    lea     key_names, a1
+    move.b  (a1,d1.w), d3
+    andi.w  #$00FF, d3
+    add.w   d2, d3
+    move.w  d3, VDP_DATA
+    move.b  (1,a1,d1.w), d3
+    andi.w  #$00FF, d3
+    add.w   d2, d3
+    move.w  d3, VDP_DATA
+    moveq   #12, d3                          ; SCALE TYPE (cur_row 6) at row 12 -- the mode name
+    moveq   #1, d4
+    lea     str_p_styp, a1
+    bsr     print_at
+    moveq   #0, d2
+    cmpi.b  #6, cur_row
+    bne.s   .pty
+    moveq   #$60, d2
+.pty:
+    moveq   #0, d1
+    move.b  scale_type, d1
+    andi.w  #$0F, d1
+    lsl.w   #2, d1
+    lea     scale_names, a1
+    move.l  (a1,d1.w), a1
+    moveq   #12, d3
+    moveq   #8, d4
+    bsr     print_hl
+    moveq   #14, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
     moveq   #1, d4
     lea     str_saved, a1
     tst.b   song_dirty
@@ -12531,7 +12640,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     lea     str_unsaved, a1
 .pp_cl:
     bsr     print_at
-    moveq   #13, d3                          ; confirm prompt when a destructive action is armed
+    moveq   #16, d3                          ; confirm prompt when a destructive action is armed
     moveq   #1, d4
     lea     str_blank15, a1
     tst.b   proj_armed
@@ -12766,10 +12875,11 @@ sram_probe:
 ; M8 song save/load: flat work-RAM block <-> cart SRAM. Stride from the probe (odd-byte x2/linear x1).
 ; The scattered song-level globals are staged into the head slot ($FF0000) on save, unpacked on load.
 ; ============================================================================================
-GLOB_N     equ 10
+GLOB_N     equ 12
 glob_tab:                                  ; song-level globals, in head-slot order ($FF0000+i)
     dc.l    proj_tsp, proj_mode, proj_groove, g_lfo
     dc.l    echo_mode, echo_tap1, echo_tap2, echo_rd1, echo_rd2, echo_ster
+    dc.l    scale_key, scale_type          ; SCALE (appended: old saves read these slots as 0 = C CHROMATIC)
 save_magic: dc.b "GMDDJ", 1                ; 5-char magic + version 1
 def_title:  dc.b "SONG    "                ; 8-char default song name
 str_pname:  dc.b "NAME",0
@@ -14490,11 +14600,25 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     beq.s   .ep_lfo
     cmpi.b  #4, d0
     beq.s   .ep_slid
+    cmpi.b  #5, d0
+    beq.s   .ep_skey
+    cmpi.b  #6, d0
+    beq.s   .ep_stype
     rts                                       ; NAME is read-only on PROJECT (rename only in FILES)
 .ep_slid:
     move.b  #0, song_dirty                  ; CONT (SLID) is a performance choice -> not saved, don't dirty
     lea     cont_slid, a1
     moveq   #16, d3                          ; 0-16 bars
+    moveq   #1, d4
+    bra     adj_field
+.ep_skey:
+    lea     scale_key, a1                   ; SCALE KEY 0-11 (C..B) -- saved global
+    moveq   #11, d3
+    moveq   #1, d4
+    bra     adj_field
+.ep_stype:
+    lea     scale_type, a1                  ; SCALE TYPE 0..NSCALE-1 -- saved global
+    moveq   #NSCALE-1, d3
     moveq   #1, d4
     bra     adj_field
 .ep_mode:
@@ -15076,6 +15200,8 @@ str_p_new:  dc.b "NEW",0
 str_p_slot: dc.b "SLOT",0
 str_p_lfo:  dc.b "LFO",0
 str_p_slid: dc.b "SLID",0
+str_p_skey: dc.b "KEY",0
+str_p_styp: dc.b "SCALE",0
 str_cued:   dc.b "CUED ",0
 str_cont_in: dc.b " IN ",0
 str_match_in: dc.b "MATCH IN ",0
@@ -15308,6 +15434,50 @@ fm_factory:  incbin "build/fm_factory.bin"   ; 32 x 64 factory patches, baked fr
 ; register order). VOL attenuates only carriers so it scales output without retiming/timbre.
 carrier_mask:
     dc.b $08,$08,$08,$08,$0C,$0E,$0E,$0F
+    even
+
+; --- SCALE quantize (PROJECT SCALE) : per type, a 12-entry table mapping pitch class 0-11 to
+;     the nearest in-scale note rounding DOWN, root-relative. CHROMATIC = identity passthrough.
+;     scale_snap indexes scale_ptr[type] then [rel]. Names/keys drive the PROJECT fields. ---
+NSCALE     equ 14
+sc_chrom:  dc.b 0,1,2,3,4,5,6,7,8,9,10,11
+sc_major:  dc.b 0,0,2,2,4,5,5,7,7,9,9,11
+sc_minor:  dc.b 0,0,2,3,3,5,5,7,8,8,10,10
+sc_dorian: dc.b 0,0,2,3,3,5,5,7,7,9,10,10
+sc_phryg:  dc.b 0,1,1,3,3,5,5,7,8,8,10,10
+sc_lydian: dc.b 0,0,2,2,4,4,6,7,7,9,9,11
+sc_mixo:   dc.b 0,0,2,2,4,5,5,7,7,9,10,10
+sc_locr:   dc.b 0,1,1,3,3,5,6,6,8,8,10,10
+sc_hmin:   dc.b 0,0,2,3,3,5,5,7,8,8,8,11
+sc_mmin:   dc.b 0,0,2,3,3,5,5,7,7,9,9,11
+sc_pmaj:   dc.b 0,0,2,2,4,4,4,7,7,9,9,9
+sc_pmin:   dc.b 0,0,0,3,3,5,5,7,7,7,10,10
+sc_blues:  dc.b 0,0,0,3,3,5,6,7,7,7,10,10
+sc_whole:  dc.b 0,0,2,2,4,4,6,6,8,8,10,10
+    even
+scale_ptr:                                 ; nibble-indexed (16 entries); 14-15 fall back to CHROMATIC
+    dc.l sc_chrom, sc_major, sc_minor, sc_dorian, sc_phryg, sc_lydian, sc_mixo, sc_locr
+    dc.l sc_hmin, sc_mmin, sc_pmaj, sc_pmin, sc_blues, sc_whole, sc_chrom, sc_chrom
+scale_names:                               ; SCALE TYPE labels (5 chars each, nibble-indexed)
+    dc.l scn0, scn1, scn2, scn3, scn4, scn5, scn6, scn7
+    dc.l scn8, scn9, scn10, scn11, scn12, scn13, scn14, scn14
+scn0:  dc.b "CHROM",0
+scn1:  dc.b "MAJOR",0
+scn2:  dc.b "MINOR",0
+scn3:  dc.b "DORIA",0
+scn4:  dc.b "PHRYG",0
+scn5:  dc.b "LYDIA",0
+scn6:  dc.b "MIXO ",0
+scn7:  dc.b "LOCRI",0
+scn8:  dc.b "HARM ",0
+scn9:  dc.b "MELO ",0
+scn10: dc.b "P.MAJ",0
+scn11: dc.b "P.MIN",0
+scn12: dc.b "BLUES",0
+scn13: dc.b "WHOLE",0
+scn14: dc.b "-----",0
+    even
+key_names: dc.b "C C#D D#E F F#G G#A A#B "  ; SCALE KEY: 2 chars per pitch class (indexed by key*2)
     even
 
 ; macro tables: NTABLE tables x TBL_ROWS rows x TROW bytes (vol, arp, cmd, prm).

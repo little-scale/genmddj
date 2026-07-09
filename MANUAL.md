@@ -426,7 +426,7 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 | `I` | Iteration | Gate the note by an 8-bit **play-count** mask — vary a phrase across its repeats without cloning |
 | `G` | Groove | Switch the active groove (global) |
 | `T` | Tempo | Set a flat tempo in BPM (global) |
-| `W` | Wait | This row lasts xy frames (per-row override, global) |
+| `W` | Scale | Set the **SCALE** live (global): `x` = KEY (0–B = C…B), `y` = TYPE — same two fields as PROJECT (§9). `x` = C–F leaves the key unchanged (set type only) |
 
 ### Varying a phrase — the I / J / Z trio
 
@@ -453,10 +453,26 @@ and the `G` command switches groove mid-song.
 
 Tempo *is* the groove. **TMPO** (on PROJECT) shows the BPM of the current groove and steps
 through the achievable BPMs, scaling the whole groove together so your swing is kept. The
-`T` command sets a flat tempo by BPM; the `W` command stretches a single row.
+`T` command sets a flat tempo by BPM.
 
 **TSP** (on PROJECT) transposes the whole song ±semitones — handy for matching a vocalist
 or another instrument. It doesn't move sample drums.
+
+### Scale quantize (PROJECT — SCALE)
+
+Two PROJECT fields — **KEY** (C…B) and **SCALE** (the mode) — force every played note onto a
+scale **during playback**, so you can't hit a wrong note. It's applied to the *pitch that
+plays*, not the note you wrote: a phrase cell can still read `C#`, but with `KEY C` / `SCALE
+MAJOR` it **sounds as `C`** (snapped down to the nearest in-scale note). The written data is
+never changed, and audition plays the snapped pitch so you hear what you'll get.
+
+- Default is **C / CHROMATIC** = every semitone allowed = no change.
+- Modes: `CHROM · MAJOR · MINOR · DORIA(n) · PHRYG(ian) · LYDIA(n) · MIXO(lydian) · LOCRI(an)
+  · HARM(onic min) · MELO(dic min) · P.MAJ / P.MIN (pentatonic) · BLUES · WHOLE`(-tone).
+- Applies to **pitched voices only** — FM, TONE, WAVE, PERC. **KIT** (samples) and **NOISE**
+  are never snapped.
+- The scale is **saved with the song**, and the **`W` command** (§8) sets it live from a
+  phrase (`x` = key, `y` = type).
 
 ---
 
@@ -542,8 +558,7 @@ GGDJ, or analog-clock gear. Set it on **OPTIONS → SYNC**:
 - **PULSE** — a simple analog pulse for Volca / Pocket Operator gear.
 - **IN** — **follow** an OUT master (one row per clock). Press **Start** (or **B+Start**) and
   it waits — the top bar shows **WAIT** — until the clock starts, then locks on. While
-  following, the master drives the timing (your groove and `W` are ignored, restored when you
-  leave IN).
+  following, the master drives the timing (your groove is ignored, restored when you leave IN).
 - **IN24** — follow a **24-PPQN** source (e.g. the **smsggdj-link-esp32** Ableton Link
   bridge); same WAIT-then-lock behaviour.
 - **MIDI TAKEOVER** — an external MIDI keyboard / DAW plays the ten voices live through the
