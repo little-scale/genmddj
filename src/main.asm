@@ -12669,7 +12669,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     moveq   #13, d3
     moveq   #8, d4
     bsr     print_hl
-    moveq   #14, d3                          ; status line: SAVED / UNSAVED (recomputed on entry)
+    moveq   #15, d3                          ; status line: SAVED / UNSAVED (blank row after SCALE)
     moveq   #1, d4
     lea     str_saved, a1
     tst.b   song_dirty
@@ -12677,7 +12677,7 @@ render_proj:                              ; TMPO TSP MODE / NEW DEMO / SLOT / SA
     lea     str_unsaved, a1
 .pp_cl:
     bsr     print_at
-    moveq   #16, d3                          ; confirm prompt when a destructive action is armed
+    moveq   #17, d3                          ; confirm prompt when a destructive action is armed
     moveq   #1, d4
     lea     str_blank15, a1
     tst.b   proj_armed
