@@ -134,7 +134,7 @@ progress. Working today:
   OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
   **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
 - **MIDI note takeover** (`SYNC: MIDI`) — a MIDI keyboard / DAW plays the ten voices live over
-  the shared **ESP32-S3 link bridge**: the sequencer steps aside and the first 10 MIDI channels
+  **[Chipbridge](https://github.com/little-scale/chipbridge)**: the sequencer steps aside and the first 10 MIDI channels
   map 1:1 onto the console voices (F1–F6, T1–T3, NO), with Program Change / velocity / pitch-bend.
   **Hardware-verified on a real Mega Drive 2** — and on the sibling **SMSGGDJ** over the same
   bridge. See the MANUAL's MIDI section for the channel/voice/instrument mapping.
@@ -157,6 +157,9 @@ See [MANUAL.md](MANUAL.md) for how to use it.
 - **[SMSGGDJ](https://github.com/little-scale/smsggdj)** — the sibling tracker for the
   SEGA Master System / Game Gear that genmddj grew out of (shared data model, the entire
   PSG layer, grooves, the command set, and the native DE-9 sync).
+- **[Chipbridge](https://github.com/little-scale/chipbridge)** — shared
+  RP2040-Zero hardware and Pico-family firmware for wired MIDI Clock
+  (`SYNC: IN24`) and ten-channel MIDI note takeover (`SYNC: MIDI`).
 - **[smsggdj-link-esp32](https://github.com/little-scale/smsggdj-link-esp32)** — ESP32
   firmware bridging **Ableton Link** to the trackers' DE-9 hardware sync (a XIAO ESP32-C3
   driving the `SYNC IN` line). genmddj's SYNC IN was hardware-verified against this.
