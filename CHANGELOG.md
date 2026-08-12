@@ -2,7 +2,7 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## Unreleased
+## v0.18 — 2026-08-13
 
 ### Added
 - **Per-instrument KIT volume.** KIT instruments now have six deterministic, shift-scaled

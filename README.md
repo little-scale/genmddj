@@ -121,6 +121,11 @@ progress. Working today:
   [`help.txt`](help.txt) that the build validates and bakes into the ROM (`tools/makehelp.py`),
   so a bad edit fails the build instead of clipping on hardware.
 - Grooves, the command set, copy / paste / clone.
+- **Transactional saves** — the exact frozen song snapshot is checksummed, written, read back
+  and verified before its directory entry becomes valid; a rejected load leaves the current
+  song intact and reports **CHECKSUM BAD**.
+- **Per-instrument KIT volume** — six deterministic shift-scaled levels (`F / 8 / 4 / 2 / 1 / 0`),
+  including mute, with pre-baked PCM pools so sample pitch and DAC feed timing stay unchanged.
 - **GROUP** — a TONE instrument on T1 drives T2/T3 for detuned unisons, fifths, power
   chords, octaves and chords from a single line.
 - **Region-aware** — separate **VIDEO** (50/60 Hz → tempo + display) and **CLOCK** (NTSC/PAL
