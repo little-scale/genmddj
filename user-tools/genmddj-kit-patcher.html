@@ -105,7 +105,7 @@
 
 <script>
 const MAGIC = "GMDJKIT1";
-const HEADER = 16, MEMBER = 16;
+const HEADER = 16, MEMBER = 16, GAIN_POOLS = 5;
 let NKITS = 16, NPADS = 16, DAC_RATE = 10653;  // shipping DAC rate (YM2612 Timer-A 1024-TA=5 = 10653Hz); overridden from the ROM header on load
 let DIR_SIZE = NKITS*NPADS*MEMBER, POOL_BASE = HEADER + DIR_SIZE;
 
@@ -213,10 +213,11 @@ function buildPool(){
     dirs.push({off:POOL_BASE+pcmLen, len:u.length, name:pad.name});
     pcm.push(u); pcmLen += u.length;
   }
-  const total = POOL_BASE + pcmLen;
+  const total = POOL_BASE + pcmLen*GAIN_POOLS;
   const out = new Uint8Array(total);
   enc.encode(MAGIC).forEach((b,i)=>out[i]=b);
   out[8]=NKITS; out[9]=NPADS; out[10]=(DAC_RATE>>8)&255; out[11]=DAC_RATE&255;
+  out[12]=(pcmLen>>>24)&255; out[13]=(pcmLen>>>16)&255; out[14]=(pcmLen>>>8)&255; out[15]=pcmLen&255;
   let di = HEADER;
   for (const d of dirs){
     if (d){
@@ -227,7 +228,14 @@ function buildPool(){
     di += MEMBER;
   }
   let po = POOL_BASE;
-  for (const u of pcm){ out.set(u, po); po += u.length; }
+  for (let shift=0;shift<GAIN_POOLS;shift++){
+    const centre = 128-(128>>shift);
+    for (const u of pcm){
+      if (shift===0) out.set(u,po);
+      else for (let i=0;i<u.length;i++) out[po+i]=(u[i]>>shift)+centre;
+      po += u.length;
+    }
+  }
   return out;
 }
 function fixChecksum(u8){
@@ -265,8 +273,9 @@ function wavBlob(f32, rate){
 /* ---------- budget ---------- */
 function refreshBudget(){
   if (!rom){ $("budgetTxt").textContent=""; $("budgetBar").style.width="0"; return; }
-  let bytes = POOL_BASE;
-  for (let k=0;k<NKITS;k++) for (let p=0;p<NPADS;p++) if (kits[k][p]) bytes += to8bit(kits[k][p]).length;
+  let pcmBytes = 0;
+  for (let k=0;k<NKITS;k++) for (let p=0;p<NPADS;p++) if (kits[k][p]) pcmBytes += to8bit(kits[k][p]).length;
+  const bytes = POOL_BASE + pcmBytes*GAIN_POOLS; // full, /2, /4, /8, /16 runtime-selectable copies
   const frac = bytes/poolAvail;
   $("budgetBar").style.width = Math.min(100,frac*100)+"%";
   $("budgetBar").style.background = frac>1 ? "var(--bad)" : frac>0.85 ? "var(--accent)" : "var(--good)";

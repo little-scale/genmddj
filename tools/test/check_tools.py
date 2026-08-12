@@ -36,6 +36,7 @@ NCHAINS    = asm_equ('NCHAINS')
 INSTR_SIZE = asm_equ('INSTR_SIZE')
 CONFIG_OFS = asm_equ('CONFIG_OFS')
 DAC_RATE   = int(re.search(r'^DAC_RATE = (\d+)', mks, re.M).group(1))
+GAIN_POOLS = int(re.search(r'^GAIN_POOLS = (\d+)', mks, re.M).group(1))
 NITYPE     = asm_equ('NITYPE')             # 6 instrument types incl PERC
 
 # ---- per-file expectations ----------------------------------------------------------
@@ -58,6 +59,9 @@ for f, var in (('genmddj-instrument-patcher.html', 'TYPES'),
 m = re.search(r'DAC_RATE\s*=\s*(\d+)', html['genmddj-kit-patcher.html'])
 check(m and int(m.group(1)) == DAC_RATE,
       'genmddj-kit-patcher.html: DAC_RATE fallback %s != makesamples %d' % (m and m.group(1), DAC_RATE))
+m = re.search(r'GAIN_POOLS\s*=\s*(\d+)', html['genmddj-kit-patcher.html'])
+check(m and int(m.group(1)) == GAIN_POOLS,
+      'genmddj-kit-patcher.html: GAIN_POOLS %s != makesamples %d' % (m and m.group(1), GAIN_POOLS))
 
 # CONFIG_OFS in the savetool + bank editor
 for f in ('genmddj-savetool.html', 'genmddj-bank-editor.html'):

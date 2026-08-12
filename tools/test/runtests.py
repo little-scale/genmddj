@@ -18,7 +18,7 @@ Probe conventions (see the dac-feed / scb-stream memories + driver.asm diag cell
   68k $FFD500        -- run-once guard for boot injects
   68k $FFD520+       -- 64-entry per-frame log ring (word), index = g_ticks & 63
 """
-import os, subprocess, sys, struct
+import math, os, subprocess, sys, struct, wave
 
 ROOT   = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
 BUILD  = os.path.join(ROOT, 'build')
@@ -151,6 +151,7 @@ KIT_SONG = """    tst.b   $00FFD500
     move.b  #$FF, $00FF4AD0
     move.b  #1, $00FF4B20
     move.b  #0, $00FF4B52
+    move.b  #0, $00FF4B53
     move.b  #0, $00FF4B54
     move.b  #$FF, $00FF4B50
     move.b  #1, $00FF0106
@@ -169,6 +170,81 @@ KIT_SONG = """    tst.b   $00FFD500
     bsr     engine_play_reset
     movem.l (sp)+, d0-d7/a0-a6
 .tkdone:
+"""
+
+# Directly trigger a long KIT pad once so audio amplitude can be compared without any
+# FM/PSG voices contaminating the capture. The test replaces the i_gain immediate.
+KIT_GAIN_ARM = """    tst.b   $00FFD500
+    bne     .tkgdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    lea     instrum, a1
+    move.b  #1, (i_type,a1)
+    move.b  #0, (i_kit,a1)
+    move.b  #0, (i_gain,a1)
+    move.b  #0, (i_rate,a1)
+    lea     ch_state, a6
+    clr.b   c_track(a6)
+    move.b  #$FF, c_srate
+    moveq   #0, d0
+    moveq   #13, d1
+    bsr     dac_play
+    movem.l (sp)+, d0-d7/a0-a6
+.tkgdone:
+"""
+
+KIT_NAV = """    tst.b   $00FFD500
+    bne     .tkndone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_INSTR, cur_screen
+    clr.b   cur_instr
+    lea     instrum, a1
+    move.b  #1, (i_type,a1)
+    move.b  #2, cur_row
+    clr.b   cur_col
+    moveq   #2, d2
+    bsr     move_cursor
+    move.b  cur_row, $00FFD501
+    bsr     move_cursor
+    move.b  cur_row, $00FFD502
+    bsr     move_cursor
+    move.b  cur_row, $00FFD503
+    bsr     move_cursor
+    move.b  cur_row, $00FFD504
+    moveq   #1, d2
+    bsr     move_cursor
+    move.b  cur_row, $00FFD505
+    move.b  #3, cur_row
+    clr.b   (i_gain,a1)
+    moveq   #4, d2
+    bsr     edit_psg
+    move.b  instrum+i_gain, $00FFD506
+    moveq   #8, d2
+    bsr     edit_psg
+    move.b  instrum+i_gain, $00FFD507
+    move.b  #5, instrum+i_gain
+    moveq   #4, d2
+    bsr     edit_psg
+    move.b  instrum+i_gain, $00FFD508
+    moveq   #8, d2
+    bsr     edit_psg
+    move.b  instrum+i_gain, $00FFD509
+    clr.b   instrum+i_gain
+    moveq   #1, d2
+    bsr     edit_psg
+    move.b  instrum+i_gain, $00FFD50A
+    moveq   #2, d2
+    bsr     edit_psg
+    move.b  instrum+i_gain, $00FFD50B
+    move.b  #1, cur_row
+    move.b  #5, cur_col
+    moveq   #2, d2
+    bsr     move_cursor
+    move.b  cur_row, $00FFD50C
+    move.b  cur_col, $00FFD50D
+    movem.l (sp)+, d0-d7/a0-a6
+.tkndone:
 """
 
 # CONT: the stress song with T1 (track 6) flagged as a carry, and a frame inject that
@@ -416,6 +492,53 @@ def t_kit_endstop():
     assert still >= 5, 'feed never stopped -- runaway sample? (%r)' % diffs
     return 'drum fed (%d moving frames) and stopped (%d still)' % (moving, still)
 
+def t_kit_gain():
+    """Pre-shifted KIT levels reduce amplitude without reducing Z80 feed cadence."""
+    levels = []
+    rates = []
+    for mode in range(6):
+        arm = KIT_GAIN_ARM.replace(
+            '    move.b  #0, (i_gain,a1)\n',
+            '    move.b  #%d, (i_gain,a1)\n' % mode)
+        rom = build_rom('kit_gain_%d' % mode, boot_inject=arm,
+                        frame_inject=FRAME_LOGGER_NOARM)
+        ram = run_rom(rom, 90)
+        r = ring(ram)
+        diffs = [(r[(i+1) % 64] - r[i]) & 0xFF for i in range(64)]
+        active = sorted(x for x in diffs if 100 < x < 250)
+        if mode < 5:
+            assert len(active) >= 10, 'mode %d stopped feeding (%r)' % (mode, diffs)
+            rates.append(active[len(active)//2])
+
+        with wave.open(rom + '.ppm.wav', 'rb') as wav:
+            hz = wav.getframerate()
+            raw = wav.readframes(wav.getnframes())
+        pcm = struct.unpack('<%dh' % (len(raw)//2), raw)
+        mono = [(pcm[i] + pcm[i+1]) / 2 for i in range(0, len(pcm), 2)]
+        window = mono[int(hz*0.12):int(hz*0.36)]  # safely inside the long direct pad
+        levels.append(math.sqrt(sum(x*x for x in window) / len(window)))
+
+    assert levels[0] > 1000, 'full-volume probe unexpectedly quiet (RMS %.1f)' % levels[0]
+    for mode in range(1, 5):
+        ratio = levels[mode] / levels[mode-1]
+        assert 0.40 <= ratio <= 0.65, 'mode %d ratio %.3f is not a half-step' % (mode, ratio)
+    assert levels[5] < 1, 'mute produced non-zero audio (RMS %.1f)' % levels[5]
+    assert all(165 <= x <= 185 for x in rates), 'gain changed feed cadence (%r)' % rates
+    return 'RMS %s; feed %s/frame; mute silent' % (
+        '/'.join(str(int(x)) for x in levels), '/'.join(str(x) for x in rates))
+
+def t_kit_navigation():
+    """KIT cursor visits VOL/RATE/TSP in order and VOL edits in musical directions."""
+    rom = build_rom('kit_navigation', boot_inject=KIT_NAV)
+    ram = run_rom(rom, 30)
+    assert list(ram[0xD501:0xD506]) == [3, 4, 5, 0, 5], \
+        'KIT row cycle wrong (%r)' % list(ram[0xD501:0xD506])
+    assert list(ram[0xD506:0xD50C]) == [1, 0, 5, 4, 0, 1], \
+        'KIT VOL directions/limits wrong (%r)' % list(ram[0xD506:0xD50C])
+    assert list(ram[0xD50C:0xD50E]) == [2, 0], \
+        'bank-to-KIT navigation did not land on KIT row/column 0 (%r)' % list(ram[0xD50C:0xD50E])
+    return 'rows KIT→VOL→RATE→TSP wrap; VOL directions and bank exit correct'
+
 def t_scb_delivery():
     """Under the stress song, PSG bytes and YM triples flow every tick (sliced executor)."""
     rom = build_rom('scb_delivery', boot_inject=STRESS_SONG, frame_inject=SCB_LOGGER)
@@ -552,6 +675,8 @@ TESTS = [
     ('deep_clone_aliases', t_deep_clone_aliases),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
+    ('kit_gain',     t_kit_gain),
+    ('kit_navigation', t_kit_navigation),
     ('scb_delivery', t_scb_delivery),
     ('cont_bridge',  t_cont_bridge),
     ('cont_quantize', t_cont_quantize),

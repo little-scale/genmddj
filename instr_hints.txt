@@ -14,7 +14,7 @@
 #   [TONE]   psg_off (rows 2+)          : VOL ATK HLD DCY TSP SWP VIB TRM TBL TBS MODE RATE
 #   [NOISE]  psg_off (rows 2+)          : same set as TONE
 #   [WAVE]   wave_off (rows 2+)         : WAVE VOL ATK HLD DCY WARP DRIVE FOLD CRUSH TBL TBS
-#   [KIT]    (rows 2+)                  : KIT RATE TSP
+#   [KIT]    (rows 2+)                  : KIT VOL RATE TSP
 #   [PERC]   (rows 2+)                  : BASE + per-operator frequency
 
 ###################################  
@@ -88,6 +88,7 @@ BIT CRUSHING
 
 [KIT]
 DRUM KIT / SAMPLE BANK
+KIT VOLUME F 8 4 2 1 0
 SAMPLE PLAYBACK RATE
 TRANSPOSE, IN SEMITONES
 

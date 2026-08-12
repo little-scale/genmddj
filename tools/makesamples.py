@@ -10,12 +10,14 @@ magic lets the browser kit-patcher locate and rewrite the pool in a built ROM.
     +8  nkits  (1)
     +9  npads  (1)
     +10 rate   (u16, DAC sample rate)
-    +12 reserved (4, zero)
+    +12 gain-stride (u32, byte distance between the five PCM gain pools)
   directory (nkits*npads members, 16 bytes each):
     +0  offset (u32, bytes from pool start to this pad's PCM)
     +4  length (u32, byte count; 0 = empty pad)
     +8  name   (8 ASCII, null-padded; display only)
-  pcm: concatenated 8-bit *unsigned* samples (0x80 = silence) at `rate` Hz
+  pcm: five equal-size copies of the concatenated 8-bit *unsigned* samples at `rate` Hz:
+       full, /2, /4, /8, /16. Quieter copies are shifted around 0x80 so silence stays
+       exactly centred. Runtime playback only selects a copy; Z80 feed timing is unchanged.
 
 The 68k reads a member directly (ROM is on its bus) and hands the Z80 the absolute
 ROM pointer + length in the SCB DAC command; the Z80 streams it to YM2612 reg $2A.
@@ -35,6 +37,7 @@ MAGIC = b'GMDJKIT1'
 NKITS = 16
 NPADS = 16
 DAC_RATE = 10653                # YM2612 Timer-A DAC cadence (1024-TA=5); the tight-loop feed paces this 1:1
+GAIN_POOLS = 5                  # full, /2, /4, /8, /16 (mute uses a tiny ROM-centre sample)
 HEADER = 16
 MEMBER = 16
 DIR_SIZE = NKITS * NPADS * MEMBER
@@ -115,16 +118,23 @@ def main():
             members[k][i] = (POOL_BASE + len(pcm), len(data), pad_name(wpath))
             pcm += data
 
+    gain_pcm = [bytes(pcm)]
+    src = np.frombuffer(pcm, dtype=np.uint8).astype(np.uint16)
+    for shift in range(1, GAIN_POOLS):
+        centre = 0x80 - (0x80 >> shift)
+        gain_pcm.append(((src >> shift) + centre).astype(np.uint8).tobytes())
+
     out_b = bytearray()
-    out_b += MAGIC + bytes([NKITS, NPADS]) + struct.pack('>H', DAC_RATE) + b'\x00' * 4
+    out_b += MAGIC + bytes([NKITS, NPADS]) + struct.pack('>HI', DAC_RATE, len(pcm))
     for k in range(NKITS):
         for i in range(NPADS):
             off, ln, nm = members[k][i] or (0, 0, '')
             out_b += struct.pack('>II', off, ln) + nm.encode('ascii', 'replace').ljust(8, b'\x00')
-    out_b += pcm
+    out_b += b''.join(gain_pcm)
     open(out, 'wb').write(out_b)
 
-    print('samples: pool=%d bytes (hdr+dir %d + pcm %d)' % (len(out_b), POOL_BASE, len(pcm)))
+    print('samples: pool=%d bytes (hdr+dir %d + %d gain pools x %d PCM)' %
+          (len(out_b), POOL_BASE, GAIN_POOLS, len(pcm)))
     for k in range(NKITS):
         if any(members[k]):
             row = [(members[k][i][2] if members[k][i] else '-') for i in range(NPADS)]

@@ -454,7 +454,7 @@ LFRS_FREE  equ 2                    ; never reset (free-running)
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
-i_gain     equ 51                   ; reserved (real-time gain deferred; use kitpatch build-time gain)
+i_gain     equ 51                   ; KIT attenuation: 0=full, 1=/2, 2=/4, 3=/8, 4=/16, 5=mute
 i_rate     equ 52                   ; KIT rate: 0=1x 1=2x 2=4x 3=0.5x (0 = default)
 i_tsp      equ 53                   ; FM per-instrument transpose, signed semitones (channel item)
 i_psweep   equ 62                   ; FM pitch sweep: hi nibble = depth (x4 semis, downward), lo nibble = rate/tick
@@ -2187,7 +2187,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #9, d1                          ; WAVE: INST + TYPE + 8 grid rows (rows 2..9)
     cmpi.b  #1, d0
     bne.s   .crkit
-    moveq   #4, d1                          ; KIT: + kit-selector, rate, TSP rows
+    moveq   #5, d1                          ; KIT: + kit-selector, volume, rate, TSP rows
 .crkit:
     cmpi.b  #3, d0
     bne.s   .crk1
@@ -2896,6 +2896,10 @@ edit_psg:
     move.b  #3, (ip_dcy,a3)                ; ENV: gentle release
     move.b  #8, (iw_pitch,a3)              ; PITCH centred (in tune)
 .ep_nwav:
+    cmpi.b  #1, d0                          ; KIT: zero means full volume, retaining compatibility
+    bne.s   .ep_nkitdef                      ; with songs saved before this field was implemented
+    clr.b   (i_gain,a3)
+.ep_nkitdef:
     cmpi.b  #3, d0                          ; switched to TONE -> cluster fields default OFF
     bne.s   .ep_ntone
     clr.b   (i_cluster,a3)
@@ -2918,21 +2922,52 @@ edit_psg:
     bne.s   .ep_nperc
     jmp     edit_perc_field
 .ep_nperc:
-    cmpi.b  #1, (i_type,a3)                ; KIT instrument: row 2 = kit, row 3 = rate, row 4 = TSP
+    cmpi.b  #1, (i_type,a3)                ; KIT: row 2=kit, row 3=VOL, row 4=rate, row 5=TSP
     bne.s   .ep_nkit
-    cmpi.b  #4, cur_row
+    cmpi.b  #5, cur_row
     bne.s   .ep_krate
-    lea     (i_tsp,a3), a1                ; row 4 = TSP (signed byte, wraps 00<->FF)
+    lea     (i_tsp,a3), a1                ; row 5 = TSP (signed byte, wraps 00<->FF)
     moveq   #255, d3
     moveq   #12, d4
     bra     adj_field
 .ep_krate:
-    cmpi.b  #3, cur_row
-    bne.s   .ep_ksel
-    lea     (i_rate,a3), a1                ; row 3 = RATE (0..3 -> .5x/1x/2x/4x)
+    cmpi.b  #4, cur_row
+    bne.s   .ep_kgain
+    lea     (i_rate,a3), a1                ; row 4 = RATE (0..3 -> .5x/1x/2x/4x)
     moveq   #3, d3
     moveq   #1, d4
     bra     adj_field
+.ep_kgain:
+    cmpi.b  #3, cur_row
+    bne.s   .ep_ksel
+    lea     (i_gain,a3), a1                ; stored as attenuation, so edit in musical direction
+    moveq   #0, d0                          ; (Right/Up louder, Left/Down quieter)
+    move.b  (a1), d0
+    cmpi.b  #5, d0
+    bls.s   .ep_kgok
+    moveq   #0, d0                          ; malformed old reserved value -> full volume
+.ep_kgok:
+    btst    #2, d2                          ; Left / Down -> one step quieter
+    bne.s   .ep_kgdn
+    btst    #1, d2
+    beq.s   .ep_kgup
+.ep_kgdn:
+    cmpi.b  #5, d0
+    bhs.s   .ep_kgwr
+    addq.b  #1, d0
+    bra.s   .ep_kgwr
+.ep_kgup:
+    btst    #3, d2                          ; Right / Up -> one step louder
+    bne.s   .ep_kginc
+    btst    #0, d2
+    beq.s   .ep_kgwr
+.ep_kginc:
+    tst.b   d0
+    beq.s   .ep_kgwr
+    subq.b  #1, d0
+.ep_kgwr:
+    move.b  d0, (a1)
+    rts
 .ep_ksel:
     lea     (i_kit,a3), a1
     moveq   #15, d3                         ; 16 kits (0..15)
@@ -5999,12 +6034,33 @@ render_kit:
     moveq   #$60, d4                         ; highlight the KIT field row
 .rk1:
     bsr     draw_hex2
-    moveq   #7, d3                          ; "RATE" + value at row 7 (cur_row 3)
+    moveq   #7, d3                          ; "VOL" + coarse amplitude at row 7 (cur_row 3)
+    moveq   #1, d4
+    lea     str_vol, a1
+    bsr     print_at
+    moveq   #0, d1
+    move.b  (i_gain,a3), d1
+    cmpi.w  #5, d1                          ; malformed old reserved value displays as full
+    bls.s   .rkgok
+    moveq   #0, d1
+.rkgok:
+    lsl.w   #2, d1
+    lea     kit_gain_lbl, a1
+    move.l  (a1,d1.w), a1
+    moveq   #7, d3
+    moveq   #8, d4
+    moveq   #0, d2                          ; highlight offset (print_hl uses d2, not the column d4)
+    cmpi.b  #3, cur_row
+    bne.s   .rkgdraw
+    moveq   #$60, d2
+.rkgdraw:
+    bsr     print_hl
+    moveq   #8, d3                          ; "RATE" + value at row 8 (cur_row 4)
     moveq   #1, d4
     lea     str_rate, a1
     bsr     print_at
     moveq   #0, d2                           ; highlight the RATE field row?
-    cmpi.b  #3, cur_row
+    cmpi.b  #4, cur_row
     bne.s   .rk2
     moveq   #$60, d2
 .rk2:
@@ -6014,26 +6070,26 @@ render_kit:
     lsl.w   #2, d1
     lea     kit_rate_lbl, a1
     move.l  (a1,d1.w), a1                    ; rate name (.5X / 1X / 2X / 4X)
-    moveq   #7, d3
+    moveq   #8, d3
     moveq   #8, d4
     bsr     print_hl
-    moveq   #8, d3                          ; "TSP" + value at row 8 (cur_row 4)
+    moveq   #9, d3                          ; "TSP" + value at row 9 (cur_row 5)
     moveq   #1, d4
     lea     str_tsp, a1
     bsr     print_at
-    move.l  #$44100003, (a0)               ; TSP value at row 8 col 8
+    move.l  #$44900003, (a0)               ; TSP value at row 9 col 8
     move.b  (i_tsp,a3), d3
     moveq   #0, d4
-    cmpi.b  #4, cur_row
+    cmpi.b  #5, cur_row
     bne.s   .rktsp
     moveq   #$60, d4                         ; highlight the TSP field row
 .rktsp:
     bsr     draw_hex2
-    moveq   #10, d3                         ; "PADS" + 16 fill markers at row 10 (blank row 9 = spacer)
+    moveq   #11, d3                         ; "PADS" + 16 fill markers at row 11 (blank row 10 = spacer)
     moveq   #1, d4
     lea     str_pads, a1
     bsr     print_at
-    move.l  #$450C0003, (a0)               ; markers at row 10 col 6
+    move.l  #$458C0003, (a0)               ; markers at row 11 col 6
     lea     sample_pool, a4
     adda.w  #16, a4                          ; skip the magic header -> directory
     moveq   #0, d2
@@ -11017,7 +11073,28 @@ dac_play:
     move.l  4(a0,d2.w), d4                 ; member length
     tst.l   d4
     beq     .dpx                           ; empty pad -> nothing
+    moveq   #0, d6                          ; select a pre-shifted PCM pool without adding work
+    move.b  (i_gain,a1), d6                ; to the Z80's timing-critical feed loop
+    cmpi.b  #5, d6
+    beq.s   .dp_mute
+    cmpi.b  #4, d6
+    bls.s   .dp_gvalid
+    moveq   #0, d6                          ; malformed old reserved value -> full volume
+.dp_gvalid:
+    tst.w   d6
+    beq.s   .dp_addr
+    move.l  12(a0), d5                     ; header stores the byte stride between gain pools
+.dp_gloop:
+    add.l   d5, d3
+    subq.w  #1, d6
+    bne.s   .dp_gloop
+.dp_addr:
     adda.l  d3, a0                          ; a0 = absolute sample ROM address (A)
+    bra.s   .dp_resolved
+.dp_mute:
+    lea     silence_sample, a0              ; a muted hit still replaces/cuts the previous hit
+    moveq   #2, d4                          ; with a short centred sample, then naturally stops
+.dp_resolved:
     move.l  a0, d3
     move.l  d3, d5                          ; bank = A >> 15
     lsr.l   #8, d5
@@ -15416,6 +15493,13 @@ krn_h:      dc.b ".5X",0
 krn_1:      dc.b "1X ",0
 krn_2:      dc.b "2X ",0
 krn_4:      dc.b "4X ",0
+kit_gain_lbl: dc.l kgn_f, kgn_8, kgn_4, kgn_2, kgn_1, kgn_0
+kgn_f:      dc.b "F",0                     ; full, /2, /4, /8, /16, mute
+kgn_8:      dc.b "8",0
+kgn_4:      dc.b "4",0
+kgn_2:      dc.b "2",0
+kgn_1:      dc.b "1",0
+kgn_0:      dc.b "0",0
     even
 ; OPTIONS / PROJECT page labels + enum tables (TSP/MODE reuse the FM/PSG strings)
 str_o_ver:  dc.b "VER",0
@@ -15819,7 +15903,9 @@ bar_tiles:
     dc.l 0,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
     dc.l $00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
 
-sample_pool:                              ; kit directory (8x16 members) + 8-bit PCM (makesamples.py)
+silence_sample:
+    dc.b $80,$80                           ; muted KIT trigger: centred DAC sample, no click
+sample_pool:                              ; kit directory (16x16) + shifted PCM pools (makesamples.py)
     incbin "build/samples.bin"
     even
 

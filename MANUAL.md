@@ -212,8 +212,9 @@ to a note in a PHRASE to play that note with that sound. The six types:
   **pitched** (which borrows T3 to tune it — great for periodic-noise bass).
 - **KIT** — a **sample drum kit** on the YM2612 DAC (hosted on F6). The **note picks the
   pad** (positionally: pad 0 = kick, 1 = snare, 2 = hat, …). The **KIT** field chooses
-  which ROM kit (e.g. 808 / 909 / C78 / 606 / speech), and a **RATE** plays it at
-  1× / 2× / 4× / ½× (the `S` command overrides per note).
+  which ROM kit (e.g. 808 / 909 / C78 / 606 / speech). **VOL** sets the whole kit to
+  `F`, `8`, `4`, `2`, `1`, or mute (`0`) while preserving the level differences between
+  its pads. **RATE** plays it at 1× / 2× / 4× / ½× (the `S` command overrides per note).
 - **WAVE** — a **wavetable** voice on the DAC (F6). Pick one of the 16 user waves you draw
   on the WAVE screen; pitched melodically.
 - **PERC** — YM2612 **CH3 special-mode percussion**: F3's four operators tuned
@@ -230,7 +231,9 @@ Timing is in **ticks** — one tick = one video frame (1/60 s NTSC, 1/50 s PAL).
 the 0–F musical scale.
 
 - **VOL** `0`–`F` — peak / hold level (`F` = loudest). On FM it scales the **carrier**
-  operator's level; on PSG it sets attenuation.
+  operator's level; on PSG it sets attenuation. KIT uses six inexpensive, shift-based
+  steps (`F / 8 / 4 / 2 / 1 / 0`), approximately 6 dB apart; lower settings deliberately
+  reduce sample resolution as well as level.
 - **ATK / HLD / DCY** `0`–`F` — a software **AHD** envelope (PSG voices): ramp up (attack),
   hold at VOL, ramp down (decay). On **FM**, the chip's own per-operator envelope owns the
   shape — here **HLD** sets the key-off timing only (**`F` = hold until the next note**),
@@ -240,7 +243,7 @@ the 0–F musical scale.
   **`0`** = step one row **per played note** (the row carries across notes — good for arps
   against the phrase). See §7.
 
-Type-specific fields (vibrato/sweep/tremolo on PSG, the noise MODE/RATE, the KIT/RATE,
+Type-specific fields (vibrato/sweep/tremolo on PSG, the noise MODE/RATE, KIT VOL/RATE,
 the WAVE selector) appear only for the types that use them. A command in a PHRASE overrides
 the matching field for that note.
 
