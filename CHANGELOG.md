@@ -4,6 +4,16 @@ All notable changes to genmddj. Versions increment by **0.01**.
 
 ## Unreleased
 
+### Added
+- **Per-instrument KIT volume.** KIT instruments now have six deterministic, shift-scaled
+  levels (`F / 8 / 4 / 2 / 1 / 0`), including mute, while preserving the relative balance
+  between pads. The quieter PCM copies are baked into the ROM so DAC feed timing and sample
+  pitch remain unchanged; the browser kit patcher emits the same compatible pool layout.
+
+### Changed
+- The diagnostic VBlank tick counter is no longer shown in the top-right of the UI. Its
+  internal frame clock remains available for input timing and confirmation windows.
+
 ### Fixed
 - **Transactional song saves.** The engine now freezes saved-data mutations while FILES takes
   its snapshot; the checksum is calculated from that exact snapshot; the payload is written and

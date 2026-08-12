@@ -28,7 +28,7 @@ CORE   = os.path.join(ROOT, 'tools', 'emu', 'genesis_plus_gx_libretro.dylib')
 
 ANCHOR   = '    move.b  #1, need_clear               ; draw header/name on first frame'
 SPLASH   = ('    move.w  #100, splash_ctr', '    move.w  #3, splash_ctr')
-GTICKS   = '    addq.w  #1, g_ticks                  ; tick counter (4 hex) at row0 col35'
+GTICKS   = '    addq.w  #1, g_ticks                  ; internal frame clock (not displayed)'
 
 # ---- shared inject fragments ------------------------------------------------------
 

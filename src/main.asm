@@ -97,7 +97,7 @@ play_row   equ $00FFE20E           ; playhead row for the current screen ($FF = 
 cur_instr  equ $00FFE20F           ; instrument shown/edited on the INSTRUMENT screen
 cur_chan   equ $00FFE210           ; editing context: current channel (0..NCH-1)
 cur_songrow equ $00FFE211          ; editing context: song row drilled from
-g_ticks    equ $00FFE212           ; VBlank tick counter (word) for the top-right readout
+g_ticks    equ $00FFE212           ; internal VBlank frame clock (word; UI timing/confirm windows/tests)
 play_mode  equ $00FFE214           ; 0 = full song, 1 = chain-solo, 2 = phrase-solo
 play_from  equ $00FFE215           ; song row to start from (full-song mode)
 in_splash  equ $00FFE216           ; 1 = showing the power-up splash
@@ -957,19 +957,7 @@ VBlankInt:
     bsr     render_track_playing
 .gd:
     bsr     hint_bar_draw                 ; bottom-row hint: INSTR fields + PHRASE/TABLE commands (no-op elsewhere)
-    addq.w  #1, g_ticks                  ; tick counter (4 hex) at row0 col35
-    move.l  #$40460003, (a0)
-    move.w  g_ticks, d2
-    lea     hexd, a1
-    moveq   #3, d3
-.tk:
-    rol.w   #4, d2                        ; next nibble, MSB first
-    move.w  d2, d0
-    andi.w  #$000F, d0
-    move.b  (a1,d0.w), d0
-    andi.w  #$00FF, d0
-    move.w  d0, VDP_DATA
-    dbra    d3, .tk
+    addq.w  #1, g_ticks                  ; internal frame clock (not displayed)
     tst.b   opt_sync                      ; sync activity counter at row0 col32 (OUT=sent, IN=received)
     beq.s   .nosyncind
     move.l  #$40400003, (a0)
