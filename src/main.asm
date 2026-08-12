@@ -352,6 +352,11 @@ CONT_RAM_END     equ carry_row + NCARRY            ; guard (INSTR_SIZE=64 litera
     ifgt CONT_RAM_END-$00FFDFE0
         fail "CONT RAM overruns into perc_live ($FFDFE0) -- shrink NCARRY or relocate"
     endc
+player_active equ CONT_RAM_END               ; host player: private SRAM marker was present at boot
+player_mask   equ CONT_RAM_END+2             ; aligned 10-bit hardware-voice mask (F1..NO)
+    ifgt (player_mask+2)-$00FFDFE0
+        fail "player host state overruns into perc_live ($FFDFE0)"
+    endc
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
 rle_buf    equ $00FF5D60            ; RLE staging: the free gap above the data block (~25 KB, to env_canvas $C000)
 fm_pre_mask equ $00FFBFE0           ; bits 0-5: stopped-load FM channels still waiting to prewarm
@@ -747,6 +752,8 @@ Start:
     dbra    d0, .linit
     move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
+    move.b  #0, player_active            ; ordinary tracker boot unless the private SRAM marker opts in
+    move.w  #$03FF, player_mask          ; all ten hardware voices enabled by default
     move.b  #1, g_lfo_dirty              ; emit $22 (global LFO) on the first SCB push
     bsr     gather_globals               ; the boot demo is the clean baseline (not "unsaved")
     bsr     data_longsum
@@ -754,9 +761,19 @@ Start:
     clr.b   song_dirty
     move.b  #1, need_clear               ; draw header/name on first frame
 
+    bsr     player_autoboot              ; no-op for every normal SRAM image
+
+    tst.b   player_active                 ; player starts at the first sequencer frame, with no UI delay
+    bne.s   .player_nosplash
     move.b  #1, in_splash
     move.b  #0, splash_row
     move.w  #100, splash_ctr             ; ~2.0s PAL (50Hz) / ~1.7s NTSC (60Hz); Start skips
+    bra.s   .boot_ready
+.player_nosplash:
+    move.b  #0, in_splash
+    move.b  #0, splash_row
+    move.w  #0, splash_ctr
+.boot_ready:
     move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
@@ -8485,7 +8502,16 @@ engine_tick:
     bsr     echo_psg_rd                   ; PSG echo target: attenuate by RD (after the envelope set c_vol)
     bsr     retrig_psg_rd                 ; PSG: R-command retrigger volume decay (also post-envelope)
 .ch_compose:
+    tst.b   player_active                 ; player stem pass: run the complete engine state, but only
+    beq.s   .ch_emit                      ; let selected hardware voices reach the chip write lists
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    move.w  player_mask, d1
+    btst    d0, d1
+    beq.s   .ch_muted
+.ch_emit:
     bsr     compose_ch
+.ch_muted:
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
     bsr     fmlfo_tick                    ; fold the 6 FM LFOs into the YM write list (a5/d5)
@@ -9438,6 +9464,16 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     mulu.w  #INSTR_SIZE, d2
     cmpi.b  #1, (i_type,a4,d2.w)         ; i_type 1 = KIT
     bne.s   .nwkit
+    tst.b   player_active                 ; a stem pass without F6 must not leak its direct DAC path
+    beq.s   .kit_audible
+    move.w  player_mask, d0
+    btst    #5, d0
+    bne.s   .kit_audible
+    move.b  #0, wave_on
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_trig(a6)
+    rts
+.kit_audible:
     move.b  (i_kit,a4,d2.w), d0          ; kit index
     moveq   #0, d1
     move.b  c_note(a6), d1
@@ -9451,6 +9487,16 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
 .nwkit:
     cmpi.b  #2, (i_type,a4,d2.w)         ; i_type 2 = WAVE -> wavetable on the DAC
     bne.s   .fmtrig
+    tst.b   player_active                 ; WAVE also bypasses compose_ch and must obey the F6 mask here
+    beq.s   .wave_audible
+    move.w  player_mask, d0
+    btst    #5, d0
+    bne.s   .wave_audible
+    move.b  #0, wave_on
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_trig(a6)
+    rts
+.wave_audible:
     lea     0(a4,d2.w), a1               ; a1 = the WAVE instrument
     move.b  #1, c_estate(a6)             ; start the AHD envelope at attack
     move.b  #0, c_vol(a6)
@@ -13387,6 +13433,60 @@ load_config:                               ; called at boot (after sram_init) + 
     movem.l (sp)+, d0-d5/a1
     rts
 
+; Private host-player boot request. The renderer writes "PLY1" at logical SRAM
+; CONFIG_OFS+9 followed by a big-endian 10-bit hardware-voice mask. Normal saves never
+; contain this marker, so the tracker retains its ordinary blank/stopped boot behaviour.
+; Keeping the request in SRAM lets an unmodified libretro API carry a .gmdj into the
+; real ROM engine: the host only populates SAVE_RAM before the first emulated frame.
+player_autoboot:
+    movem.l d0-d7/a0-a3, -(sp)
+    moveq   #CONFIG_OFS+9, d0
+    bsr     sram_at
+    beq     .pab_done
+    cmpi.b  #'P', (a1)
+    bne     .pab_unmap
+    adda.l  d5, a1
+    cmpi.b  #'L', (a1)
+    bne     .pab_unmap
+    adda.l  d5, a1
+    cmpi.b  #'Y', (a1)
+    bne     .pab_unmap
+    adda.l  d5, a1
+    cmpi.b  #'1', (a1)
+    bne     .pab_unmap
+    adda.l  d5, a1
+    moveq   #0, d6                         ; render mask, big-endian like directory words
+    move.b  (a1), d6
+    lsl.w   #8, d6
+    adda.l  d5, a1
+    move.b  (a1), d6
+    andi.w  #$03FF, d6
+    move.b  #0, $A130F1                   ; unmap before the directory loader maps SRAM itself
+    moveq   #0, d0                         ; first valid directory song
+    bsr     dir_nth
+    tst.l   d0
+    bmi.s   .pab_done
+    bsr     dir_load
+    tst.b   load_ok                       ; v0.18+: never start after a rejected/corrupt payload
+    beq.s   .pab_done
+    move.w  d6, player_mask
+    move.b  #1, player_active
+    move.b  #0, opt_sync                  ; rendering always uses the emulated internal clock
+    move.b  #0, sync_shadow
+    move.b  #0, proj_mode                 ; play the arranged SONG even if the save was left in LIVE
+    move.b  #0, play_mode
+    move.b  #0, play_from
+    move.b  #SCR_SONG, cur_screen
+    move.b  #1, playing
+    bsr     engine_play_reset
+    move.b  #1, need_clear
+    bra.s   .pab_done
+.pab_unmap:
+    move.b  #0, $A130F1
+.pab_done:
+    movem.l (sp)+, d0-d7/a0-a3
+    rts
+
 ; SRAM probe: detect layout (odd-byte 8-bit vs linear) + size (mirror walk). Saves/restores the
 ; config bytes it clobbers. Result in sram_layout (0 none / 1 odd / 2 linear) + sram_size (KB).
 sram_probe:
@@ -13450,8 +13550,12 @@ sram_probe:
     move.l  d2, d0
     lsl.l   d7, d0
     adda.l  d0, a1
+    move.b  (a1), d1                     ; preserve the probed boundary (it may contain a saved song)
     move.b  #$22, (a1)                     ; B at the boundary
     cmpi.b  #$22, $00200001              ; logical 0 reads B -> the boundary aliases it
+    sne     d0                            ; retain the comparison while restoring the boundary byte
+    move.b  d1, (a1)
+    tst.b   d0                            ; Z set = alias, matching the caller's BEQ branches
     rts
 
 ; ============================================================================================

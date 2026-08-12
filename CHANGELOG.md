@@ -4,6 +4,12 @@ All notable changes to genmddj. Versions increment by **0.01**.
 
 ## Unreleased
 
+### Added
+- **Experimental GENMDDJ Player prototype.** A preliminary native offline player/renderer
+  loads an extracted `.gmdj` into the real ROM engine through Genesis Plus GX and writes
+  16-bit stereo WAV output. It can also render ten hardware-voice stems for DAW mixing.
+  This is an early experiment rather than a finished end-user player.
+
 ### Changed
 - Paste is now a **clean C double-tap**, leaving **B double-tap** exclusively for minting and
   cloning SONG/CHAIN references. C chords, navigation and block cancellation do not count.

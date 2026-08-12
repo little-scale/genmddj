@@ -104,10 +104,24 @@ run: $(ROM)
 EMUDIR    := tools/emu
 EMUCORE   := $(EMUDIR)/genesis_plus_gx_libretro.dylib
 RETROSHOT := $(EMUDIR)/retroshot
+PLAYER    := user-tools/player/genmddj-player
 FRAMES    ?= 90
 
 $(RETROSHOT): $(EMUDIR)/harness.c $(EMUDIR)/libretro.h
 	clang -O2 -o $@ $(EMUDIR)/harness.c -I$(EMUDIR)
+
+$(PLAYER): user-tools/player/genmddj-player.c $(EMUDIR)/libretro.h
+	clang -O2 -Wall -Wextra -Werror -o $@ user-tools/player/genmddj-player.c
+
+player: $(ROM) $(PLAYER)
+	@echo "player ready: $(PLAYER) [options] song.gmdj"
+
+player-test: $(ROM) $(PLAYER)
+	python3 user-tools/player/test_player.py
+
+player-demo: $(ROM)
+	python3 user-tools/player/make_demo_song.py user-tools/player/song.gmdj
+	@echo "wrote user-tools/player/song.gmdj"
 
 shot: $(ROM) $(RETROSHOT)
 	$(RETROSHOT) $(EMUCORE) $(ROM) $(BUILD)/shot.ppm $(FRAMES)
@@ -117,7 +131,7 @@ shot: $(ROM) $(RETROSHOT)
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run shot clean test
+.PHONY: all run shot clean test player player-test player-demo
 
 # headless regression tests (needs tools/emu/retroshot + the genesis_plus_gx core)
 test: $(ROM)

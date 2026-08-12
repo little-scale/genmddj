@@ -88,6 +88,19 @@ make            # -> build/genmddj.bin   (flash it, or run in any Mega Drive emu
 renders a headless screenshot via a small libretro harness — it expects the
 `genesis_plus_gx` core in `tools/emu/` (fetched separately; not in the repo).
 
+### Experimental offline song player / renderer
+
+The preliminary native [GENMDDJ Player prototype](user-tools/player/README.md) opens an
+extracted `.gmdj`, auto-loads it into the real ROM engine, and renders the emulated console
+output to 16-bit stereo WAV. It can also render ten hardware-voice stems (`F1`–`F6/DAC`,
+`T1`–`T3`, `NO`) for DAW mixing. This is an early experiment, not yet a polished player.
+
+```sh
+make player
+user-tools/player/genmddj-player --seconds 90 --output song.wav user-tools/player/song.gmdj
+user-tools/player/genmddj-player --seconds 90 --stems stems user-tools/player/song.gmdj
+```
+
 ## How it works
 
 The **68000** owns everything: the song data, the editor / UI / VDP, and the
