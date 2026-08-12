@@ -7,15 +7,19 @@
 <style>
   :root{ --pad:14px; }
   *{ box-sizing:border-box; }
-  body{ margin:0; font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;
+  body{ margin:0; height:100vh; display:flex; flex-direction:column;
+        font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;
         background:#15171c; color:#cfd6e0; }
   header{ padding:12px 18px; border-bottom:1px solid #2a2e38; display:flex;
-          align-items:baseline; gap:14px; }
+          align-items:center; gap:14px; flex-wrap:wrap; row-gap:8px; }
   header h1{ font-size:17px; margin:0; }
   header .sub{ color:#7d8595; font-size:12px; }
-  .wrap{ display:grid; grid-template-columns:230px 1fr 360px; gap:0; height:calc(100vh - 49px); }
+  .romtoolbar{ margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .romstatus{ padding:6px 18px; border-bottom:1px solid #2a2e38; color:#9aa3b2; font-size:12px; line-height:1.5; }
+  .wrap{ display:grid; grid-template-columns:230px 360px 1fr; gap:0; flex:1; min-height:0; }
   .col{ padding:var(--pad); overflow:auto; }
   .col + .col{ border-left:1px solid #2a2e38; }
+  .content{ max-width:620px; }
   h2{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#7d8595;
       margin:0 0 10px; }
   /* palette list */
@@ -24,23 +28,27 @@
         cursor:pointer; border:1px solid transparent; }
   .pal:hover{ background:#1d212a; }
   .pal.sel{ background:#222838; border-color:#3a6ea5; }
+  .pal:focus-visible{ outline:2px solid #3a6ea5; outline-offset:-1px; }
+  .pal.dragging{ opacity:.4; }
+  .pal.dragover{ border-color:#7aa8d8; box-shadow:inset 0 0 0 1px #7aa8d8; }
+  .pal .grip{ color:#4a5262; cursor:grab; font-size:12px; line-height:1; padding:0 2px; }
   .pal .sw{ display:flex; border-radius:4px; overflow:hidden; box-shadow:0 0 0 1px #0006; }
   .pal .sw span{ width:16px; height:22px; display:block; }
   .pal .nm{ font-weight:600; font-size:13px; }
   .pal .idx{ color:#7d8595; font-size:11px; margin-left:auto; }
   /* preview */
-  .screen{ background:#000; border:1px solid #2a2e38; border-radius:8px; padding:0;
-           font-family:ui-monospace,Menlo,monospace; font-size:15px; line-height:1.32;
-           letter-spacing:.5px; overflow:hidden; }
-  .screen .row{ padding:0 12px; white-space:pre; }
-  .screen .row:first-child{ padding-top:10px; }
-  .screen .row:last-child{ padding-bottom:10px; }
+  .screen{ display:inline-block; background:#000; border:1px solid #2a2e38; border-radius:8px; padding:0;
+           font-family:ui-monospace,Menlo,monospace; font-size:24px; line-height:1.32;
+           letter-spacing:.7px; overflow:hidden; }
+  .screen .row{ padding:0 20px; white-space:pre; }
+  .screen .row:first-child{ padding-top:18px; }
+  .screen .row:last-child{ padding-bottom:18px; }
   .cell.cur{ padding:0 1px; border-radius:2px; }
   .nameedit{ background:#1d212a; border:1px solid #2a2e38; color:#cfd6e0; border-radius:6px;
              padding:5px 8px; width:130px; font-weight:600; }
   /* color editors */
-  .ce{ background:#1b1f27; border:1px solid #2a2e38; border-radius:8px; padding:10px 12px;
-       margin-bottom:12px; }
+  #editors{ display:flex; flex-direction:column; gap:12px; }
+  .ce{ background:#1b1f27; border:1px solid #2a2e38; border-radius:8px; padding:10px 12px; }
   .ce .top{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
   .ce .chip{ width:34px; height:34px; border-radius:6px; box-shadow:0 0 0 1px #0008; }
   .ce input.chip{ -webkit-appearance:none; appearance:none; padding:0; border:0; background:none; cursor:pointer; }
@@ -49,7 +57,15 @@
   .ce input.chip::-moz-color-swatch{ border:0; border-radius:6px; }
   .ce .lbl{ font-weight:600; }
   .ce .role{ color:#7d8595; font-size:11px; }
-  .ce .hex{ margin-left:auto; font-family:ui-monospace,monospace; color:#9aa3b2; font-size:13px; }
+  .ce .hex{ margin-left:auto; font-family:ui-monospace,monospace; color:#cfd6e0; font-size:13px;
+            background:#0e1014; border:1px solid #2a2e38; border-radius:5px; padding:3px 6px;
+            width:76px; text-align:right; }
+  .ce .hex:focus{ outline:none; border-color:#3a6ea5; }
+  .minibar{ display:flex; gap:6px; margin:2px 0 8px; }
+  .minibtn{ background:#222838; color:#cfd6e0; border:1px solid #2a2e38; border-radius:5px;
+            padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; }
+  .minibtn:hover{ background:#2a3040; }
+  .minibtn:disabled{ opacity:.4; cursor:not-allowed; }
   .slider{ display:grid; grid-template-columns:18px 1fr 22px; align-items:center; gap:8px;
            margin:3px 0; }
   .slider b{ font-weight:700; }
@@ -57,8 +73,8 @@
   input[type=range]{ width:100%; }
   .val{ font-family:ui-monospace,monospace; text-align:right; color:#9aa3b2; }
   textarea{ width:100%; height:230px; background:#0e1014; color:#b9e1c4; border:1px solid #2a2e38;
-            border-radius:8px; padding:10px; font-family:ui-monospace,monospace; font-size:12px;
-            resize:vertical; }
+            border-radius:8px; padding:8px; font-family:ui-monospace,monospace; font-size:10px;
+            line-height:1.4; resize:vertical; }
   button{ background:#2b6cb0; color:#fff; border:0; border-radius:7px; padding:8px 14px;
           font-weight:600; cursor:pointer; }
   button:hover{ background:#3a7ec0; }
@@ -69,7 +85,6 @@
         cursor:pointer; display:inline-block; }
   .btn:hover{ background:#3a7ec0; }
   .rombar{ display:flex; gap:8px; margin:6px 0; flex-wrap:wrap; }
-  .romstatus{ color:#9aa3b2; font-size:12px; margin:6px 0 4px; line-height:1.5; }
   button:disabled{ opacity:.4; cursor:not-allowed; }
   #drop-ov{ position:fixed; inset:0; background:rgba(21,23,28,.88); border:4px dashed #3a6ea5;
             display:none; align-items:center; justify-content:center; z-index:100; pointer-events:none;
@@ -80,8 +95,13 @@
 <body>
 <header>
   <h1>genmddj palette patcher</h1>
-  <span class="sub">drop a ROM &middot; click a swatch to pick a colour (snaps to the nearest of the 512 Sega colours) &middot; c0 bg / c1 text / c2 glyph &middot; download the patched ROM</span>
+  <span class="sub">click a swatch or type a hex value to set a colour (snaps to the nearest of the 512 Sega colours) &middot; c0 bg / c1 text / c2 glyph</span>
+  <div class="romtoolbar">
+    <label class="btn">Load .bin&hellip;<input type="file" id="romfile" accept=".bin,.md,.gen" hidden></label>
+    <button id="patch" disabled>Download patched ROM</button>
+  </div>
 </header>
+<div class="romstatus" id="romstatus"><b>Drop a genmddj <code>.bin</code> anywhere</b> (or Load&hellip;) to read its palettes; edit, then download a patched ROM (header checksum re-fixed).</div>
 <div id="drop-ov">Drop a genmddj ROM to patch</div>
 
 <div class="wrap">
@@ -90,13 +110,27 @@
     <h2>Palettes</h2>
     <div class="plist" id="plist"></div>
     <div class="bar" style="margin-top:14px">
+      <button class="ghost" id="copyPal">Copy</button>
+      <button class="ghost" id="pastePal" disabled>Paste</button>
+    </div>
+    <div class="bar">
+      <button class="ghost" id="exportAll" title="Download all 8 palettes as one file">Export All&hellip;</button>
+    </div>
+    <div class="bar">
       <button class="ghost" id="reset">Reset all</button>
     </div>
-    <div class="note">Click a palette to edit it. The OPTIONS &rarr; COLR field picks one 0&ndash;7 on the console.</div>
+    <div class="note">Click a palette to edit it. Drag a row (&#x2807;) to reorder it, or Copy one and Paste it into another slot (&#8984;C/&#8984;V or Ctrl+C/Ctrl+V while the list has focus). The OPTIONS &rarr; COLR field picks one 0&ndash;7 on the console.</div>
   </div>
 
-  <!-- preview -->
+  <!-- colours -->
   <div class="col">
+    <h2>Colours</h2>
+    <div id="editors"></div>
+  </div>
+
+  <!-- preview + save/export -->
+  <div class="col">
+   <div class="content">
     <h2>Preview &mdash; <span id="prevname"></span></h2>
     <div class="screen" id="screen"></div>
     <div class="bar" style="margin-top:14px">
@@ -104,18 +138,12 @@
     </div>
     <div class="note">Mock PHRASE screen: title bar, a few rows, one highlighted cursor cell.<br>
       The highlight uses c1 as the block and c2 as the glyph (so a cursor cell reads as c2-on-c1).</div>
-  </div>
 
-  <!-- editor + export -->
-  <div class="col">
-    <h2>Colours</h2>
-    <div id="editors"></div>
-    <h2 style="margin-top:18px">Patch a ROM</h2>
-    <div class="rombar">
-      <label class="btn">Load .bin&hellip;<input type="file" id="romfile" accept=".bin,.md,.gen" hidden></label>
-      <button id="patch" disabled>Download patched ROM</button>
+    <div class="rombar" style="margin-top:18px">
+      <label class="btn">Import palette&hellip;<input type="file" id="palfile" accept=".gmpal,.json,application/json" hidden></label>
+      <button id="exportPal">Export this palette&hellip;</button>
     </div>
-    <div class="romstatus" id="romstatus"><b>Drop a genmddj <code>.bin</code> anywhere</b> (or Load&hellip;) to read its palettes; edit, then download a patched ROM (header checksum re-fixed).</div>
+    <div class="note" id="palstatus">Saves/loads just the selected palette (name + 3 colours) as its own small <code>.gmpal</code> file &mdash; handy for sharing or backing up one palette without a whole ROM. Import overwrites the currently-selected slot.</div>
 
     <h2 style="margin-top:18px">Or export source &mdash; paste into <code>pal_table</code></h2>
     <textarea id="out" readonly></textarea>
@@ -124,6 +152,7 @@
       <button class="ghost" id="copyline">Copy this palette's row</button>
     </div>
     <div class="note">Patcher: the data follows the <code>"GMDJPAL0"</code> locator in the ROM &mdash; 8&times;3 words, big-endian.</div>
+   </div>
   </div>
 </div>
 
@@ -156,13 +185,34 @@ const ROLE = ["background","text / cursor-block","cursor glyph"];
 
 const $ = s => document.querySelector(s);
 
+function movePalette(from,to){
+  if(from===to) return;
+  const selPal = pals[sel];                    // remember by identity so the same palette stays selected
+  const [p]=pals.splice(from,1); const [n]=names.splice(from,1);
+  pals.splice(to,0,p); names.splice(to,0,n);
+  sel = pals.indexOf(selPal);
+  renderAll();
+}
+
 function buildList(){
   const el = $("#plist"); el.innerHTML="";
   pals.forEach((p,i)=>{
     const d=document.createElement("div"); d.className="pal"+(i===sel?" sel":"");
-    d.innerHTML=`<div class="sw">${p.map(w=>`<span style="background:${css(wordToLevels(w))}"></span>`).join("")}</div>
+    d.draggable=true; d.dataset.idx=i; d.tabIndex=0;
+    d.innerHTML=`<span class="grip" title="drag to reorder">&#x2807;</span>
+                 <div class="sw">${p.map(w=>`<span style="background:${css(wordToLevels(w))}"></span>`).join("")}</div>
                  <span class="nm">${names[i]}</span><span class="idx">${i}</span>`;
     d.onclick=()=>{ sel=i; renderAll(); };
+    d.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); sel=i; renderAll(); } };
+    d.ondragstart=e=>{ e.dataTransfer.effectAllowed="move"; e.dataTransfer.setData("text/plain",String(i)); d.classList.add("dragging"); };
+    d.ondragend=()=>d.classList.remove("dragging");
+    d.ondragover=e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; d.classList.add("dragover"); };
+    d.ondragleave=()=>d.classList.remove("dragover");
+    d.ondrop=e=>{
+      e.preventDefault(); d.classList.remove("dragover");
+      const from=+e.dataTransfer.getData("text/plain");
+      if(!isNaN(from)) movePalette(from, +d.dataset.idx);
+    };
     el.appendChild(d);
   });
 }
@@ -175,7 +225,11 @@ function buildEditors(){
     ce.innerHTML=`<div class="top">
         <input type="color" class="chip" value="${cssHex(L)}" title="pick a colour — snaps to the nearest Sega colour">
         <div><div class="lbl">c${ci}</div><div class="role">${ROLE[ci]}</div></div>
-        <div class="hex">${hex4(w)}</div></div>`;
+        <input class="hex" value="${hex4(w)}" maxlength="8" spellcheck="false" title="type a hex word, e.g. $0EE0 — snaps to the nearest valid value"></div>
+      <div class="minibar">
+        <button class="minibtn ccopy">Copy</button>
+        <button class="minibtn cpaste">Paste</button>
+      </div>`;
     const sliders=[];
     [["r","R"],["g","G"],["b","B"]].forEach(([cl,lt],k)=>{
       const row=document.createElement("div"); row.className="slider";
@@ -186,16 +240,38 @@ function buildEditors(){
       ce.appendChild(row);
     });
     const pick=ce.querySelector(".chip"), hex=ce.querySelector(".hex");
+    const ccopy=ce.querySelector(".ccopy"), cpaste=ce.querySelector(".cpaste");
     // update this editor + the dependent panels IN PLACE (never rebuild, or the open picker is torn down)
     function refresh(){
       const w2=pals[sel][ci], L2=wordToLevels(w2);
-      pick.value=cssHex(L2); hex.textContent=hex4(w2);
+      pick.value=cssHex(L2); hex.value=hex4(w2);
       const vs=ce.querySelectorAll(".slider .val");
       sliders.forEach((s,k)=>{ s.value=L2[k]; vs[k].textContent=L2[k]; });
       buildList(); buildPreview(); buildExport();
     }
     pick.oninput=()=>{ pals[sel][ci]=levelsToWord(hexToLevels(pick.value)); refresh(); };  // pick any colour -> snap
     sliders.forEach((s,k)=>s.oninput=()=>{ const L2=wordToLevels(pals[sel][ci]); L2[k]=+s.value; pals[sel][ci]=levelsToWord(L2); refresh(); });
+    function applyTyped(){
+      const w2=parseWord(hex.value);
+      if(isNaN(w2)){ refresh(); return; }            // not parseable — just revert to the current value
+      pals[sel][ci]=levelsToWord(wordToLevels(w2));   // round-trip through levels — same snap the rest of the tool uses
+      refresh();
+    }
+    hex.onchange=applyTyped;
+    hex.onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); hex.blur(); } };
+    // per-channel copy/paste — a single word value shared across all 3 channels and every palette,
+    // so you can grab one exact colour and reuse it anywhere with no risk of a re-snap on the way
+    function refreshChannelPaste(){
+      cpaste.disabled = (channelClip===null);
+      cpaste.textContent = channelClip===null ? "Paste" : `Paste ${hex4(channelClip)}`;
+    }
+    ccopy.onclick=()=>{
+      channelClip=pals[sel][ci];
+      ccopy.textContent="Copied!"; setTimeout(()=>{ if(ccopy.textContent==="Copied!") ccopy.textContent="Copy"; },900);
+      document.querySelectorAll(".ce .cpaste").forEach(b=>{ b.disabled=false; b.textContent=`Paste ${hex4(channelClip)}`; });
+    };
+    cpaste.onclick=()=>{ if(channelClip===null) return; pals[sel][ci]=channelClip; refresh(); };
+    refreshChannelPaste();
     el.appendChild(ce);
   });
 }
@@ -223,7 +299,15 @@ function buildPreview(){
     }
     return `<div class="row">${r||" "}</div>`;
   }).join("");
+  syncContentWidth();               // keep everything below the preview capped to the preview's own width
 }
+function syncContentWidth(){
+  const scr=$("#screen"), content=$(".content");
+  if(!scr || !content) return;
+  const w=scr.getBoundingClientRect().width;
+  if(w>0) content.style.width=w+"px";
+}
+window.addEventListener("resize", syncContentWidth);
 
 function buildExport(){
   let s="pal_table:                          ; genmddj UI palettes (c0 bg, c1 text/cursor, c2 glyph)\n";
@@ -234,12 +318,102 @@ function buildExport(){
   $("#out").value=s;
 }
 
-function renderAll(){ buildList(); buildEditors(); buildPreview(); buildExport(); $("#nameedit").value=names[sel]; }
+let clipboard=null;                             // { colors, name } copied from a palette, or null
+let channelClip=null;                            // a single raw colour word copied from any c0/c1/c2, or null
+function refreshPasteBtn(){
+  const b=$("#pastePal");
+  b.disabled = !clipboard;
+  b.textContent = clipboard ? `Paste ${clipboard.name}` : "Paste";
+}
+
+function renderAll(){ buildList(); buildEditors(); buildPreview(); buildExport(); refreshPasteBtn(); $("#nameedit").value=names[sel]; }
 
 $("#nameedit").oninput=e=>{ names[sel]=e.target.value.toUpperCase().slice(0,6)||("P"+sel); buildList(); buildPreview(); buildExport(); };
-$("#reset").onclick=()=>{ if(confirm("Reset all palettes to defaults?")){ pals=DEF.map(p=>p.slice()); names=NAMES0.slice(); renderAll(); } };
+$("#reset").onclick=()=>{ if(confirm("Reset all palettes to defaults?")){ pals=DEF.map(p=>p.slice()); names=NAMES0.slice(); clipboard=null; renderAll(); } };
+
+// ---- copy / paste a palette between slots
+function copySelected(){
+  clipboard = { colors: pals[sel].slice(), name: names[sel] };
+  const btn=$("#copyPal"); const orig=btn.textContent;
+  btn.textContent="Copied!"; setTimeout(()=>{ if(btn.textContent==="Copied!") btn.textContent=orig; },900);
+  refreshPasteBtn();
+}
+function pasteSelected(){
+  if(!clipboard) return;
+  pals[sel]=clipboard.colors.slice(); names[sel]=clipboard.name;
+  renderAll();
+}
+$("#copyPal").onclick=copySelected;
+$("#pastePal").onclick=pasteSelected;
+// keyboard: Ctrl/Cmd+C / Ctrl/Cmd+V while a palette row (or the list itself) has focus —
+// scoped to #plist so it never fights with copying text elsewhere on the page (e.g. the export box).
+$("#plist").addEventListener("keydown", e=>{
+  if(!(e.ctrlKey||e.metaKey)) return;
+  if(e.key==="c"||e.key==="C"){ e.preventDefault(); copySelected(); }
+  else if(e.key==="v"||e.key==="V"){ e.preventDefault(); pasteSelected(); }
+});
+
 $("#copy").onclick=()=>{ navigator.clipboard.writeText($("#out").value); $("#copy").textContent="Copied!"; setTimeout(()=>$("#copy").textContent="Copy",900); };
 $("#copyline").onclick=()=>{ const p=pals[sel]; navigator.clipboard.writeText(`    dc.w ${p.map(hex4).join(", ")}        ; ${sel} ${names[sel]}`); };
+
+// ---- single-palette file: save/load just the selected palette (name + 3 words) as its own small .gmpal (JSON)
+const PALFILE_MAGIC="GMDJPAL1";
+function parseWord(s){ return parseInt(String(s).replace(/^\$|^0x/i,""),16) & 0x0FFF; }
+function exportPalette(i){
+  const filename=(names[i]||("pal"+i)).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")+".gmpal";
+  try{
+    const obj={ magic:PALFILE_MAGIC, name:names[i], colors:pals[i].map(hex4) };
+    const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    $("#palstatus").innerHTML=`Exported <b>${filename}</b>.`;
+  }catch(e){
+    $("#palstatus").innerHTML=`<b style="color:#ff8a8a">Couldn't export ${filename}</b> &mdash; ${e.message}`;
+  }
+}
+function importPaletteFile(f){
+  if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    let obj;
+    try{ obj=JSON.parse(r.result); } catch(e){ $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: not a valid .gmpal file (bad JSON)</b>`; return; }
+    if(!obj || obj.magic!==PALFILE_MAGIC || !Array.isArray(obj.colors) || obj.colors.length!==3){
+      $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: not a genmddj single-palette (.gmpal) file</b>`; return;
+    }
+    pals[sel]=obj.colors.map(parseWord);
+    if(obj.name) names[sel]=String(obj.name).toUpperCase().slice(0,6);
+    renderAll();
+    $("#palstatus").innerHTML=`Imported <b>${f.name}</b> into slot ${sel} (${names[sel]}).`;
+  };
+  r.onerror=()=>{ $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: couldn't read the file</b>`; };
+  r.readAsText(f);
+}
+$("#exportPal").onclick=()=>exportPalette(sel);
+$("#palfile").onchange=e=>{ importPaletteFile(e.target.files[0]); e.target.value=""; };
+
+// ---- export all 8 palettes in one go, as a single .gmpalset (JSON) file — a lighter-weight
+// alternative to patching a whole ROM, for backing up / sharing / versioning a full palette set
+const PALSET_MAGIC="GMDJPALSET1";
+function exportAllPalettes(){
+  const filename="genmddj-palettes.gmpalset";
+  const btn=$("#exportAll"); const orig=btn.textContent;
+  try{
+    const obj={ magic:PALSET_MAGIC, palettes: pals.map((p,i)=>({ name:names[i], colors:p.map(hex4) })) };
+    const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    btn.textContent="Exported!";
+  }catch(e){
+    console.error("Export All failed:", e);
+    btn.textContent="Failed!";
+  }
+  setTimeout(()=>{ if(btn.textContent==="Exported!"||btn.textContent==="Failed!") btn.textContent=orig; },1200);
+}
+$("#exportAll").onclick=exportAllPalettes;
 
 // ---- ROM patcher: find the "GMDJPAL0" locator, read/write the 8x3 words after it, re-fix the checksum
 let rom=null, romBase=-1, romName='';
@@ -270,12 +444,16 @@ function loadRom(f){
   r.readAsArrayBuffer(f);
 }
 $("#romfile").onchange = e => loadRom(e.target.files[0]);
-// drop a ROM anywhere on the page
+// drop a ROM anywhere on the page. dragenter/dragover bubble up from the palette-row
+// reorder drags too, so only react when the drag actually carries files (an internal
+// reorder drag only carries "text/plain", never "Files") — otherwise starting a
+// reorder drag pops this overlay as if a ROM were being dropped.
+const isFileDrag = e => !!(e.dataTransfer && Array.from(e.dataTransfer.types||[]).includes('Files'));
 const _ov=$("#drop-ov"); let _dn=0;
-window.addEventListener('dragenter', e=>{ e.preventDefault(); _dn++; _ov.classList.add('on'); });
-window.addEventListener('dragover',  e=>{ e.preventDefault(); });
-window.addEventListener('dragleave', e=>{ if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
-window.addEventListener('drop', e=>{ e.preventDefault(); _dn=0; _ov.classList.remove('on'); loadRom(e.dataTransfer.files[0]); });
+window.addEventListener('dragenter', e=>{ if(!isFileDrag(e)) return; e.preventDefault(); _dn++; _ov.classList.add('on'); });
+window.addEventListener('dragover',  e=>{ if(!isFileDrag(e)) return; e.preventDefault(); });
+window.addEventListener('dragleave', e=>{ if(!isFileDrag(e)) return; if(--_dn<=0){ _dn=0; _ov.classList.remove('on'); } });
+window.addEventListener('drop', e=>{ if(!isFileDrag(e)) return; e.preventDefault(); _dn=0; _ov.classList.remove('on'); loadRom(e.dataTransfer.files[0]); });
 $("#patch").onclick = () => {
   if(!rom) return;
   for(let p=0;p<8;p++) for(let c=0;c<3;c++){ const o=romBase+(p*3+c)*2, w=pals[p][c]; rom[o]=(w>>8)&0xFF; rom[o+1]=w&0xFF; }
