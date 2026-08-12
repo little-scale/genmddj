@@ -328,7 +328,7 @@ cont_pending     equ $00FFD763      ; byte: 1 = a swap is armed (CUED)
 cont_target      equ $00FFD764      ; byte: target save slot for the armed swap
 cont_ref         equ $00FFD765      ; byte: reference track (lowest carried) for the downbeat edge-detect
 cont_lastrow     equ $00FFD766      ; byte: cont_ref's last c_row (edge-detect 15->0)
-cont_fast        equ $00FFD767      ; byte: 1 = a CONT live load in progress -> dir_load skips the read-back checksum
+cont_fast        equ $00FFD767      ; reserved (pre-hardening CONT fast-load flag; loads now always validate)
 carry_slot       equ $00FFD768      ; NCH bytes: per-track carry-buffer index 0..NCARRY-1, or $FF = not carried
 glide_left       equ $00FFD772      ; byte: bars remaining in the glide (0 = idle)
 glide_from       equ $00FFD773      ; byte: old song average frames-per-row
@@ -348,11 +348,17 @@ dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory 
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
+save_busy  equ $00FFD435            ; nonzero while save/load owns SAVE_BASE (engine_tick must not mutate it)
 files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR sub-menu is open
 menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=CANCEL)
 files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
 new_named  equ $00FFD439            ; FILES: 1 once a name has been typed on the (empty) slot (else it reads "(EMPTY)"); reset on save/load/new
 sync_shadow equ $00FFD43A           ; engine_tick: last-seen opt_sync, to detect MIDI takeover entry/exit (MIDI.md §5)
+files_error equ $00FFD43B           ; FILES status: FILE_ERR_* (checksum failure is non-destructive)
+load_ok     equ $00FFD43C           ; dir_load result for callers such as CONT (set only after validation + commit)
+FILE_ERR_NONE equ 0
+FILE_ERR_CSUM equ 1
+FILE_ERR_SAVE equ 2
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
@@ -639,6 +645,9 @@ Start:
     move.b  #0, cont_pending
     move.b  #0, glide_left
     move.b  #0, cont_fast
+    move.b  #0, save_busy
+    move.b  #FILE_ERR_NONE, files_error
+    move.b  #0, load_ok
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
     move.b  #0, cur_instr
@@ -3474,10 +3483,10 @@ do_insert:
     bhs     .ret                            ; no free chain -> no-op
     cmpi.b  #$FF, d3                         ; empty cell -> mint a blank chain
     beq.s   .song_place
-    tst.b   opt_clon                         ; DEEP? pre-check free phrases >= the chain's non-$FF steps
+    tst.b   opt_clon                         ; DEEP? pre-check free phrases >= unique phrases used by the chain
     beq.s   .song_slim                       ;   (all-or-nothing fail, like SMSGGDJ)
     move.l  d0, -(sp)                         ; save the dest chain across the counts
-    bsr     chain_phrase_count               ; d1 = non-$FF steps in source chain d3
+    bsr     chain_unique_phrase_count        ; d1 = unique non-$FF phrase references in source chain d3
     move.b  d1, d4
     bsr     count_free_phrases               ; d1 = free phrases (preserves d3/d4)
     move.l  (sp)+, d0                         ; restore dest chain (before the compare -- move clears C)
@@ -3633,24 +3642,40 @@ clone_rec:
     movem.l (sp)+, d1-d2/a0-a1
     rts
 
-; --- DEEP chain clone (CLON = DEEP): give a cloned chain its own copies of every phrase ---
-chain_phrase_count:                       ; d3 = chain index -> d1 = count of non-$FF phrase steps. preserves d3.
-    movem.l d2/a2, -(sp)
+; --- DEEP chain clone (CLON = DEEP): clone each unique phrase once, preserving aliases ---
+chain_unique_phrase_count:                ; d3 = chain index -> d1 = unique non-$FF phrase refs. preserves d3.
+    movem.l d0/d2/d4-d5/a2-a3, -(sp)
     lea     chains, a2
     moveq   #0, d2
     move.b  d3, d2
     mulu.w  #CHAIN_SIZE, d2
-    adda.w  d2, a2                          ; a2 = chain base
+    adda.w  d2, a2                          ; a2/a3 = source chain base/current row
+    move.l  a2, a3
     moveq   #0, d1
-    moveq   #15, d2
-.cpc:
-    cmpi.b  #$FF, (a2)
-    beq.s   .cpc_n
+    moveq   #0, d2                          ; current row index
+.cupc:
+    moveq   #0, d4
+    move.b  (a3), d4                        ; source phrase identity (contents are irrelevant)
+    cmpi.b  #$FF, d4
+    beq.s   .cupc_n
+    moveq   #0, d5                          ; repeated earlier in this chain?
+.cupc_prev:
+    cmp.w   d2, d5
+    bhs.s   .cupc_new                       ; no earlier match -> one unique phrase
+    move.w  d5, d0
+    add.w   d0, d0                          ; prior row * 2
+    cmp.b   (a2,d0.w), d4
+    beq.s   .cupc_n
+    addq.w  #1, d5
+    bra.s   .cupc_prev
+.cupc_new:
     addq.w  #1, d1
-.cpc_n:
-    addq.l  #2, a2                          ; next step (phrase#, transpose)
-    dbra    d2, .cpc
-    movem.l (sp)+, d2/a2
+.cupc_n:
+    addq.l  #2, a3                          ; next step (phrase#, transpose)
+    addq.w  #1, d2
+    cmpi.w  #16, d2
+    blo.s   .cupc
+    movem.l (sp)+, d0/d2/d4-d5/a2-a3
     rts
 
 count_free_phrases:                       ; -> d1 = number of empty phrases. preserves d3/d4.
@@ -3679,29 +3704,54 @@ count_free_phrases:                       ; -> d1 = number of empty phrases. pre
     movem.l (sp)+, d2/d3/d4/d5/a2
     rts
 
-deep_chain_phrases:                       ; d0 = chain index -> copy each non-$FF step's phrase + repoint. preserves d0.
-    movem.l d0/d1/d3/d7/a0/a2/a3, -(sp)
-    lea     chains, a3
-    moveq   #0, d3
-    move.b  d0, d3
-    mulu.w  #CHAIN_SIZE, d3
-    adda.w  d3, a3                          ; a3 = new chain base (a2 is clobbered by find_free_phrase)
-    moveq   #15, d7
+deep_chain_phrases:                       ; d3=source chain, d0=clone -> clone unique phrases + preserve aliases.
+    movem.l d0-d7/a0/a2-a5, -(sp)
+    lea     chains, a4
+    moveq   #0, d1
+    move.b  d3, d1
+    mulu.w  #CHAIN_SIZE, d1
+    adda.w  d1, a4                          ; a4 = source chain base (find_free_phrase clobbers a2)
+    lea     chains, a5
+    moveq   #0, d1
+    move.b  d0, d1
+    mulu.w  #CHAIN_SIZE, d1
+    adda.w  d1, a5                          ; a5 = cloned chain base
+    moveq   #0, d7                          ; current row index
 .dcp:
-    cmpi.b  #$FF, (a3)
+    move.w  d7, d6
+    add.w   d6, d6                          ; current row byte offset
+    moveq   #0, d4
+    move.b  (a4,d6.w), d4                  ; original phrase number for this row
+    cmpi.b  #$FF, d4
     beq.s   .dcp_n
-    move.b  (a3), d3                        ; d3 = src phrase (this step's shared ref)
+    moveq   #0, d5                          ; find the same source phrase in an earlier row
+.dcp_prev:
+    cmp.w   d7, d5
+    bhs.s   .dcp_new
+    move.w  d5, d1
+    add.w   d1, d1                          ; prior row byte offset
+    cmp.b   (a4,d1.w), d4
+    bne.s   .dcp_prev_n
+    move.b  (a5,d1.w), d2                  ; reuse that row's already-created clone
+    move.b  d2, (a5,d6.w)
+    bra.s   .dcp_n
+.dcp_prev_n:
+    addq.w  #1, d5
+    bra.s   .dcp_prev
+.dcp_new:
+    move.b  d4, d3                          ; first occurrence: allocate and copy this source phrase once
     bsr     find_free_phrase               ; d0 = a free phrase (pre-check guarantees enough)
     cmpi.b  #NPHRASES, d0
     bhs.s   .dcp_n                          ; safety: none free -> leave it shared
     lea     phrases, a0
     moveq   #PHRASE_SIZE, d1
     bsr     clone_rec                       ; copy phrases[d3] -> phrases[d0]
-    move.b  d0, (a3)                        ; repoint the step to the fresh copy
+    move.b  d0, (a5,d6.w)                   ; repoint first occurrence; later aliases reuse this number
 .dcp_n:
-    addq.l  #2, a3
-    dbra    d7, .dcp
-    movem.l (sp)+, d0/d1/d3/d7/a0/a2/a3
+    addq.w  #1, d7
+    cmpi.w  #16, d7
+    blo     .dcp
+    movem.l (sp)+, d0-d7/a0/a2-a5
     rts
 
 chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this is a 2nd B-tap on the
@@ -7282,27 +7332,16 @@ engine_play_reset:
     bne     .mute
     tst.b   play_mode
     bne.s   .solo
-    lea     song, a2                       ; full song: snap this track UP to the top of its contiguous
-    moveq   #0, d1                          ;   block at play_from, then loop it (Start uses 0 -> no-op;
-    move.b  c_track(a6), d1                ;   C+B snaps to the cursor's block top). Empty there = silent.
+    lea     song, a2                       ; full song: begin at the exact play_from row. At block end,
+    moveq   #0, d1                          ;   advance_song walks back up and loops the contiguous block.
+    move.b  c_track(a6), d1                ;   Empty at play_from = silent for this track.
     moveq   #0, d2
     move.b  play_from, d2
     move.w  d2, d0
     mulu.w  #NCH, d0
     add.w   d1, d0
-    cmpi.b  #$FF, (a2,d0.w)               ; no content at the start row -> no block, stay + silent
+    cmpi.b  #$FF, (a2,d0.w)               ; no content at the exact start row -> stay + silent
     beq.s   .epr_silent
-.epr_btop:
-    tst.b   d2
-    beq.s   .epr_load                      ; row 0 -> top
-    move.w  d2, d0
-    subq.w  #1, d0
-    mulu.w  #NCH, d0
-    add.w   d1, d0
-    cmpi.b  #$FF, (a2,d0.w)               ; cell above empty -> d2 is the block top
-    beq.s   .epr_load
-    subq.b  #1, d2
-    bra.s   .epr_btop
 .epr_load:
     move.b  d2, c_songpos(a6)
     move.w  d2, d0
@@ -7849,6 +7888,10 @@ sync_in_delta:                            ; IN: -> d3.b = engine ticks to run th
     rts
 
 engine_tick:
+    tst.b   save_busy                     ; save/load owns SAVE_BASE: defer every engine-side mutation
+    beq.s   .et_ready
+    rts
+.et_ready:
     move.b  #0, patch_done                ; FM operator-patch budget: reset the per-tick counter (MAXPATCH/tick)
     move.b  opt_sync, d0                  ; detect MIDI-takeover entry/exit (silence + pin reconfig)
     cmp.b   sync_shadow, d0
@@ -13034,18 +13077,21 @@ sram_setup:
     moveq   #0, d0                          ; Z set = no SRAM
     rts
 
-data_checksum:                             ; -> d2.w = 16-bit sum of the data block at SAVE_BASE
+buffer_checksum:                           ; a0=bytes, d1.w=count-1 -> d2.w additive checksum (inputs preserved)
     movem.l d1/d4/a0, -(sp)
-    lea     SAVE_BASE, a0
-    move.w  #SAVE_DATA-1, d1
     moveq   #0, d2
-.dc:
+.bc:
     moveq   #0, d4
     move.b  (a0)+, d4
     add.w   d4, d2
-    dbra    d1, .dc
+    dbra    d1, .bc
     movem.l (sp)+, d1/d4/a0
     rts
+
+data_checksum:                             ; -> d2.w = checksum of the exact SAVE_BASE snapshot
+    lea     SAVE_BASE, a0
+    move.w  #SAVE_DATA-1, d1
+    bra     buffer_checksum
 
 data_longsum:                              ; -> d0.l = fast long-sum of the data block (unsaved test)
     movem.l d1/a0, -(sp)
@@ -13194,6 +13240,81 @@ rle_unpack:                                ; a0=stream (byte), a1=dst longs (ali
     bra     .ru_top
 .ru_end:
     move.l  (sp)+, d2
+    rts
+
+; Validate an untrusted RLE blob without touching SAVE_BASE. In addition to checking that each
+; run stays within the input and output bounds, this computes the checksum of the decompressed
+; bytes. Exact input consumption is required, so appended garbage is rejected too.
+rle_validate:                              ; a0=stream, d6.l=length -> d0=1 valid/0 bad, d2.w=checksum
+    movem.l d1/d3-d5/a0, -(sp)
+    move.l  #(SAVE_DATA/4), d0             ; remaining output units
+    move.l  d6, d5                         ; remaining input bytes
+    moveq   #0, d2
+.rv_top:
+    tst.l   d0
+    beq.s   .rv_end
+    tst.l   d5
+    beq     .rv_bad
+    subq.l  #1, d5
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    btst    #7, d1
+    beq.s   .rv_lit
+    andi.w  #$7F, d1                       ; repeat: run=(ctrl&7f)+2, followed by one unit
+    addq.w  #2, d1
+    moveq   #0, d3
+    move.w  d1, d3
+    cmp.l   d0, d3                         ; run > output remaining?
+    bhi     .rv_bad
+    cmpi.l  #4, d5                         ; complete repeated unit present?
+    blo     .rv_bad
+    subq.l  #4, d5
+    moveq   #0, d4                         ; sum the unit once, then multiply by its run length
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    add.w   d1, d4
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    add.w   d1, d4
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    add.w   d1, d4
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    add.w   d1, d4
+    mulu.w  d3, d4
+    add.w   d4, d2
+    sub.l   d3, d0
+    bra.s   .rv_top
+.rv_lit:
+    andi.w  #$7F, d1                       ; literal: units=(ctrl&7f)+1
+    addq.w  #1, d1
+    moveq   #0, d3
+    move.w  d1, d3
+    cmp.l   d0, d3                         ; literal would exceed output?
+    bhi     .rv_bad
+    sub.l   d3, d0
+    lsl.l   #2, d3                         ; bytes in literal
+    cmp.l   d5, d3                         ; literal would read beyond blob?
+    bhi     .rv_bad
+    sub.l   d3, d5
+    move.l  d3, d1
+    subq.l  #1, d1
+.rv_lsum:
+    moveq   #0, d4
+    move.b  (a0)+, d4
+    add.w   d4, d2
+    dbra    d1, .rv_lsum
+    bra     .rv_top
+.rv_end:
+    tst.l   d5                             ; output complete: no trailing input is allowed
+    bne.s   .rv_bad
+    moveq   #1, d0
+    bra.s   .rv_out
+.rv_bad:
+    moveq   #0, d0
+.rv_out:
+    movem.l (sp)+, d1/d3-d5/a0
     rts
 
 ; ---- SRAM song directory + compressed-blob heap (replaces the fixed slots; see COMPRESSION.md) ----
@@ -13370,10 +13491,14 @@ dir_findfree:                              ; -> d0 = index of first free entry, 
     movem.l (sp)+, d3/a1
     rts
 
-dir_save:                                  ; compress the current song + store it under song_title
+dir_save:                                  ; frozen snapshot -> payload -> readback -> final valid marker
     movem.l d0-d7/a0-a3, -(sp)
+    move.b  #1, save_busy                   ; VBlank may continue, but engine_tick cannot mutate saved data
+    move.b  #FILE_ERR_NONE, files_error
     bsr     gather_globals
-    lea     SAVE_BASE, a0                   ; compress -> rle_buf
+    bsr     data_checksum                   ; checksum the same frozen bytes that pack/raw will write
+    move.w  d2, d4                          ; d4 = snapshot checksum
+    lea     SAVE_BASE, a0                   ; compress the frozen snapshot -> rle_buf
     move.l  #(SAVE_DATA/4), d0
     lea     rle_buf, a1
     bsr     rle_pack
@@ -13385,21 +13510,18 @@ dir_save:                                  ; compress the current song + store i
     moveq   #1, d7                          ; store-raw fallback
     move.l  #SAVE_DATA, d6
 .dsv_blob:
-    bsr     data_checksum                   ; d2.w = checksum of the (decompressed) block
-    move.w  d2, d4                          ; stash
     bsr     dir_find                        ; same name already stored? delete it first (compacts) so a
     tst.l   d0                              ;   re-save reuses the space instead of orphaning the old blob
     bmi.s   .dsv_free
-    bsr     dir_delete                      ; (d4 checksum survives dir_delete's movem)
+    bsr     dir_delete                      ; d4 checksum survives dir_delete's movem
 .dsv_free:
     bsr     dir_findfree
     tst.l   d0
     bmi     .dsv_full                       ; directory full -> refuse + flag
-.dsv_ent:
     move.l  d0, d3                          ; d3 = entry index
     bsr     dir_heapend
-    move.l  d0, d2                          ; d2 = heap offset for this blob (sram_at won't touch d2)
-    move.l  d2, d0                          ; capacity check: HEAP_BASE + heap_used + len <= size*1024
+    move.l  d0, d2                          ; d2 = heap offset for this blob
+    move.l  d2, d0                          ; capacity: HEAP_BASE + heap_used + len <= size*1024
     add.l   d6, d0
     addi.l  #HEAP_BASE, d0
     moveq   #0, d1
@@ -13407,9 +13529,49 @@ dir_save:                                  ; compress the current song + store i
     lsl.l   #8, d1
     lsl.l   #2, d1
     cmp.l   d1, d0
-    bhi     .dsv_full                       ; would overflow -> SRAM full + flag
-    lea     dir_ent, a0                     ; --- write the directory entry FIRST (d3=index; sram_at below clobbers d3) ---
-    move.b  #$A5, (a0)
+    bhi     .dsv_full
+
+    move.l  d3, -(sp)                      ; sram_at uses d3; retain the uncommitted directory index
+    move.l  d2, d0                          ; phase 1: write the payload while no valid entry points at it
+    addi.l  #HEAP_BASE, d0
+    bsr     sram_at
+    beq     .dsv_io_pop
+    lea     rle_buf, a0
+    tst.b   d7
+    beq.s   .dsv_wsrc
+    lea     SAVE_BASE, a0
+.dsv_wsrc:
+    move.l  d6, d1
+    subq.l  #1, d1
+.dsv_wl:
+    move.b  (a0)+, (a1)
+    adda.l  d5, a1
+    dbra    d1, .dsv_wl
+    move.b  #0, $A130F1
+
+    move.l  d2, d0                          ; phase 2: remap and compare every stored payload byte
+    addi.l  #HEAP_BASE, d0
+    bsr     sram_at
+    beq     .dsv_io_pop
+    lea     rle_buf, a0
+    tst.b   d7
+    beq.s   .dsv_vsrc
+    lea     SAVE_BASE, a0
+.dsv_vsrc:
+    move.l  d6, d1
+    subq.l  #1, d1
+.dsv_vl:
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmp.b   (a0)+, d0
+    bne.s   .dsv_vbad
+    adda.l  d5, a1
+    dbra    d1, .dsv_vl
+    move.b  #0, $A130F1
+    move.l  (sp)+, d3
+
+    lea     dir_ent, a0                     ; phase 3: write metadata with valid=0
+    clr.b   (a0)
     move.b  d7, 1(a0)
     move.w  d2, 2(a0)
     move.w  d6, 4(a0)
@@ -13422,103 +13584,140 @@ dir_save:                                  ; compress the current song + store i
     move.w  d4, 14(a0)
     move.l  d3, d0
     bsr     dir_wr
-    move.l  d2, d0                          ; --- then write the blob to heap[d2] ---
-    addi.l  #HEAP_BASE, d0
+
+    move.l  d3, d0                          ; phase 4 / commit: valid byte is the final write
+    mulu.w  #DIR_ENT, d0
+    addi.l  #DIR_BASE, d0
     bsr     sram_at
-    beq     .dsv_done
-    lea     rle_buf, a0
-    tst.b   d7
-    beq.s   .dsv_wsrc
-    lea     SAVE_BASE, a0
-.dsv_wsrc:
-    move.l  d6, d1
-    subq.l  #1, d1
-.dsv_wl:
-    move.b  (a0)+, (a1)
-    adda.l  d5, a1
-    dbra    d1, .dsv_wl
-    move.b  #0, $A130F1                     ; unmap
+    beq.s   .dsv_io
+    move.b  #$A5, (a1)
+    move.b  #0, $A130F1
     bsr     data_longsum
     move.l  d0, saved_sum
     clr.b   song_dirty
-    clr.b   save_full                       ; saved OK -> clear any prior full warning
+    clr.b   save_full
+    bra.s   .dsv_done
+.dsv_vbad:
+    move.b  #0, $A130F1
+.dsv_io_pop:
+    move.l  (sp)+, d3
+.dsv_io:
+    move.b  #FILE_ERR_SAVE, files_error
+    move.b  #1, need_clear
+    bra.s   .dsv_done
+.dsv_full:
+    move.b  #1, save_full                   ; directory / SRAM full -> flag it for the FILES meter
 .dsv_done:
+    clr.b   save_busy
     movem.l (sp)+, d0-d7/a0-a3
     rts
-.dsv_full:
-    move.b  #1, save_full                   ; directory / SRAM full -> flag it for the OPTIONS meter
-    bra.s   .dsv_done
 
-dir_load:                                  ; d0 = directory entry index -> load that song (name -> song_title)
+dir_load:                                  ; stage + validate first; commit only a complete checksummed song
     movem.l d0-d7/a0-a3, -(sp)
+    move.b  #1, save_busy                   ; keep engine mutations out of the eventual commit window
+    clr.b   load_ok
+    move.b  #FILE_ERR_NONE, files_error
     bsr     dir_rd                          ; entry d0 -> dir_ent
     lea     dir_ent, a0
     cmpi.b  #$A5, (a0)
     bne     .dl_done                        ; invalid entry -> nothing
-    lea     6(a0), a1                       ; copy the entry name -> song_title
-    lea     song_title, a2
-    moveq   #7, d1
-.dl_cn:
-    move.b  (a1)+, (a2)+
-    dbra    d1, .dl_cn
-    lea     dir_ent, a0
-    move.b  1(a0), d7                       ; raw flag
+    moveq   #0, d7
+    move.b  1(a0), d7                       ; raw flag must be exactly 0 or 1
+    cmpi.b  #1, d7
+    bhi     .dl_bad
     moveq   #0, d2
     move.w  2(a0), d2                       ; heap offset
     moveq   #0, d6
     move.w  4(a0), d6                       ; blob len
-    tst.w   d6                              ; bound it: a corrupt 0 / >SAVE_DATA len would overrun the read buffer
-    beq     .dl_done
+    tst.w   d6
+    beq     .dl_bad
     cmpi.w  #SAVE_DATA, d6
-    bhi     .dl_done
-    move.l  d2, d0                          ; --- read the blob from heap[d2] ---
+    bhi     .dl_bad
+    tst.b   d7
+    beq.s   .dl_sizeok
+    cmpi.w  #SAVE_DATA, d6                  ; raw blobs must be one exact snapshot
+    bne     .dl_bad
+.dl_sizeok:
+    move.l  d2, d0                          ; directory offsets must also remain within detected SRAM
+    add.l   d6, d0
+    addi.l  #HEAP_BASE, d0
+    moveq   #0, d1
+    move.b  sram_size, d1
+    lsl.l   #8, d1
+    lsl.l   #2, d1
+    cmp.l   d1, d0
+    bhi     .dl_bad
+    move.l  d2, d0                          ; read every blob type into staging, never SAVE_BASE
     addi.l  #HEAP_BASE, d0
     bsr     sram_at
-    beq     .dl_done
+    beq     .dl_bad
     lea     rle_buf, a0
-    tst.b   d7
-    beq.s   .dl_rsrc
-    lea     SAVE_BASE, a0
-.dl_rsrc:
     move.l  d6, d1
     subq.l  #1, d1
 .dl_rl:
     move.b  (a1), (a0)+
     adda.l  d5, a1
     dbra    d1, .dl_rl
-    move.b  #0, $A130F1                     ; unmap
-    tst.b   d7
-    bne.s   .dl_done2                       ; raw was read straight to SAVE_BASE
-    lea     rle_buf, a0                     ; else decompress rle_buf -> SAVE_BASE
+    move.b  #0, $A130F1
+
+    tst.b   d7                             ; validate and checksum the staged, decompressed bytes
+    bne.s   .dl_rawcheck
+    lea     rle_buf, a0
+    bsr     rle_validate
+    tst.l   d0
+    beq     .dl_bad
+    bra.s   .dl_csum
+.dl_rawcheck:
+    lea     rle_buf, a0
+    move.w  #SAVE_DATA-1, d1
+    bsr     buffer_checksum
+.dl_csum:
+    lea     dir_ent, a0
+    cmp.w   14(a0), d2
+    bne     .dl_bad
+
+    tst.b   d7                             ; validation passed: now and only now replace the working song
+    beq.s   .dl_unpack
+    lea     rle_buf, a0
+    lea     SAVE_BASE, a1
+    move.w  #SAVE_DATA-1, d1
+.dl_rawcopy:
+    move.b  (a0)+, (a1)+
+    dbra    d1, .dl_rawcopy
+    bra.s   .dl_name
+.dl_unpack:
+    lea     rle_buf, a0
     lea     SAVE_BASE, a1
     move.l  #(SAVE_DATA/4), d0
     bsr     rle_unpack
-.dl_done2:
-    tst.b   cont_fast                        ; CONT live load: skip the read-back checksum (jam-first; the
-    bne.s   .dl_ok                           ;   blob was checksummed at save time -- ~4 frames off the stall)
-    bsr     data_checksum                   ; verify the stored checksum before committing the load
-    lea     dir_ent, a0
-    move.w  14(a0), d0                       ; entry's stored csum
-    cmp.w   d0, d2
-    beq.s   .dl_ok
-    bsr     clear_song                       ; corrupt / mismatched blob -> blank to a known state, don't scatter garbage
-    move.b  #1, need_clear
-    bra.s   .dl_done
-.dl_ok:
+.dl_name:
+    lea     dir_ent+6, a1                   ; title changes only with a successful song commit
+    lea     song_title, a2
+    moveq   #7, d1
+.dl_cn:
+    move.b  (a1)+, (a2)+
+    dbra    d1, .dl_cn
     bsr     scatter_globals
     move.b  proj_groove, groove_sel
     move.b  #1, g_lfo_dirty
     bsr     data_longsum
     move.l  d0, saved_sum
     clr.b   song_dirty
+    move.b  #1, load_ok
+    move.b  #1, need_clear
+    bra.s   .dl_done
+.dl_bad:
+    move.b  #FILE_ERR_CSUM, files_error     ; preserve the current song/title and make the failure explicit
     move.b  #1, need_clear
 .dl_done:
+    clr.b   save_busy
     movem.l (sp)+, d0-d7/a0-a3
     rts
 
 dir_delete:                                ; d0 = entry index -> free it + compact the heap (recover the hole)
     movem.l d0-d7/a0-a3, -(sp)
     clr.b   save_full                       ; freeing space clears the FULL warning
+    move.b  #FILE_ERR_NONE, files_error
     move.l  d0, d6                          ; d6 = victim index (preserved across sram_at)
     bsr     dir_rd
     lea     dir_ent, a0
@@ -13712,6 +13911,18 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     moveq   #0, d4
     bsr     draw_dec3
     move.w  #'K', VDP_DATA
+    tst.b   files_error                    ; explicit I/O/checksum errors take priority over FULL
+    beq.s   .rf_full
+    moveq   #4, d3
+    moveq   #14, d4
+    lea     str_save_bad, a1
+    cmpi.b  #FILE_ERR_CSUM, files_error
+    bne.s   .rf_status
+    lea     str_csum_bad, a1
+.rf_status:
+    bsr     print_at
+    bra.s   .rf_nofull
+.rf_full:
     tst.b   save_full
     beq.s   .rf_nofull
     moveq   #4, d3
@@ -14326,10 +14537,9 @@ cont_do_load:                              ; d0 = target directory entry index -
     bsr     cont_groove_avg               ; capture the OLD tempo (avg frames/row) for the glide
     move.b  d0, glide_from
     move.w  (sp)+, d0
-    move.b  #1, cont_fast                  ; fast path: dir_load skips the read-back checksum for the live seam
-    bsr     dir_load                      ; decompress the song over SAVE_BASE (the real, compressed loader);
-                                          ;   scatter_globals + groove_sel = proj_groove happen inside
-    move.b  #0, cont_fast
+    bsr     dir_load                       ; staged checksum validation is mandatory, including live transitions
+    tst.b   load_ok
+    beq.s   .cdl_fail                      ; bad target: keep the current song and do not plant stale bridges
     tst.b   proj_mode                     ; SONG (0): restart the new song from its top (non-carried voices
     bne.s   .cdl_live                      ;   play it beat-matched); LIVE: only the bridges sound
     move.b  #0, play_from
@@ -14339,6 +14549,7 @@ cont_do_load:                              ; d0 = target directory entry index -
     move.b  d0, glide_to
     bsr     cont_plant_all
     bsr     cont_glide_start              ; ramp old->new over SLID bars (if they differ)
+.cdl_fail:
     rts
 
 ; --- tempo glide: genmddj is groove-as-tempo, so glide a flat "scratch" groove (selected by
@@ -14837,9 +15048,12 @@ files_action:                             ; B-tap on FILES: run the selected sub
     tst.l   d0
     bmi     .oa_done
     bsr     dir_load
+    tst.b   load_ok
+    beq     .oa_done                         ; failed load kept the working song and title intact
     clr.b   new_named                        ; loaded a song -> the (empty) slot is "(EMPTY)" again
     bra     .oa_done
 .oa_newproj:
+    move.b  #FILE_ERR_NONE, files_error
     bsr     clear_song                       ; LOAD the (empty) slot = a fresh blank project
     bra     .oa_done
 .oa_clear:
@@ -15225,6 +15439,8 @@ str_sram_li: dc.b "K LIN",0
 str_o_songs: dc.b "SONGS",0
 str_o_free:  dc.b "FREE",0
 str_o_full:  dc.b "FULL",0
+str_csum_bad: dc.b "CHECKSUM BAD",0
+str_save_bad: dc.b "SAVE BAD",0
 str_o_empty: dc.b "(EMPTY)",0
 str_o_del:   dc.b "DELETE",0
 str_o_clr:   dc.b "CLEAR",0

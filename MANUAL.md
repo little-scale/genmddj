@@ -87,9 +87,10 @@ There are two ways to start sound, and they differ from SMSGGDJ:
 
 - **Start** plays the **whole song from the top** (all ten tracks) — your master transport.
 - **C + B** plays **from where you are**, so you can audition a section while you work:
-  - **SONG** — plays the cursor's **contiguous block**, snapped to its **top** and **looping**
-    it. (A *block* is a run of rows with no fully-empty row in it — see §4. So with the cursor
-    anywhere in a rows-2–4 block it plays from row 2 and loops 2–4.)
+  - **SONG** — starts on the **exact cursor row**, then loops the cursor's **contiguous block**
+    from its top when the block end is reached. (A *block* is a run of rows with no fully-empty
+    row in it — see §4. With the cursor on row 3 of a rows-2–4 block, the first pass is
+    3 → 4, then it loops 2 → 3 → 4.)
   - **CHAIN** — solos that track's chain from the cursor step.
   - **PHRASE** — solos that phrase.
   - **INSTR** — replays the phrase/track you arrived from (handy after drilling in from a note).
@@ -167,7 +168,8 @@ an empty cell, **loops back to the top of its current contiguous block** (the ru
 cells it's in). So a gap-free column plays whole and loops; an empty cell is a section break,
 and the blocks above/below it loop separately. Tracks loop independently, so columns of
 different lengths create polymeters. **Start** begins every column at the very top (row 0);
-**C+B** begins at the cursor's block (§2). (In **LIVE** mode the SONG grid is a clip
+**C+B** begins on the exact cursor row, then returns to that block's top when it loops (§2).
+(In **LIVE** mode the SONG grid is a clip
 launcher — §9.)
 
 ### Quick duplicates and cloning
@@ -185,8 +187,9 @@ references, so:
 - **SLIM** (default) — the new chain reuses the **same phrases** (sharing them). Cheap;
   good for the same melody re-arranged or transposed. Editing a shared phrase changes
   every chain that uses it.
-- **DEEP** — also copies every phrase the chain uses, so the clone is fully independent
-  (more phrase slots).
+- **DEEP** — copies each **unique phrase** the chain uses once, preserving repeated references
+  inside the chain. The cloned chain is independent from the original without splitting one
+  repeated phrase into several unrelated copies (more phrase slots than SLIM).
 
 A CHAIN phrase clone is always an independent copy. If there's no free slot (or DEEP
 won't fit), nothing is cloned.
@@ -530,9 +533,11 @@ runs (and closes):
   twice to confirm; the header shows **`FREED nn`**. They never renumber the rest, so nothing
   in your song breaks.
 
-A refused save (directory or SRAM full) shows **FULL** by the FREE meter; a fresh cart is
-formatted on first boot; a load that fails its checksum blanks to a known state. On a real
-cart with a battery, SAVE persists instantly; in an emulator the `.sav` is usually written
+A refused save (directory or SRAM full) shows **FULL** by the FREE meter. SAVE freezes the
+working snapshot, checksums those exact bytes, writes and reads back the payload, and only then
+makes its directory entry valid. **CHECKSUM BAD** means LOAD rejected a damaged or malformed
+song; the current working song remains untouched. A fresh cart is formatted on first boot. On a
+real cart with a battery, SAVE persists instantly; in an emulator the `.sav` is usually written
 when you quit, so save in genmddj **then** close the emulator normally.
 
 ---

@@ -2,6 +2,21 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## Unreleased
+
+### Fixed
+- **Transactional song saves.** The engine now freezes saved-data mutations while FILES takes
+  its snapshot; the checksum is calculated from that exact snapshot; the payload is written and
+  read back before its directory entry is marked valid.
+- **Non-destructive load failures.** Raw and RLE payloads are fully bounds-checked and checksum-
+  validated in staging memory (including CONT loads). A failure keeps the current song and title
+  intact and FILES displays **`CHECKSUM BAD`**.
+- **SONG play-from-cursor.** **C+B** starts on the exact cursor row, then loops back to the top
+  of the contiguous block after reaching its end.
+- **DEEP chain clone aliasing.** A phrase referenced more than once by the source chain is now
+  cloned once and reused by the matching rows, preserving the source structure and consuming
+  only one new phrase slot per unique phrase number.
+
 ## v0.17 — 2026-07-09
 
 ### Added

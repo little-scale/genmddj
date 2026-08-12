@@ -176,6 +176,9 @@ KIT_SONG = """    tst.b   $00FFD500
 # bridge mechanism: snapshot -> plant, carried voice keeps sounding from its private
 # buffer + reserved-slot instrument, non-carried voices silenced). See CONT.md.
 CONT_SONG = STRESS_SONG.replace('.tstdone:', '    move.w  #$0040, cont_mask\n.tstdone:')
+CONT_LOAD_SONG = CONT_SONG.replace(
+    '    move.b  #1, playing',
+    '    bsr     dir_save\n    move.b  #1, playing', 1)
 CONT_FIRE = """    move.w  g_ticks, d0
     cmpi.w  #30, d0
     bne.s   .cfskip
@@ -188,9 +191,151 @@ CONT_FIRE = """    move.w  g_ticks, d0
 CONT_ARM = """    move.w  g_ticks, d0
     cmpi.w  #5, d0
     bne.s   .caskip
-    moveq   #1, d0
+    moveq   #0, d0
     bsr     cont_load_arm
 .caskip:
+"""
+
+SAVE_ROUNDTRIP = """    tst.b   $00FFD500
+    bne.s   .tsrdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #$2A, song
+    bsr     dir_save
+    move.b  files_error, $00FFD501
+    moveq   #0, d0
+    bsr     dir_rd
+    move.b  dir_ent, $00FFD502
+    move.b  #$55, song
+    moveq   #0, d0
+    bsr     dir_load
+    move.b  song, $00FFD503
+    move.b  load_ok, $00FFD504
+    move.b  files_error, $00FFD505
+    movem.l (sp)+, d0-d7/a0-a6
+.tsrdone:
+"""
+
+LOAD_BAD_CHECKSUM = """    tst.b   $00FFD500
+    bne.s   .tlbdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #$2A, song
+    bsr     dir_save
+    move.l  #DIR_BASE+14, d0
+    bsr     sram_at
+    eori.b  #1, (a1)
+    move.b  #0, $A130F1
+    move.b  #$66, song
+    move.b  #'X', song_title
+    moveq   #0, d0
+    bsr     dir_load
+    move.b  song, $00FFD501
+    move.b  song_title, $00FFD502
+    move.b  load_ok, $00FFD503
+    move.b  files_error, $00FFD504
+    movem.l (sp)+, d0-d7/a0-a6
+.tlbdone:
+"""
+
+LOAD_BAD_RLE = """    tst.b   $00FFD500
+    bne.s   .tlrdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #$2A, song
+    bsr     dir_save
+    move.l  #DIR_BASE+4, d0
+    bsr     sram_at
+    move.b  #0, (a1)
+    adda.l  d5, a1
+    move.b  #1, (a1)
+    move.b  #0, $A130F1
+    move.b  #$77, song
+    moveq   #0, d0
+    bsr     dir_load
+    move.b  song, $00FFD501
+    move.b  load_ok, $00FFD502
+    move.b  files_error, $00FFD503
+    movem.l (sp)+, d0-d7/a0-a6
+.tlrdone:
+"""
+
+SAVE_FREEZE = """    tst.b   $00FFD500
+    bne.s   .tsfdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #1, save_busy
+    move.b  #$55, patch_done
+    bsr     engine_tick
+    move.b  patch_done, $00FFD501
+    clr.b   save_busy
+    movem.l (sp)+, d0-d7/a0-a6
+.tsfdone:
+"""
+
+CURSOR_BLOCK = """    tst.b   $00FFD500
+    bne     .tcbdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #0, song
+    move.b  #1, song+NCH
+    move.b  #2, song+(2*NCH)
+    move.b  #$FF, song+(3*NCH)
+    move.b  #0, chains
+    move.b  #0, chains+1
+    move.b  #1, play_from
+    move.b  #0, play_mode
+    move.b  #0, proj_mode
+    bsr     engine_play_reset
+    move.b  ch_state+c_songpos, $00FFD501
+    move.b  ch_state+c_chain, $00FFD502
+    lea     ch_state, a6
+    move.b  #2, c_songpos(a6)
+    bsr     advance_song
+    move.b  c_songpos(a6), $00FFD503
+    move.b  c_chain(a6), $00FFD504
+    movem.l (sp)+, d0-d7/a0-a6
+.tcbdone:
+"""
+
+DEEP_CLONE_ALIASES = """    tst.b   $00FFD500
+    bne     .tdcdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #0, chains
+    move.b  #0, chains+1
+    move.b  #1, chains+2
+    move.b  #$0C, chains+3
+    move.b  #0, chains+4
+    move.b  #$F4, chains+5
+    move.b  #0, chains+6
+    move.b  #7, chains+7
+    move.b  #40, phrases
+    move.b  #41, phrases+PHRASE_SIZE
+    moveq   #0, d3
+    bsr     chain_unique_phrase_count
+    move.b  d1, $00FFD501
+    moveq   #0, d3
+    moveq   #2, d0
+    lea     chains, a0
+    moveq   #CHAIN_SIZE, d1
+    bsr     clone_rec
+    bsr     deep_chain_phrases
+    lea     chains+(2*CHAIN_SIZE), a0
+    move.b  (a0), $00FFD502
+    move.b  2(a0), $00FFD503
+    move.b  4(a0), $00FFD504
+    move.b  6(a0), $00FFD505
+    move.b  1(a0), $00FFD506
+    move.b  3(a0), $00FFD507
+    move.b  5(a0), $00FFD508
+    move.b  7(a0), $00FFD509
+    move.b  phrases+(2*PHRASE_SIZE), $00FFD50A
+    move.b  phrases+(3*PHRASE_SIZE), $00FFD50B
+    move.b  #99, phrases+(2*PHRASE_SIZE)
+    move.b  phrases, $00FFD50C
+    movem.l (sp)+, d0-d7/a0-a6
+.tdcdone:
 """
 
 # arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
@@ -303,7 +448,7 @@ def t_cont_bridge():
 def t_cont_quantize():
     """CONT: an armed swap HOLDS until the carried voice's phrase downbeat, then fires
     (beat-quantized) -- not the instant LOAD is pressed."""
-    rom = build_rom('cont_quantize', boot_inject=CONT_SONG, frame_inject=CONT_ARM)
+    rom = build_rom('cont_quantize', boot_inject=CONT_LOAD_SONG, frame_inject=CONT_ARM)
     held = run_rom(rom, 60)
     assert held[0xD763] == 1, 'CONT fired before a downbeat (cont_pending cleared early)'
     fired = run_rom(rom, 220)
@@ -312,6 +457,66 @@ def t_cont_quantize():
     # SONG mode: the non-carried F1 (track 0) is RESTARTED on the new song, not silenced
     assert fired[0xE014] != 0xFF, 'non-carried F1 silenced in SONG mode (should restart, c_chain=$%02X)' % fired[0xE014]
     return 'armed, held past frame 60, fired on a downbeat; F1 restarted (SONG entry)'
+
+def t_save_roundtrip():
+    """SAVE commits a verified directory entry and LOAD restores the exact saved snapshot."""
+    rom = build_rom('save_roundtrip', boot_inject=SAVE_ROUNDTRIP)
+    ram = run_rom(rom, 60)
+    assert ram[0xD501] == 0, 'save reported error %d' % ram[0xD501]
+    assert ram[0xD502] == 0xA5, 'directory entry was not committed valid ($%02X)' % ram[0xD502]
+    assert ram[0xD503] == 0x2A, 'round-trip restored $%02X, expected $2A' % ram[0xD503]
+    assert ram[0xD504] == 1, 'validated load did not report success'
+    assert ram[0xD505] == 0, 'load reported error %d' % ram[0xD505]
+    return 'payload verified, entry committed, snapshot restored exactly'
+
+def t_load_bad_checksum():
+    """A bad stored checksum leaves both the working song and its title untouched."""
+    rom = build_rom('load_bad_checksum', boot_inject=LOAD_BAD_CHECKSUM)
+    ram = run_rom(rom, 60)
+    assert ram[0xD501] == 0x66, 'bad load changed current song byte to $%02X' % ram[0xD501]
+    assert ram[0xD502] == ord('X'), 'bad load changed current title to $%02X' % ram[0xD502]
+    assert ram[0xD503] == 0, 'bad load incorrectly reported success'
+    assert ram[0xD504] == 1, 'bad load status %d != CHECKSUM BAD' % ram[0xD504]
+    return 'checksum rejected; current song and title retained'
+
+def t_load_bad_rle():
+    """A truncated RLE stream is rejected in staging without touching the working song."""
+    rom = build_rom('load_bad_rle', boot_inject=LOAD_BAD_RLE)
+    ram = run_rom(rom, 60)
+    assert ram[0xD501] == 0x77, 'malformed RLE changed current song byte to $%02X' % ram[0xD501]
+    assert ram[0xD502] == 0, 'malformed RLE incorrectly reported success'
+    assert ram[0xD503] == 1, 'malformed RLE status %d != CHECKSUM BAD' % ram[0xD503]
+    return 'truncated RLE rejected before commit; current song retained'
+
+def t_save_freeze():
+    """engine_tick performs no mutation while save/load has frozen the saved-data domain."""
+    rom = build_rom('save_freeze', boot_inject=SAVE_FREEZE)
+    ram = run_rom(rom, 60)
+    assert ram[0xD501] == 0x55, 'engine_tick mutated state while save_busy ($%02X)' % ram[0xD501]
+    return 'engine tick deferred before its first mutation'
+
+def t_cursor_block():
+    """SONG C+B starts on the exact cursor row, then loops to the contiguous block top."""
+    rom = build_rom('cursor_block', boot_inject=CURSOR_BLOCK)
+    ram = run_rom(rom, 30)
+    assert ram[0xD501] == 1, 'started at row %d instead of cursor row 1' % ram[0xD501]
+    assert ram[0xD502] == 1, 'started chain %d instead of row-1 chain 1' % ram[0xD502]
+    assert ram[0xD503] == 0, 'block end looped to row %d instead of top row 0' % ram[0xD503]
+    assert ram[0xD504] == 0, 'block loop loaded chain %d instead of row-0 chain 0' % ram[0xD504]
+    return 'started at cursor row 1; block end looped to row 0'
+
+def t_deep_clone_aliases():
+    """DEEP clones each unique phrase once while preserving repeated references and transposes."""
+    rom = build_rom('deep_clone_aliases', boot_inject=DEEP_CLONE_ALIASES)
+    ram = run_rom(rom, 60)
+    assert ram[0xD501] == 2, 'preflight counted %d phrases instead of 2 unique references' % ram[0xD501]
+    refs = list(ram[0xD502:0xD506])
+    assert refs == [2, 3, 2, 2], 'clone did not preserve source aliases (%r)' % refs
+    transposes = list(ram[0xD506:0xD50A])
+    assert transposes == [0, 0x0C, 0xF4, 7], 'row transposes changed (%r)' % transposes
+    assert ram[0xD50A] == 40 and ram[0xD50B] == 41, 'unique phrase contents were not copied'
+    assert ram[0xD50C] == 40, 'editing the clone changed its source phrase'
+    return '2 unique copies; alias pattern and four row transposes preserved'
 
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
@@ -339,6 +544,12 @@ def t_boot_smoke():
 
 TESTS = [
     ('boot_smoke',   t_boot_smoke),
+    ('save_roundtrip', t_save_roundtrip),
+    ('save_freeze', t_save_freeze),
+    ('load_bad_checksum', t_load_bad_checksum),
+    ('load_bad_rle', t_load_bad_rle),
+    ('cursor_block', t_cursor_block),
+    ('deep_clone_aliases', t_deep_clone_aliases),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
     ('scb_delivery', t_scb_delivery),
