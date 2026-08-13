@@ -55,6 +55,7 @@ Think of it as:
 | **B** hold + D-pad | **Edit** the value under the cursor. Left/Right = small step (±1 / ±1 semitone); Up/Down = big step (±octave / ±$10) |
 | **B** double-tap | On a *reference* cell (a SONG chain# or CHAIN phrase#), an *empty* cell **mints** a fresh chain/phrase; a *populated* cell **clones** it (see *Cloning*) |
 | **B** hold + **A** tap | **Copy** the field under the cursor to the clipboard |
+| **B** hold + **C** tap | **Cut** the field and prime its value for the next B-tap insert |
 | **A** hold + **B** tap | Enter **block select** (grid screens — see below) |
 | **A** hold + Left/Right | Switch **channel** — which track's CHAIN/PHRASE you're looking at |
 | **A** hold + Up/Down | Flip to the prev/next **phrase** (PHRASE) or **chain** (CHAIN); **page** the view (SONG) |
@@ -81,6 +82,10 @@ anchored at the cursor.
 
 Then **cleanly double-tap C** to paste: the block drops in at the cursor, and each column lands
 back on its own column type, so nothing gets scrambled.
+
+A single-field cut (**hold B, tap C**) also makes that note, instrument, command and
+parameter, phrase, or chain the next value inserted by B. This makes cut-then-insert a quick
+move operation; cutting an already-empty cell leaves the previous insert memory unchanged.
 
 ### Transport: full-song vs play-from-here
 
@@ -640,6 +645,7 @@ INSERT/EDIT   B tap  /  B hold + D-pad   (L/R small, U/D big)
 AUDITION      B tap on a note (PHRASE, stopped) or INSTR
 PASTE         C clean double-tap
 COPY          B hold + A tap
+CUT/MOVE      B hold + C tap  → next B tap repeats the cut value
 MINT/CLONE    B double-tap on a SONG chain# / CHAIN phrase#
 BLOCK SELECT  A hold + B tap  → D-pad extend, B copy, A cut, C cancel
 CHANNEL       A hold + Left/Right        (CHAIN / PHRASE)

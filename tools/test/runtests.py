@@ -592,6 +592,94 @@ FILES_CONFIRM = """    tst.b   $00FFD500
 .tfcdone:
 """
 
+FILES_CONFIRM_CANCEL = """    tst.b   $00FFD500
+    bne     .tfccdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_FILES, cur_screen
+    move.b  #1, files_menu
+    move.b  #CONF_SAVE, proj_armed
+    move.w  #10, proj_arm_frame
+    move.w  #10+CONFIRM_FRAMES+1, g_ticks
+    clr.b   vdirty
+    bsr     files_confirm_tick
+    move.b  proj_armed, $00FFD800
+    move.b  vdirty, $00FFD801
+    move.b  #CONF_LOAD, proj_armed
+    move.b  #1, menu_row
+    moveq   #1, d2
+    bsr     move_cursor
+    move.b  proj_armed, $00FFD802
+    move.b  menu_row, $00FFD803
+    movem.l (sp)+, d0-d7/a0-a6
+.tfccdone:
+"""
+
+CUT_PRIMES_INSERT = """    tst.b   $00FFD500
+    bne     .tcpdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_SONG, cur_screen
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #12, song
+    bsr     do_cut
+    move.b  song, $00FFD800
+    move.b  last_chain, $00FFD801
+    move.b  #1, cur_row
+    bsr     do_insert
+    move.b  song+NCH, $00FFD802
+    move.b  #SCR_CHAIN, cur_screen
+    clr.b   cur_chain
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #$82, chains
+    bsr     do_cut
+    move.b  chains, $00FFD803
+    move.b  last_phrase, $00FFD804
+    move.b  #1, cur_row
+    bsr     do_insert
+    move.b  chains+2, $00FFD805
+    move.b  #SCR_PHRASE, cur_screen
+    clr.b   cur_phrase
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #55, phrases
+    bsr     do_cut
+    move.b  last_note, $00FFD806
+    move.b  #1, cur_row
+    bsr     do_insert
+    move.b  phrases+4, $00FFD807
+    clr.b   cur_row
+    move.b  #1, cur_col
+    move.b  #7, phrases+1
+    bsr     do_cut
+    move.b  last_instr, $00FFD808
+    move.b  #2, cur_col
+    move.b  #4, phrases+2
+    move.b  #$AB, phrases+3
+    bsr     do_cut
+    move.b  last_cmd, $00FFD809
+    move.b  last_cprm, $00FFD80A
+    move.b  #2, cur_row
+    bsr     do_insert
+    move.b  phrases+10, $00FFD80B
+    move.b  phrases+11, $00FFD80C
+    move.b  #3, cur_col
+    move.b  #9, phrases+10
+    move.b  #$3C, phrases+11
+    bsr     do_cut
+    move.b  last_cprm, $00FFD80D
+    move.b  #66, last_note
+    move.b  #$FF, phrases+12
+    move.b  #3, cur_row
+    clr.b   cur_col
+    bsr     do_cut
+    move.b  last_note, $00FFD80E
+    movem.l (sp)+, d0-d7/a0-a6
+.tcpdone:
+"""
+
 # arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
 CONT_GLIDE_ARM = """    move.w  g_ticks, d0
     cmpi.w  #5, d0
@@ -851,6 +939,21 @@ def t_files_confirm():
     assert purges == [60, 0xFF, 0, 0xFF], 'purge confirmation sequence %r' % purges
     return 'SAVE/LOAD/CLEAR/PURGE PHRASE/PURGE CHAIN arm first, execute second'
 
+def t_files_confirm_cancel():
+    """FILES confirmation state expires autonomously and navigation cancels it."""
+    ram = run_rom(build_rom('files_confirm_cancel', boot_inject=FILES_CONFIRM_CANCEL), 35)
+    got = list(ram[0xD800:0xD804])
+    assert got == [0, 1, 0, 0], 'FILES confirmation cancel/expiry %r' % got
+    return 'timeout requests a repaint; moving actions cancels the armed confirmation'
+
+def t_cut_primes_insert():
+    """Single-cell cuts prime the corresponding next-insert memory before clearing."""
+    ram = run_rom(build_rom('cut_primes_insert', boot_inject=CUT_PRIMES_INSERT), 45)
+    got = list(ram[0xD800:0xD80F])
+    expect = [0xFF, 12, 12, 0xFF, 0x82, 0x82, 55, 55, 7, 4, 0xAB, 4, 0xAB, 0x3C, 66]
+    assert got == expect, 'cut-to-prime results %r' % got
+    return 'chain/phrase/note/instrument/command+parameter prime next insert; empty cut preserves memory'
+
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
     back to the real groove (genmddj is groove-as-tempo, so tempo IS the scratch groove)."""
@@ -887,6 +990,8 @@ TESTS = [
     ('reference_edit', t_reference_edit),
     ('cyclic_alloc', t_cyclic_alloc),
     ('files_confirm', t_files_confirm),
+    ('files_confirm_cancel', t_files_confirm_cancel),
+    ('cut_primes_insert', t_cut_primes_insert),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
     ('kit_gain',     t_kit_gain),

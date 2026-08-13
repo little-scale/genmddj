@@ -784,6 +784,7 @@ VBlankInt:
     bra     .vbend
 .run:
     bsr     input_tick
+    bsr     files_confirm_tick              ; expire FILES confirmations even when no new input arrives
     bsr     engine_tick
     lea     VDP_CTRL, a0
     ; redraw the grid only on change (per-frame VRAM writes during active H40
@@ -2557,6 +2558,7 @@ do_cut:                                   ; clear field under cursor (cut = save
     rts
 .dc_go:
     bsr     get_field_addr
+    bsr     prime_cut                       ; the value being moved becomes the next B-tap default
     bsr     clip_save                       ; cut -> save to the clipboard, then clear
     move.b  cur_screen, d0
     cmpi.b  #SCR_INSTR, d0                  ; INSTR field -> 0
@@ -2570,6 +2572,67 @@ do_cut:                                   ; clear field under cursor (cut = save
     rts
 .hex:
     move.b  #0, (a1)                       ; instr/cmd/param/transpose/type -> 0
+    rts
+
+prime_cut:                                ; a1=current field; prime only the repeat memories this field owns
+    move.b  cur_screen, d0
+    cmpi.b  #SCR_SONG, d0
+    beq.s   .pc_song
+    cmpi.b  #SCR_CHAIN, d0
+    beq.s   .pc_chain
+    tst.b   d0                              ; PHRASE only; TABLE/INSTR have no matching insert memory
+    bne.s   .pc_done
+    move.b  cur_col, d0
+    beq.s   .pc_note
+    cmpi.b  #1, d0
+    beq.s   .pc_instr
+    cmpi.b  #2, d0
+    beq.s   .pc_cmd
+    cmpi.b  #3, d0
+    bne.s   .pc_done
+    tst.b   (-1,a1)                         ; a parameter belongs to a real command, not a dashed empty cell
+    beq.s   .pc_done
+    move.b  (a1), last_cprm
+.pc_done:
+    rts
+.pc_song:
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmpi.w  #NCHAINS, d0                    ; do not replace useful memory by cutting an empty/invalid ref
+    bhs.s   .pc_done
+    move.b  d0, last_chain
+    rts
+.pc_chain:
+    tst.b   cur_col                         ; transpose has no repeat-memory counterpart
+    bne.s   .pc_done
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmpi.w  #NPHRASES, d0
+    bhs.s   .pc_done
+    move.b  d0, last_phrase
+    rts
+.pc_note:
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmpi.w  #96, d0
+    bhs.s   .pc_done
+    move.b  d0, last_note
+    rts
+.pc_instr:
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmpi.w  #NINSTR, d0
+    bhs.s   .pc_done
+    move.b  d0, last_instr
+    rts
+.pc_cmd:
+    moveq   #0, d0
+    move.b  (a1), d0
+    beq.s   .pc_done                        ; command 0 is an empty cell
+    cmpi.w  #27, d0
+    bhs.s   .pc_done
+    move.b  d0, last_cmd
+    move.b  1(a1), last_cprm                ; command cuts carry their parameter as one repeatable entry
     rts
 
 get_field_addr:                           ; -> a1 = cursor field byte
@@ -14455,6 +14518,10 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm4:
     lea     str_o_cancel, a1
     bsr     print_hl
+    moveq   #16, d3                         ; always erase the previous transient status first
+    moveq   #22, d4                         ; (SURE? must disappear after navigation/timeout)
+    lea     str_blank15, a1
+    bsr     print_at
     move.b  proj_armed, d0                  ; status line: SURE? while any action is armed, else FREED nn
     cmpi.b  #CONF_SAVE, d0
     blo.s   .rf_freed
@@ -15195,6 +15262,23 @@ proj_confirm:                              ; d0 = action id; Z set = confirmed (
     move.w  g_ticks, proj_arm_frame
     move.b  #1, need_clear                   ; redraw so SURE? shows
     moveq   #1, d0
+    rts
+
+files_confirm_tick:                       ; cancel an armed FILES action as soon as its UI lifetime ends
+    tst.b   proj_armed
+    beq.s   .fct_ret
+    cmpi.b  #SCR_FILES, cur_screen
+    bne.s   .fct_clear
+    tst.b   files_menu
+    beq.s   .fct_clear
+    move.w  g_ticks, d0
+    sub.w   proj_arm_frame, d0
+    cmpi.w  #CONFIRM_FRAMES, d0
+    bls.s   .fct_ret
+.fct_clear:
+    clr.b   proj_armed
+    move.b  #1, vdirty                      ; repaint row 16 so the stale SURE? is erased
+.fct_ret:
     rts
 
 files_action:                             ; B-tap on FILES: run the selected sub-menu action (menu must be open)

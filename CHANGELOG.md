@@ -11,10 +11,14 @@ All notable changes to genmddj. Versions increment by **0.01**.
   empty records that are still referenced.
 - Every FILES action (**SAVE, LOAD, CLEAR, PURGE PHRASE, PURGE CHAIN**) now requires two taps;
   the first displays **`SURE?`**. Purge labels are expanded in full.
+- Cutting a single note, instrument, command/parameter, phrase or chain now primes that value
+  for the next B-tap insert, making cut-then-insert a direct move workflow.
 
 ### Fixed
 - Editing chain and phrase references now uses unsigned bounds, so valid phrase values `$80`–`$BF`
   no longer collapse to zero while incrementing or decrementing.
+- FILES confirmation text now disappears as soon as its action is cancelled or its confirmation
+  window expires, matching the underlying two-tap safety state.
 
 ## v0.18 — 2026-08-13
 
