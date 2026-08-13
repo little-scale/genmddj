@@ -615,6 +615,105 @@ FILES_CONFIRM_CANCEL = """    tst.b   $00FFD500
 .tfccdone:
 """
 
+FM_SIMULTANEOUS = """    tst.b   $00FFD500
+    bne     .tfsdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #3, pshadow
+    move.b  #4, pshadow+1
+    bsr     engine_play_reset
+    move.b  pshadow, $00FFD800
+    move.b  pshadow+1, $00FFD801
+    clr.b   repatch
+    move.b  #$FF, live_algo
+    move.b  #$FF, live_vol
+    move.b  #$FF, live_fb
+    bsr     clear_live_patch
+    move.b  repatch, $00FFD802
+
+    lea     ch_state, a6
+    move.b  #0, c_instr(a6)
+    move.b  #48, c_note(a6)
+    move.b  #1, c_trig(a6)
+    move.b  #1, c_keyon(a6)
+    move.b  #$FF, c_tvol(a6)
+    move.w  #$FFFF, c_shadowp(a6)
+    move.b  #$FF, pshadow
+    lea     CHSIZE(a6), a6
+    move.b  #0, c_instr(a6)
+    move.b  #48, c_note(a6)
+    move.b  #1, c_trig(a6)
+    move.b  #1, c_keyon(a6)
+    move.b  #$FF, c_tvol(a6)
+    move.w  #$FFFF, c_shadowp(a6)
+    move.b  #$FF, pshadow+1
+    move.b  #1, lq_dirty
+    move.b  #1, lq_dirty+1
+    move.b  #1, lx_dirty
+    move.b  #1, lx_dirty+1
+    move.b  #15, lx_vol
+    move.b  #15, lx_vol+1
+    move.b  #1, lo_dirty
+    move.b  #1, lo_dirty+1
+    move.b  #1, lu_dirty
+    move.b  #1, lu_dirty+1
+    clr.b   patch_done
+    clr.b   fm_keypend
+    lea     ym_data, a5
+    moveq   #0, d5
+    lea     ch_state, a6
+    bsr     compose_fm
+    lea     CHSIZE(a6), a6
+    bsr     compose_fm
+    bsr     flush_fm_keyons
+    move.b  d5, $00FFD803
+    move.b  ch_state+c_trig, $00FFD804
+    move.b  ch_state+CHSIZE+c_trig, $00FFD805
+    move.b  patch_done, $00FFD806
+    move.b  -6(a5), $00FFD807
+    move.b  -5(a5), $00FFD808
+    move.b  -4(a5), $00FFD809
+    move.b  -3(a5), $00FFD80A
+    move.b  -2(a5), $00FFD80B
+    move.b  -1(a5), $00FFD80C
+
+    lea     ch_state, a6
+    move.b  #49, c_note(a6)
+    move.b  #1, c_trig(a6)
+    move.w  #$FFFF, c_shadowp(a6)
+    lea     CHSIZE(a6), a6
+    move.b  #49, c_note(a6)
+    move.b  #1, c_trig(a6)
+    move.w  #$FFFF, c_shadowp(a6)
+    move.b  #1, lq_dirty
+    move.b  #1, lq_dirty+1
+    move.b  #1, lx_dirty
+    move.b  #1, lx_dirty+1
+    move.b  #1, lo_dirty
+    move.b  #1, lo_dirty+1
+    move.b  #1, lu_dirty
+    move.b  #1, lu_dirty+1
+    clr.b   patch_done
+    clr.b   fm_keypend
+    lea     ym_data, a5
+    moveq   #0, d5
+    lea     ch_state, a6
+    bsr     compose_fm
+    lea     CHSIZE(a6), a6
+    bsr     compose_fm
+    bsr     flush_fm_keyons
+    move.b  d5, $00FFD80D
+    move.b  patch_done, $00FFD80E
+    move.b  -6(a5), $00FFD80F
+    move.b  -5(a5), $00FFD810
+    move.b  -4(a5), $00FFD811
+    move.b  -3(a5), $00FFD812
+    move.b  -2(a5), $00FFD813
+    move.b  -1(a5), $00FFD814
+    movem.l (sp)+, d0-d7/a0-a6
+.tfsdone:
+"""
+
 CUT_PRIMES_INSERT = """    tst.b   $00FFD500
     bne     .tcpdone
     move.b  #1, $00FFD500
@@ -946,6 +1045,19 @@ def t_files_confirm_cancel():
     assert got == [0, 1, 0, 0], 'FILES confirmation cancel/expiry %r' % got
     return 'timeout requests a repaint; moving actions cancels the armed confirmation'
 
+def t_fm_simultaneous():
+    """Warm patch shadows survive transport reset; cold F1/F2 prepare in one SCB with adjacent keys."""
+    ram = run_rom(build_rom('fm_simultaneous', boot_inject=FM_SIMULTANEOUS), 35)
+    assert list(ram[0xD800:0xD803]) == [3, 4, 0], \
+        'warm patch shadows/repatch state %r' % list(ram[0xD800:0xD803])
+    cold = list(ram[0xD803:0xD80D])
+    assert cold == [72, 0, 0, 2, 0, 0x28, 0xF0, 0, 0x28, 0xF1], \
+        'cold simultaneous FM queue %r' % cold
+    warm = list(ram[0xD80D:0xD815])
+    assert warm == [20, 0, 0, 0x28, 0xF0, 0, 0x28, 0xF1], \
+        'warm simultaneous FM queue %r' % warm
+    return 'transport preserves patches; cold F1/F2 share 72-write SCB; warm pair uses 20; keys adjacent'
+
 def t_cut_primes_insert():
     """Single-cell cuts prime the corresponding next-insert memory before clearing."""
     ram = run_rom(build_rom('cut_primes_insert', boot_inject=CUT_PRIMES_INSERT), 45)
@@ -991,6 +1103,7 @@ TESTS = [
     ('cyclic_alloc', t_cyclic_alloc),
     ('files_confirm', t_files_confirm),
     ('files_confirm_cancel', t_files_confirm_cancel),
+    ('fm_simultaneous', t_fm_simultaneous),
     ('cut_primes_insert', t_cut_primes_insert),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),

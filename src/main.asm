@@ -133,12 +133,13 @@ btap_addr  equ $00FFE3B0           ; field address of the last B-tap (long) -- d
 DBLTAP_FRAMES equ 24               ; max frames between B-taps to count as a double-tap (~0.40s NTSC / 0.48s PAL)
 pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
 patch_done equ $00FFE3BE           ; count of FM operator patches emitted this tick (budget MAXPATCH/tick)
+fm_keypend equ $00FFE3BF           ; bits 0-5: FM key-ons prepared this tick; appended together at SCB tail
 MAXPATCH   equ 2                   ; max full operator patches per tick. Dense multi-channel repatch rows
                                    ;   serialise across this many ticks (was hard 1/tick). Ceiling ~3-4:
                                    ;   each patch is ~28 triples and the whole SCB must flush inside one
                                    ;   frame (~139-triple drain budget with the su_fin busy guard).
-PATCH_CAP  equ 40                  ; max ym_count before emitting a ~28-write patch (fits 2 patches: the
-                                   ;   2nd is still allowed at d5~28; a 3rd is blocked here AND by MAXPATCH)
+PATCH_CAP  equ 48                  ; max ym_count before emitting a 26-write patch. A cold two-note row
+                                   ;   reaches d5=41 before F2's patch; 48 admits it, MAXPATCH blocks F3.
 YM_CAP     equ 64                  ; max ym_count before a note's freq/key (per-tick work budget; raised
                                    ;   with PATCH_CAP so 2 patches + keys don't spuriously defer same-instr
                                    ;   key-ons. Buffer at $1000 holds 256; 64 triples flush in ~6.8 ms)
@@ -1526,6 +1527,7 @@ input_tick:
 .reapply:
     tst.b   cur_row                        ; row 0 = INST# + LIBRARY-slot selectors: selecting an instrument or
     beq.s   .ne                            ;   browsing slots must NOT re-patch the live F1 voice (only LOAD/edits do)
+    bsr     invalidate_cur_instr_patches   ; edited content no longer matches any channel carrying this slot
     lea     instrum, a1                    ; only FM instruments re-push the YM patch
     moveq   #0, d0
     move.b  cur_instr, d0
@@ -7243,12 +7245,43 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     move.b  #$FF, c_shadowa(a6)
     rts
 
-; drop any A/V transient overrides and revert F1's patch to the stored instrument
+invalidate_patches:                       ; instrument memory was replaced wholesale: no YM patch shadow is trustworthy
+    lea     pshadow, a0
+    moveq   #NCH-1, d0
+.ip_all:
+    move.b  #$FF, (a0)+
+    dbra    d0, .ip_all
+    rts
+
+invalidate_cur_instr_patches:             ; current instrument record changed: invalidate channels using that slot
+    movem.l d0-d1/a0/a6, -(sp)
+    move.b  cur_instr, d1
+    lea     pshadow, a0
+    lea     ch_state, a6
+    moveq   #NCH-1, d0
+.icip_loop:
+    cmp.b   c_instr(a6), d1
+    bne.s   .icip_next
+    move.b  #$FF, (a0)
+.icip_next:
+    addq.l  #1, a0
+    lea     CHSIZE(a6), a6
+    dbra    d0, .icip_loop
+    movem.l (sp)+, d0-d1/a0/a6
+    rts
+
+; drop any legacy F1 A/V transient overrides; only request a full patch when one was live
 clear_live_patch:
+    move.b  live_algo, d0
+    and.b   live_vol, d0
+    and.b   live_fb, d0
+    cmpi.b  #$FF, d0
+    beq.s   .clp_clean
+    move.b  #1, repatch
+.clp_clean:
     move.b  #$FF, live_algo
     move.b  #$FF, live_vol
     move.b  #$FF, live_fb
-    move.b  #1, repatch
     rts
 
 silence_all:                              ; STOP: cut every ringing voice -- FM key-off, PSG vol-off, wave DAC feed
@@ -7574,11 +7607,8 @@ engine_play_reset:
 .rpc:
     clr.b   (a0)+
     dbra    d0, .rpc
-    lea     pshadow, a0                   ; FM patch shadows -> "none": each channel repatches on its
-    moveq   #NCH-1, d0                    ; first note (loads the instrument before key-on, then deltas)
-.rps:
-    move.b  #$FF, (a0)+
-    dbra    d0, .rps
+    ; pshadow intentionally survives a transport reset: STOP only keyed voices off and the YM2612
+    ; still holds its operator registers. Song/instrument replacement paths invalidate it explicitly.
     move.b  #0, g_wait                     ; W row-override off
     move.b  #0, clu_chord                 ; GROUP CHORD: no chord latched until a C sets one
     lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
@@ -8183,6 +8213,7 @@ engine_tick:
     rts
 .et_ready:
     move.b  #0, patch_done                ; FM operator-patch budget: reset the per-tick counter (MAXPATCH/tick)
+    move.b  #0, fm_keypend                ; key-ons are collected after patch/frequency preparation
     move.b  opt_sync, d0                  ; detect MIDI-takeover entry/exit (silence + pin reconfig)
     cmp.b   sync_shadow, d0
     beq.s   .smc_done
@@ -8320,6 +8351,7 @@ engine_tick:
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
     bsr     fmlfo_tick                    ; fold the 6 FM LFOs into the YM write list (a5/d5)
+    bsr     flush_fm_keyons               ; all prepared FM voices now start back-to-back
     move.b  d6, scb_count
     move.b  d5, ym_count
     move.b  d6, d0
@@ -10606,22 +10638,9 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  c_ymkey(a6), (a5)+
     addq.w  #1, d5
     bsr     ch_freq_send                   ; effective note (+ chord arp + fine) -> emit $A4/$A0
-    move.b  #0, (a5)+                       ; key-on: part0, $28
-    move.b  #$28, (a5)+
-    move.b  c_ymkey(a6), d3
-    tst.b   ch3_spc                        ; PERC special mode: key only the chord operators...
-    beq.s   .cf_konall
-    cmpi.b  #2, c_track(a6)               ; ...but ONLY on F3; every other channel keys all four
-    bne.s   .cf_konall
-    move.b  perc_keys, d4
-    lsl.b   #4, d4
-    or.b    d4, d3
-    bra.s   .cf_konw
-.cf_konall:
-    ori.b   #$F0, d3
-.cf_konw:
-    move.b  d3, (a5)+
-    addq.w  #1, d5
+    moveq   #0, d0                          ; hold the key-on until every channel has prepared its patch/pitch
+    move.b  c_track(a6), d0
+    bset    d0, fm_keypend
     move.b  #1, c_kshadow(a6)
     rts
 .cf_defer:
@@ -10677,6 +10696,40 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     move.b  d3, (a5)+
     addq.w  #1, d5
 .done:
+    rts
+
+flush_fm_keyons:                          ; append prepared F1-F6 $28 writes consecutively at the SCB tail
+    moveq   #0, d4
+    move.b  fm_keypend, d4
+    beq.s   .ffk_ret
+    clr.b   fm_keypend
+    lea     ch_state, a6
+    moveq   #0, d0                          ; physical FM track 0..5
+.ffk_loop:
+    btst    d0, d4
+    beq.s   .ffk_next
+    move.b  #0, (a5)+                       ; key-on: part 0, register $28
+    move.b  #$28, (a5)+
+    move.b  c_ymkey(a6), d3
+    tst.b   ch3_spc                        ; PERC special mode keys only its selected F3 operators
+    beq.s   .ffk_all
+    cmpi.b  #2, d0
+    bne.s   .ffk_all
+    move.b  perc_keys, d1
+    lsl.b   #4, d1
+    or.b    d1, d3
+    bra.s   .ffk_write
+.ffk_all:
+    ori.b   #$F0, d3
+.ffk_write:
+    move.b  d3, (a5)+
+    addq.w  #1, d5
+.ffk_next:
+    lea     CHSIZE(a6), a6
+    addq.w  #1, d0
+    cmpi.w  #6, d0
+    bne.s   .ffk_loop
+.ffk_ret:
     rts
 
 ; Append channel a6's full FM operator patch (operators $30-$80 + $B0/$B4) into the SCB at (a5)+,
@@ -11838,6 +11891,7 @@ ym_build_patch:
 .ybcur:
     move.b  cur_instr, d0
 .ybgot:
+    move.b  d0, pshadow                    ; this builder always writes F1's physical patch
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
     move.b  live_algo, d0                ; effective ALGO = transient override or stored value
@@ -14009,6 +14063,7 @@ dir_load:                                  ; stage + validate first; commit only
     move.b  (a1)+, (a2)+
     dbra    d1, .dl_cn
     bsr     scatter_globals
+    bsr     invalidate_patches              ; the loaded song replaced every instrument definition
     move.b  proj_groove, groove_sel
     move.b  #1, g_lfo_dirty
     bsr     data_longsum
@@ -14573,6 +14628,7 @@ do_bank_action:                            ; row 1: col 2 = SRAM LOAD, col 3 = S
     move.b  bank_slot, d0                   ; col 2 = SRAM LOAD
     bsr     bank_load_instr
 .dba_redraw:
+    bsr     invalidate_cur_instr_patches    ; slot number stayed the same, but its patch data may have changed
     move.b  #1, need_clear                  ; pulled in a new instrument -> repaint + re-rasterise envelopes
     move.b  #1, env_dirty
     rts
@@ -15075,6 +15131,7 @@ load_song:                                 ; load SRAM slot (proj_slot-1) into t
     cmp.w   d6, d2
     bne.s   .ld_bad2
     bsr     scatter_globals                 ; unpack the song globals
+    bsr     invalidate_patches              ; legacy load also replaced the complete instrument bank
     move.b  proj_groove, groove_sel         ; loaded default groove active
     move.b  #1, g_lfo_dirty                 ; re-emit the global LFO on the next SCB push
     bsr     data_longsum                    ; remember the loaded state for the unsaved indicator
@@ -15634,6 +15691,7 @@ clear_song:                               ; blank project: phrases -> rests, cha
     move.b  #$FF, (a2)+
     dbra    d0, .cz_s
     bsr     copy_factory_bank             ; NEW: dump the ROM factory library into instrument memory (1->1)
+    bsr     invalidate_patches              ; a new project replaced every definition behind the slot numbers
     lea     wave_factory, a1              ; NEW: seed the WAVE pool from the factory wave bank (GMDJWAV0)
     lea     wave_ram, a2
     move.w  #(16*32)-1, d0

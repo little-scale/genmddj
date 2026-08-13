@@ -19,6 +19,9 @@ All notable changes to genmddj. Versions increment by **0.01**.
   no longer collapse to zero while incrementing or decrementing.
 - FILES confirmation text now disappears as soon as its action is cancelled or its confirmation
   window expires, matching the underlying two-tap safety state.
+- Simultaneous FM notes now prepare their patches and frequencies before adjacent key-on writes,
+  preventing F2 from starting one video frame after F1 on a two-voice cold trigger. Ordinary
+  transport restarts retain valid per-channel patch shadows instead of reloading unchanged patches.
 
 ## v0.18 — 2026-08-13
 
