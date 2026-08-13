@@ -39,7 +39,7 @@ The ten voices are:
 genmddj uses the **D-pad**, **A**, **B**, **C**, and **Start**. The trick — inherited
 from SMSGGDJ — is that the buttons are **modifiers**: whichever one you're *already
 holding* when you press another decides the action. There are **no simultaneous-press
-timing windows** to nail (only *paste* uses a quick double-tap).
+timing windows** to nail (only *paste* and *mint/clone* use a quick double-tap).
 
 Think of it as:
 
@@ -53,12 +53,13 @@ Think of it as:
 | **D-pad** | Move the cursor (hold to repeat) |
 | **B** tap | **Insert / edit / audition** the cell under the cursor — repeats the last value you entered for that column |
 | **B** hold + D-pad | **Edit** the value under the cursor. Left/Right = small step (±1 / ±1 semitone); Up/Down = big step (±octave / ±$10) |
-| **B** double-tap | **Paste** the clipboard here. On a *reference* cell (a SONG chain# or CHAIN phrase#) with nothing copied: an *empty* cell **mints** the next free chain/phrase; a *populated* cell **clones** it (see *Cloning*) |
+| **B** double-tap | On a *reference* cell (a SONG chain# or CHAIN phrase#), an *empty* cell **mints** a fresh chain/phrase; a *populated* cell **clones** it (see *Cloning*) |
 | **B** hold + **A** tap | **Copy** the field under the cursor to the clipboard |
 | **A** hold + **B** tap | Enter **block select** (grid screens — see below) |
 | **A** hold + Left/Right | Switch **channel** — which track's CHAIN/PHRASE you're looking at |
 | **A** hold + Up/Down | Flip to the prev/next **phrase** (PHRASE) or **chain** (CHAIN); **page** the view (SONG) |
 | **C** hold + D-pad | **Move between screens** (the screen map, §3) — context-following |
+| **C** clean double-tap | **Paste** the clipboard here. Chords, navigation and block-cancel C taps are ignored |
 | **C** + **B** | **Play from here / solo** the current thing (§3). On FILES it opens the action menu |
 | **Start** | **Play / stop.** SONG mode plays the whole song from the top; LIVE mode launches the cursor row |
 | **B** + **Start** | If SYNC = IN/IN24, arm **WAIT** for the incoming clock; otherwise a plain Start |
@@ -78,7 +79,7 @@ anchored at the cursor.
 - **A** = **cut** (copy + clear) and exit.
 - **C** = cancel.
 
-Then **double-tap B** to paste: the block drops in at the cursor, and each column lands
+Then **cleanly double-tap C** to paste: the block drops in at the cursor, and each column lands
 back on its own column type, so nothing gets scrambled.
 
 ### Transport: full-song vs play-from-here
@@ -178,7 +179,8 @@ A SONG cell holds a **chain number**, a CHAIN cell holds a **phrase number** —
 references, so:
 
 - **B tap** on an empty reference cell inserts the **last** chain/phrase number.
-- **B double-tap** on an empty reference cell **mints the next free** (blank) chain/phrase.
+- **B double-tap** on an empty reference cell **mints the next free upward** (blank)
+  chain/phrase, wrapping at the pool end.
 - **B double-tap** on a *populated* reference cell **clones** it into a fresh slot and
   repoints the cell at the copy, so editing it leaves the original alone.
 
@@ -192,9 +194,10 @@ references, so:
   repeated phrase into several unrelated copies (more phrase slots than SLIM).
 
 A CHAIN phrase clone is always an independent copy. If there's no free slot (or DEEP
-won't fit), nothing is cloned.
+won't fit), nothing is cloned. Empty slots that are still referenced are protected and never
+reused as allocation targets.
 
-**Tidy up before saving:** on FILES, **PURGE PH** / **PURGE CH** blank phrases/chains that
+**Tidy up before saving:** on FILES, **PURGE PHRASE** / **PURGE CHAIN** blank phrases/chains that
 aren't reachable from the SONG, so they drop out of the next save (§8).
 
 ---
@@ -522,8 +525,9 @@ room — up to **32** songs. A small **SRAM / FREE** readout sits under the map.
   on your first keystroke, which becomes the new song's name on SAVE. The name travels
   inside the song.
 
-**The action menu** — **C-hold + B** opens it on the right; **Up/Down** choose and **B**
-runs (and closes):
+**The action menu** — **C-hold + B** opens it on the right; **Up/Down** choose an action.
+Every action below requires **two B taps** within the confirmation window; the first shows
+**`SURE?`**, and the second runs it:
 
 - **SAVE** — write the working song to the selected slot (overwrites an existing one; on the
   empty slot, creates a new file). *Saving only happens when you press SAVE* — edits aren't
@@ -531,9 +535,9 @@ runs (and closes):
 - **LOAD** — load the selected song. On the **empty** slot, blanks the working song for a
   fresh start.
 - **CLEAR** — delete the slot and close the gap (remaining songs slide down).
-- **PURGE PH / PURGE CH** — blank phrases / chains **not reachable** from the SONG, so they
-  drop out of the next save. Acts on the **working** song (save afterwards to bank it). Tap
-  twice to confirm; the header shows **`FREED nn`**. They never renumber the rest, so nothing
+- **PURGE PHRASE / PURGE CHAIN** — blank phrases / chains **not reachable** from the SONG, so they
+  drop out of the next save. Acts on the **working** song (save afterwards to bank it). The
+  header shows **`FREED nn`**. They never renumber the rest, so nothing
   in your song breaks.
 
 A refused save (directory or SRAM full) shows **FULL** by the FREE meter. SAVE freezes the
@@ -634,7 +638,7 @@ ROM factory bank is all FM.
 MOVE          D-pad
 INSERT/EDIT   B tap  /  B hold + D-pad   (L/R small, U/D big)
 AUDITION      B tap on a note (PHRASE, stopped) or INSTR
-PASTE         B double-tap
+PASTE         C clean double-tap
 COPY          B hold + A tap
 MINT/CLONE    B double-tap on a SONG chain# / CHAIN phrase#
 BLOCK SELECT  A hold + B tap  → D-pad extend, B copy, A cut, C cancel

@@ -414,6 +414,184 @@ DEEP_CLONE_ALIASES = """    tst.b   $00FFD500
 .tdcdone:
 """
 
+PASTE_AND_MINT = """    tst.b   $00FFD500
+    bne     .tpmdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_PHRASE, cur_screen
+    clr.b   cur_phrase
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #SCR_PHRASE, clip_screen
+    clr.b   clip_col0
+    move.b  #1, clip_rows
+    move.b  #1, clip_cols
+    move.b  #37, clip_buf
+    clr.l   ctap_addr
+    move.w  #10, g_ticks
+    bsr     c_tap_complete
+    addq.w  #1, g_ticks
+    bsr     c_tap_complete
+    move.b  phrases, $00FFD501
+    move.b  #SCR_SONG, cur_screen
+    move.b  #SCR_SONG, clip_screen
+    move.b  #99, clip_buf
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #5, song
+    move.b  #0, chains+(5*CHAIN_SIZE)
+    clr.l   btap_addr
+    move.w  #20, g_ticks
+    bsr     do_insert
+    addq.w  #1, g_ticks
+    bsr     do_insert
+    move.b  song, $00FFD502
+    move.b  chains+(6*CHAIN_SIZE), $00FFD503
+    clr.l   ctap_addr
+    clr.b   ctap_active
+    moveq   #$40, d3
+    moveq   #$40, d4
+    moveq   #0, d6
+    bsr     c_tap_track
+    moveq   #$60, d3
+    moveq   #$20, d4
+    moveq   #0, d6
+    bsr     c_tap_track
+    moveq   #0, d3
+    moveq   #0, d4
+    moveq   #$60, d6
+    bsr     c_tap_track
+    tst.l   ctap_addr
+    sne     $00FFD504
+    movem.l (sp)+, d0-d7/a0-a6
+.tpmdone:
+"""
+
+REFERENCE_EDIT = """    tst.b   $00FFD500
+    bne     .tredone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_CHAIN, cur_screen
+    clr.b   cur_chain
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #$80, chains
+    moveq   #8, d2
+    bsr     edit_value
+    move.b  chains, $00FFD501
+    move.b  #$BF, chains
+    bsr     edit_value
+    move.b  chains, $00FFD502
+    moveq   #4, d2
+    bsr     edit_value
+    move.b  chains, $00FFD503
+    move.b  #$FF, chains
+    moveq   #8, d2
+    bsr     edit_value
+    move.b  chains, $00FFD504
+    move.b  #SCR_SONG, cur_screen
+    move.b  #$7F, song
+    moveq   #8, d2
+    bsr     edit_value
+    move.b  song, $00FFD505
+    move.b  #SCR_CHAIN, cur_screen
+    move.b  #1, cur_col
+    move.b  #$FF, chains+1
+    bsr     edit_value
+    move.b  chains+1, $00FFD506
+    movem.l (sp)+, d0-d7/a0-a6
+.tredone:
+"""
+
+CYCLIC_ALLOC = """    tst.b   $00FFD500
+    bne     .tcadone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    lea     chains, a0
+    move.w  #(NCHAINS*CHAIN_SIZE)-1, d0
+.tca_ch:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tca_ch
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.tca_sg:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tca_sg
+    move.b  #31, song
+    moveq   #30, d3
+    bsr     find_free_chain
+    move.b  d0, $00FFD501
+    moveq   #127, d3
+    bsr     find_free_chain
+    move.b  d0, $00FFD502
+    move.b  #31, chains
+    moveq   #30, d3
+    bsr     find_free_phrase
+    move.b  d0, $00FFD503
+    moveq   #191, d3
+    bsr     find_free_phrase
+    move.b  d0, $00FFD504
+    movem.l (sp)+, d0-d7/a0-a6
+.tcadone:
+"""
+
+FILES_CONFIRM = """    tst.b   $00FFD500
+    bne     .tfcdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #1, files_menu
+    move.b  #1, menu_row
+    clr.b   opt_song
+    move.b  #$55, song
+    bsr     files_action
+    move.b  proj_armed, d7
+    move.b  song, d6
+    addq.w  #1, g_ticks
+    bsr     files_action
+    move.b  d7, $00FFD800
+    move.b  d6, $00FFD801
+    move.b  song, $00FFD802
+    move.b  #1, files_menu
+    clr.b   menu_row
+    clr.b   opt_song
+    move.b  #$2A, song
+    bsr     files_action
+    move.b  proj_armed, $00FFD803
+    bsr     dir_count
+    move.b  d0, $00FFD804
+    addq.w  #1, g_ticks
+    bsr     files_action
+    bsr     dir_count
+    move.b  d0, $00FFD805
+    move.b  #1, files_menu
+    move.b  #2, menu_row
+    clr.b   opt_song
+    bsr     files_action
+    bsr     dir_count
+    move.b  d0, $00FFD806
+    addq.w  #1, g_ticks
+    bsr     files_action
+    bsr     dir_count
+    move.b  d0, $00FFD807
+    move.b  #1, files_menu
+    move.b  #3, menu_row
+    move.b  #60, phrases+(10*PHRASE_SIZE)
+    bsr     files_action
+    move.b  phrases+(10*PHRASE_SIZE), $00FFD808
+    addq.w  #1, g_ticks
+    bsr     files_action
+    move.b  phrases+(10*PHRASE_SIZE), $00FFD809
+    move.b  #4, menu_row
+    move.b  #0, chains+(10*CHAIN_SIZE)
+    bsr     files_action
+    move.b  chains+(10*CHAIN_SIZE), $00FFD80A
+    addq.w  #1, g_ticks
+    bsr     files_action
+    move.b  chains+(10*CHAIN_SIZE), $00FFD80B
+    movem.l (sp)+, d0-d7/a0-a6
+.tfcdone:
+"""
+
 # arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
 CONT_GLIDE_ARM = """    move.w  g_ticks, d0
     cmpi.w  #5, d0
@@ -641,6 +819,38 @@ def t_deep_clone_aliases():
     assert ram[0xD50C] == 40, 'editing the clone changed its source phrase'
     return '2 unique copies; alias pattern and four row transposes preserved'
 
+def t_paste_and_mint():
+    """C,C pastes; B,B still clones even with a populated clipboard; C chords are filtered."""
+    ram = run_rom(build_rom('paste_and_mint', boot_inject=PASTE_AND_MINT), 40)
+    assert ram[0xD501] == 37, 'clean C,C did not paste (%d)' % ram[0xD501]
+    assert ram[0xD502] == 6, 'B,B pasted clipboard or failed to clone (song=%d)' % ram[0xD502]
+    assert ram[0xD503] == 0, 'cloned chain content missing (%d)' % ram[0xD503]
+    assert ram[0xD504] == 0, 'C chord was incorrectly recorded as a clean paste tap'
+    return 'clean C,C pastes; B,B clones; C chords ignored'
+
+def t_reference_edit():
+    """Reference edits remain unsigned through $80..$BF and clamp at their true ceilings."""
+    ram = run_rom(build_rom('reference_edit', boot_inject=REFERENCE_EDIT), 35)
+    got = list(ram[0xD501:0xD507])
+    assert got == [0x81, 0xBF, 0xBE, 0, 0x7F, 0], 'reference edit results %r' % got
+    return '$80 increments; $BF/$7F clamp; empty and transpose sentinel behavior retained'
+
+def t_cyclic_alloc():
+    """Allocation searches upward with wrap and never takes a referenced empty record."""
+    ram = run_rom(build_rom('cyclic_alloc', boot_inject=CYCLIC_ALLOC), 35)
+    got = list(ram[0xD501:0xD505])
+    assert got == [32, 0, 32, 0], 'cyclic/reference-aware allocation %r' % got
+    return 'chain/phrase upward search wraps and skips referenced-empty slot 31'
+
+def t_files_confirm():
+    """Every FILES action does nothing on the first tap and executes on the second."""
+    ram = run_rom(build_rom('files_confirm', boot_inject=FILES_CONFIRM), 70)
+    got = list(ram[0xD800:0xD808])
+    assert got == [0x11, 0x55, 0xFF, 0x10, 0, 1, 1, 0], 'FILES confirmation sequence %r' % got
+    purges = list(ram[0xD808:0xD80C])
+    assert purges == [60, 0xFF, 0, 0xFF], 'purge confirmation sequence %r' % purges
+    return 'SAVE/LOAD/CLEAR/PURGE PHRASE/PURGE CHAIN arm first, execute second'
+
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
     back to the real groove (genmddj is groove-as-tempo, so tempo IS the scratch groove)."""
@@ -673,6 +883,10 @@ TESTS = [
     ('load_bad_rle', t_load_bad_rle),
     ('cursor_block', t_cursor_block),
     ('deep_clone_aliases', t_deep_clone_aliases),
+    ('paste_and_mint', t_paste_and_mint),
+    ('reference_edit', t_reference_edit),
+    ('cyclic_alloc', t_cyclic_alloc),
+    ('files_confirm', t_files_confirm),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
     ('kit_gain',     t_kit_gain),

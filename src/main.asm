@@ -84,6 +84,10 @@ midi_dbg_d2 equ $00FFD35C          ; MIDI monitor: last decoded data2
 midi_dbg_ctr equ $00FFD35E         ; MIDI monitor: rolling decoded-event counter (word; reset on MIDI entry)
 scale_key  equ $00FFD360           ; PROJECT SCALE: root pitch class 0-11 (C..B); saved global (default 0 = C)
 scale_type equ $00FFD361           ; PROJECT SCALE: type 0..NSCALE-1 (0 = CHROMATIC = passthrough); saved global
+ctap_active equ $00FFD362          ; C paste gesture: C is currently held
+ctap_dirty equ $00FFD363           ; another control/select action contaminated this C tap
+ctap_frame equ $00FFD364           ; g_ticks at the last clean C tap (word)
+ctap_addr  equ $00FFD366           ; field address of the last clean C tap (long)
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -281,7 +285,12 @@ audit_ctr  equ $00FFD696           ; INSTR B-tap audition: frames left to keep t
 purge_used equ $00FFD698           ; FILES purge: transient used-set (192 B; chains use 0..127, phrases 0..191)
 purge_freed equ $00FFD758          ; FILES purge: last freed count for the readout ($FF = none/hide)
 l_set      equ $00FFD432           ; L command: 1 if L armed a glide on this row's note
-CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap NEW/DEMO/LOAD and confirm
+CONFIRM_FRAMES equ 90              ; ~1.5 s window to re-tap a FILES action and confirm
+CONF_SAVE equ $10
+CONF_LOAD equ $11
+CONF_CLEAR equ $12
+CONF_PURGE_PHRASE equ $13
+CONF_PURGE_CHAIN equ $14
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -615,6 +624,9 @@ Start:
     move.b  #0, last_chain
     move.b  #0, last_phrase
     move.l  #0, btap_addr
+    move.b  #0, ctap_active
+    move.b  #0, ctap_dirty
+    move.l  #0, ctap_addr
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
     move.b  #0, ch3_spc                   ; PERC CH3 special mode off at boot
@@ -1337,10 +1349,15 @@ input_tick:
     move.b  d3, key_stab
     move.b  d3, d0                        ; feed the rest of input off the debounced state
     move.b  d0, d3
-    move.b  key_prev, d4
+    move.b  key_prev, d4                  ; old stable state
+    move.b  d4, d6
     move.b  d3, key_prev
+    move.b  d3, d0
+    not.b   d0
+    and.b   d0, d6                       ; release edges
     not.b   d4
-    and.b   d3, d4                       ; button edges
+    and.b   d3, d4                       ; press edges
+    bsr     c_tap_track                  ; clean C,C is paste; chords/navigation never count
     bsr     help_hotkey                  ; hold A alone ~HELP_HOLD frames -> toggle HELP (any screen <-> HELP)
     bne     .done                        ; toggled this frame -> skip the rest of the dispatch
     btst    #7, d4                        ; Start -> toggle transport
@@ -1639,6 +1656,66 @@ input_tick:
     move.b  d0, cur_chan
     bsr     load_chan
 .adone:
+    rts
+
+; Track C as a release-completed gesture. A clean tap means C was pressed and released
+; without A/B/Start/D-pad or block-select being active at any point. This prevents the
+; existing C chords (cut, context play, CONT, menu, block cancel) from becoming paste taps.
+c_tap_track:                              ; d3=held state, d4=press edges, d6=release edges
+    movem.l d0-d2/a1, -(sp)
+    btst    #6, d4
+    beq.s   .ctt_held
+    move.b  #1, ctap_active
+    clr.b   ctap_dirty
+.ctt_held:
+    tst.b   ctap_active
+    beq.s   .ctt_done
+    move.b  d3, d0
+    andi.b  #$BF, d0                       ; every control except C contaminates this tap
+    bne.s   .ctt_dirty
+    tst.b   sel_active                    ; C cancelling a selection is not a paste tap
+    beq.s   .ctt_release
+.ctt_dirty:
+    move.b  #1, ctap_dirty
+.ctt_release:
+    btst    #6, d6
+    beq.s   .ctt_done
+    tst.b   ctap_dirty
+    bne.s   .ctt_clear
+    bsr     c_tap_complete
+.ctt_clear:
+    clr.b   ctap_active
+.ctt_done:
+    movem.l (sp)+, d0-d2/a1
+    rts
+
+c_tap_complete:                           ; paste on the second clean C tap of the same grid field
+    move.b  clip_screen, d0
+    cmpi.b  #$FF, d0
+    beq.s   .ctc_done
+    cmp.b   cur_screen, d0
+    bne.s   .ctc_done
+    cmpi.b  #3, d0                         ; PHRASE/CHAIN/SONG or TABLE only
+    blo.s   .ctc_grid
+    cmpi.b  #SCR_TABLE, d0
+    bne.s   .ctc_done
+.ctc_grid:
+    bsr     get_field_addr
+    move.l  a1, d0
+    cmp.l   ctap_addr, d0
+    bne.s   .ctc_record
+    move.w  g_ticks, d1
+    sub.w   ctap_frame, d1
+    cmpi.w  #DBLTAP_FRAMES, d1
+    bhi.s   .ctc_record
+    bsr     block_paste
+    clr.l   ctap_addr                      ; require a fresh pair after a successful paste
+    move.b  #1, vdirty
+    rts
+.ctc_record:
+    move.l  d0, ctap_addr
+    move.w  g_ticks, ctap_frame
+.ctc_done:
     rts
 
 ; cur_chain/cur_phrase <- the chain/phrase channel cur_chan plays at cur_songrow
@@ -3240,43 +3317,47 @@ edit_value:
     bne.s   .hxstep
     moveq   #12, d4
 .hxstep:
-    move.b  (a1), d0
-    btst    #2, d2
-    beq.s   .h1
-    subq.b  #1, d0
-.h1:
-    btst    #3, d2
-    beq.s   .h2
-    addq.b  #1, d0
-.h2:
-    btst    #0, d2
-    beq.s   .h3
-    add.b   d4, d0
-.h3:
-    btst    #1, d2
-    beq.s   .h4
-    sub.b   d4, d0
-.h4:
     moveq   #0, d3                          ; d3 = clamp ceiling for reference columns (0 = no clamp)
     tst.b   cur_screen                     ; PHRASE col 1 = instrument -> 0..NINSTR-1
     bne.s   .h4_nph
     cmpi.b  #1, cur_col
-    bne.s   .h4st
+    bne.s   .h4_noref
     move.w  #NINSTR, d3
     bra.s   .h4cl
 .h4_nph:
     cmpi.b  #SCR_CHAIN, cur_screen          ; CHAIN col 0 = phrase# -> 0..NPHRASES-1
     bne.s   .h4_nch
     tst.b   cur_col
-    bne.s   .h4st
+    bne.s   .h4_noref
     move.w  #NPHRASES, d3
     bra.s   .h4cl
 .h4_nch:
     cmpi.b  #SCR_SONG, cur_screen           ; SONG cell = chain# -> 0..NCHAINS-1
-    bne.s   .h4st
+    bne.s   .h4_noref
     move.w  #NCHAINS, d3
 .h4cl:
-    ext.w   d0
+    moveq   #0, d0
+    move.b  (a1), d0                        ; references use unsigned word arithmetic (values >= $80 stay positive)
+    cmpi.b  #$FF, d0
+    bne.s   .h4_refadj
+    moveq   #-1, d0                         ; empty sentinel: first increment starts at zero
+.h4_refadj:
+    btst    #2, d2
+    beq.s   .h4_r1
+    subq.w  #1, d0
+.h4_r1:
+    btst    #3, d2
+    beq.s   .h4_r2
+    addq.w  #1, d0
+.h4_r2:
+    btst    #0, d2
+    beq.s   .h4_r3
+    add.w   d4, d0
+.h4_r3:
+    btst    #1, d2
+    beq.s   .h4_bound
+    sub.w   d4, d0
+.h4_bound:
     bpl.s   .h4chi
     moveq   #0, d0                          ; underflow -> 0
     bra.s   .h4st
@@ -3287,6 +3368,27 @@ edit_value:
     subq.w  #1, d0                          ; over the ceiling -> ceiling-1
 .h4st:
     move.b  d0, (a1)
+    bra.s   .h4mem
+.h4_noref:
+    move.b  (a1), d0                        ; non-reference fields retain byte wrapping (e.g. transpose)
+    btst    #2, d2
+    beq.s   .h4_b1
+    subq.b  #1, d0
+.h4_b1:
+    btst    #3, d2
+    beq.s   .h4_b2
+    addq.b  #1, d0
+.h4_b2:
+    btst    #0, d2
+    beq.s   .h4_b3
+    add.b   d4, d0
+.h4_b3:
+    btst    #1, d2
+    beq.s   .h4_bst
+    sub.b   d4, d0
+.h4_bst:
+    move.b  d0, (a1)
+.h4mem:
     cmpi.b  #SCR_SONG, cur_screen           ; remember the last value placed (single B-tap repeats)
     beq.s   .h4_chain
     cmpi.b  #SCR_CHAIN, cur_screen
@@ -3450,17 +3552,7 @@ do_insert:
     rts
 .di_go:
     bsr     get_field_addr
-    bsr     chk_dbltap                       ; d2 = double-tap (once; paste + clone/mint use it)
-    tst.b   d2                               ; double-tap on a matching cell -> paste
-    beq.s   .di_nopaste
-    move.b  clip_screen, d0
-    cmpi.b  #$FF, d0                         ; clipboard empty?
-    beq.s   .di_nopaste
-    cmp.b   cur_screen, d0                   ; same screen as the copy/cut source?
-    bne.s   .di_nopaste
-    bsr     block_paste                      ; paste the block: rows at cursor, columns kept
-    rts
-.di_nopaste:
+    bsr     chk_dbltap                       ; d2 = double B-tap (SONG/CHAIN mint or clone only)
     cmpi.b  #SCR_SONG, cur_screen           ; SONG B-tap -> allocate a new (empty) chain
     beq.s   .song_ins
     cmpi.b  #SCR_CHAIN, cur_screen           ; CHAIN B-tap -> allocate a new (empty) phrase
@@ -3501,10 +3593,14 @@ do_insert:
     rts
 .song_new:
     move.b  btap_src, d3                    ; source = the cell BEFORE tap-1 filled it ($FF = was empty -> mint blank)
+    cmpi.b  #$FF, d3
+    bne.s   .song_find
+    move.b  last_chain, d3                  ; blank mint searches upward from the last chain used
+.song_find:
     bsr     find_free_chain
     cmpi.b  #NCHAINS, d0
     bhs     .ret                            ; no free chain -> no-op
-    cmpi.b  #$FF, d3                         ; empty cell -> mint a blank chain
+    cmpi.b  #$FF, btap_src                    ; empty cell -> mint a blank chain
     beq.s   .song_place
     tst.b   opt_clon                         ; DEEP? pre-check free phrases >= unique phrases used by the chain
     beq.s   .song_slim                       ;   (all-or-nothing fail, like SMSGGDJ)
@@ -3538,10 +3634,14 @@ do_insert:
     rts
 .chain_new:
     move.b  btap_src, d3                    ; source = the cell BEFORE tap-1 filled it ($FF = was empty -> mint blank)
+    cmpi.b  #$FF, d3
+    bne.s   .chain_find
+    move.b  last_phrase, d3                 ; blank mint searches upward from the last phrase used
+.chain_find:
     bsr     find_free_phrase
     cmpi.b  #NPHRASES, d0
     bhs     .ret
-    cmpi.b  #$FF, d3                         ; empty cell -> mint a blank phrase, fresh transpose 0
+    cmpi.b  #$FF, btap_src                    ; empty cell -> mint a blank phrase, fresh transpose 0
     bne.s   .chain_clone
     move.b  #0, 1(a1)
     bra.s   .chain_place
@@ -3602,9 +3702,41 @@ audit_voice:                              ; d1.b = note, d2.b = instrument -> au
 .av_ret:
     rts
 
-find_free_chain:                          ; d0.b = lowest EMPTY chain (no placed phrases); NCHAINS if none
+mark_used_chains:                         ; purge_used[0..NCHAINS) = every chain referenced by SONG
+    movem.l d0-d2/a0-a1, -(sp)
+    lea     purge_used, a0
+    move.w  #NCHAINS-1, d0
+.muc_z:
+    clr.b   (a0)+
+    dbra    d0, .muc_z
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.muc_scan:
+    moveq   #0, d1
+    move.b  (a0)+, d1
+    cmpi.w  #NCHAINS, d1
+    bhs.s   .muc_next
+    lea     purge_used, a1
+    st      (a1,d1.w)
+.muc_next:
+    dbra    d0, .muc_scan
+    movem.l (sp)+, d0-d2/a0-a1
+    rts
+
+find_free_chain:                          ; d3.b=reference -> next cyclic unreferenced EMPTY chain in d0
+    bsr     mark_used_chains
     moveq   #0, d0
+    move.b  d3, d0
+    addq.w  #1, d0
+    cmpi.w  #NCHAINS, d0
+    blo.s   .ffc_start
+    moveq   #0, d0
+.ffc_start:
+    move.w  #NCHAINS-1, d2
 .ffc_cand:
+    lea     purge_used, a2
+    tst.b   (a2,d0.w)                      ; referenced empty records are reserved, not free
+    bne.s   .ffc_next
     lea     chains, a2
     move.w  d0, d1
     mulu.w  #CHAIN_SIZE, d1
@@ -3615,16 +3747,56 @@ find_free_chain:                          ; d0.b = lowest EMPTY chain (no placed
     bne.s   .ffc_next
     addq.l  #2, a2
     dbra    d1, .ffc_scan
-    rts                                     ; all 16 steps empty -> d0 is free
+    lea     purge_used, a2
+    st      (a2,d0.w)                       ; reserve it for any further allocation in this operation
+    rts
 .ffc_next:
-    addq.b  #1, d0
-    cmpi.b  #NCHAINS, d0
-    blo.s   .ffc_cand
+    addq.w  #1, d0
+    cmpi.w  #NCHAINS, d0
+    blo.s   .ffc_loop
+    moveq   #0, d0
+.ffc_loop:
+    dbra    d2, .ffc_cand
+    move.w  #NCHAINS, d0
     rts
 
-find_free_phrase:                         ; d0.b = lowest EMPTY phrase (no notes/commands); NPHRASES if none
+mark_used_phrases:                        ; purge_used[0..NPHRASES) = every phrase referenced by any chain
+    movem.l d0-d2/a0-a1, -(sp)
+    lea     purge_used, a0
+    move.w  #NPHRASES-1, d0
+.mup_z:
+    clr.b   (a0)+
+    dbra    d0, .mup_z
+    lea     chains, a0
+    move.w  #(NCHAINS*16)-1, d0
+.mup_scan:
+    moveq   #0, d1
+    move.b  (a0), d1
+    cmpi.w  #NPHRASES, d1
+    bhs.s   .mup_next
+    lea     purge_used, a1
+    st      (a1,d1.w)
+.mup_next:
+    addq.l  #2, a0
+    dbra    d0, .mup_scan
+    movem.l (sp)+, d0-d2/a0-a1
+    rts
+
+find_free_phrase:                         ; d3.b=reference -> next cyclic unreferenced EMPTY phrase in d0
+    bsr     mark_used_phrases
+find_free_phrase_marked:                  ; same, using/reserving the current purge_used map
     moveq   #0, d0
+    move.b  d3, d0
+    addq.w  #1, d0
+    cmpi.w  #NPHRASES, d0
+    blo.s   .ffp_start
+    moveq   #0, d0
+.ffp_start:
+    move.w  #NPHRASES-1, d2
 .ffp_cand:
+    lea     purge_used, a2
+    tst.b   (a2,d0.w)
+    bne.s   .ffp_next
     lea     phrases, a2
     move.w  d0, d1
     lsl.w   #6, d1                          ; * PHRASE_SIZE (64)
@@ -3637,11 +3809,17 @@ find_free_phrase:                         ; d0.b = lowest EMPTY phrase (no notes
     bne.s   .ffp_next
     addq.l  #4, a2
     dbra    d1, .ffp_scan
-    rts                                     ; all 16 rows empty -> d0 is free
+    lea     purge_used, a2
+    st      (a2,d0.w)
+    rts
 .ffp_next:
-    addq.b  #1, d0
-    cmpi.b  #NPHRASES, d0
-    blo.s   .ffp_cand
+    addq.w  #1, d0
+    cmpi.w  #NPHRASES, d0
+    blo.s   .ffp_loop
+    moveq   #0, d0
+.ffp_loop:
+    dbra    d2, .ffp_cand
+    move.w  #NPHRASES, d0
     rts
 
 ; clone a pool record (SLIM byte-copy): a0 = pool base, d1 = record size, d3 = src index,
@@ -3701,11 +3879,15 @@ chain_unique_phrase_count:                ; d3 = chain index -> d1 = unique non-
     movem.l (sp)+, d0/d2/d4-d5/a2-a3
     rts
 
-count_free_phrases:                       ; -> d1 = number of empty phrases. preserves d3/d4.
+count_free_phrases:                       ; -> d1 = unreferenced empty phrases. preserves d3/d4.
     movem.l d2/d3/d4/d5/a2, -(sp)
+    bsr     mark_used_phrases
     moveq   #0, d4                          ; running count
     moveq   #0, d2                          ; phrase index
 .cfp:
+    lea     purge_used, a2
+    tst.b   (a2,d2.w)
+    bne.s   .cfp_used                       ; referenced empty phrase is unavailable
     lea     phrases, a2
     move.w  d2, d3
     lsl.w   #6, d3                          ; * PHRASE_SIZE
@@ -3729,6 +3911,7 @@ count_free_phrases:                       ; -> d1 = number of empty phrases. pre
 
 deep_chain_phrases:                       ; d3=source chain, d0=clone -> clone unique phrases + preserve aliases.
     movem.l d0-d7/a0/a2-a5, -(sp)
+    bsr     mark_used_phrases               ; one map for the whole deep clone; each allocation reserves its result
     lea     chains, a4
     moveq   #0, d1
     move.b  d3, d1
@@ -3763,7 +3946,7 @@ deep_chain_phrases:                       ; d3=source chain, d0=clone -> clone u
     bra.s   .dcp_prev
 .dcp_new:
     move.b  d4, d3                          ; first occurrence: allocate and copy this source phrase once
-    bsr     find_free_phrase               ; d0 = a free phrase (pre-check guarantees enough)
+    bsr     find_free_phrase_marked        ; d0 = a free phrase near d3 (pre-check guarantees enough)
     cmpi.b  #NPHRASES, d0
     bhs.s   .dcp_n                          ; safety: none free -> leave it shared
     lea     phrases, a0
@@ -14245,7 +14428,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm2:
     lea     str_o_clr, a1
     bsr     print_hl
-    moveq   #13, d3                         ; PURGE PH (menu_row 3) -- working-song, not the slot
+    moveq   #13, d3                         ; PURGE PHRASE (menu_row 3) -- working-song, not the slot
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #3, menu_row
@@ -14254,7 +14437,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm3:
     lea     str_purge_ph, a1
     bsr     print_hl
-    moveq   #14, d3                         ; PURGE CH (menu_row 4)
+    moveq   #14, d3                         ; PURGE CHAIN (menu_row 4)
     moveq   #22, d4
     moveq   #0, d2
     cmpi.b  #4, menu_row
@@ -14272,11 +14455,11 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm4:
     lea     str_o_cancel, a1
     bsr     print_hl
-    move.b  proj_armed, d0                  ; status line: SURE? while a purge is armed, else FREED nn
-    cmpi.b  #$13, d0
-    beq.s   .rf_sure
-    cmpi.b  #$14, d0
-    bne.s   .rf_freed
+    move.b  proj_armed, d0                  ; status line: SURE? while any action is armed, else FREED nn
+    cmpi.b  #CONF_SAVE, d0
+    blo.s   .rf_freed
+    cmpi.b  #CONF_PURGE_CHAIN, d0
+    bhi.s   .rf_freed
 .rf_sure:
     moveq   #16, d3
     moveq   #22, d4
@@ -14713,8 +14896,8 @@ cont_glide_step:                           ; once per master bar: step the ramp,
 
 ; Arm a beat-quantized swap to save slot d0: cont_ref = the lowest flagged track, whose
 ; phrase downbeat (row 15->0) fires the swap so the transition lands on the beat. No-op
-; when nothing is flagged (the caller can then just load_song directly).
-cont_load_arm:                             ; d0 = target save slot (1-based)
+; when nothing is flagged (FILES then performs a normal validated directory load).
+cont_load_arm:                             ; d0 = target directory entry index
     movem.l d0-d2/a0, -(sp)
     tst.w   cont_mask
     beq.s   .cla_done
@@ -14939,20 +15122,6 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     moveq   #1, d3
     moveq   #1, d4
     bra     adj_field
-.ep_slot:
-    lea     proj_slot, a1
-    moveq   #0, d3
-    move.b  sram_slots, d3                  ; max slot = this cart's capacity
-    bne.s   .ep_smax
-    moveq   #1, d3                           ; no SRAM: still let the field show slot 1
-.ep_smax:
-    moveq   #1, d4
-    bsr     adj_field
-    tst.b   proj_slot                       ; clamp to [1,sram_slots]
-    bne.s   .eps
-    move.b  #1, proj_slot
-.eps:
-    rts
 .ep_lfo:
     lea     g_lfo, a1                        ; global FM LFO: 0=off, 1-8 = on at rate 0-7
     moveq   #8, d3
@@ -15011,43 +15180,7 @@ edit_proj:                                ; B+dpad on PROJECT: adjust TMPO/TSP/M
     moveq   #12, d4
     bra     adj_field
 
-proj_action:                              ; B-tap on PROJECT: trigger the GO fields
-    move.b  cur_row, d0
-    cmpi.b  #3, d0
-    beq.s   .pa_new
-    cmpi.b  #6, d0
-    beq.s   .pa_save
-    cmpi.b  #7, d0
-    beq.s   .pa_load
-    rts
-.pa_new:
-    moveq   #3, d0                           ; destructive: needs a confirming 2nd tap
-    bsr     proj_confirm
-    bne.s   .pa_ret
-    bsr     clear_song
-    bra.s   .pa_done
-.pa_load:
-    moveq   #7, d0
-    bsr     proj_confirm
-    bne.s   .pa_ret
-    bsr     load_song                     ; legacy raw-slot load (PROJECT path; the live CONT load is on FILES)
-    bra.s   .pa_done
-.pa_save:
-    clr.b   proj_armed
-    bsr     save_song
-    rts
-.pa_ret:
-    rts
-.pa_done:
-    move.b  #0, cur_phrase
-    move.b  #0, cur_chain
-    move.b  #0, cur_songrow
-    move.b  #0, song_page                   ; SONG view back to page 0
-    clr.b   proj_armed
-    move.b  #1, need_clear
-    rts
-
-proj_confirm:                              ; d0 = this row; Z set = confirmed (proceed), Z clear = armed
+proj_confirm:                              ; d0 = action id; Z set = confirmed (proceed), Z clear = armed
     cmp.b   proj_armed, d0
     bne.s   .pc_arm                          ; nothing/other armed -> arm this row
     move.w  g_ticks, d1
@@ -15080,12 +15213,17 @@ files_action:                             ; B-tap on FILES: run the selected sub
     beq     .oa_purge_ch
     bra     .oa_done                         ; menu_row 5 = CANCEL -> just close the menu
 .oa_save:
-    clr.b   proj_armed
+    moveq   #CONF_SAVE, d0
+    bsr     proj_confirm
+    bne     .oa_keepopen
     bsr     files_stop                       ; transport stops for the SRAM op
     bsr     dir_save                         ; saves the working song under song_title
     clr.b   new_named                        ; saved -> the (empty) slot resets to "(EMPTY)"
     bra     .oa_done
 .oa_load:
+    moveq   #CONF_LOAD, d0
+    bsr     proj_confirm
+    bne     .oa_keepopen
     tst.b   playing                          ; CONT: playing + flagged -> arm a beat-quantized live swap
     beq.s   .oa_load_stop                     ;   (no transport stop, no immediate load); else stop-and-load
     tst.w   cont_mask
@@ -15122,6 +15260,9 @@ files_action:                             ; B-tap on FILES: run the selected sub
     bsr     clear_song                       ; LOAD the (empty) slot = a fresh blank project
     bra     .oa_done
 .oa_clear:
+    moveq   #CONF_CLEAR, d0
+    bsr     proj_confirm
+    bne     .oa_keepopen
     bsr     dir_count
     moveq   #0, d1
     move.b  opt_song, d1
@@ -15134,14 +15275,14 @@ files_action:                             ; B-tap on FILES: run the selected sub
     bsr     dir_delete
     bra     .oa_done
 .oa_purge_ph:
-    move.b  #$13, d0                          ; FILES purge-confirm id (distinct from PROJECT cur_rows)
+    moveq   #CONF_PURGE_PHRASE, d0
     bsr     proj_confirm
     bne.s   .oa_keepopen                      ; 1st tap -> armed (SURE? shows); menu stays open
     bsr     purge_phrases
     move.b  d0, purge_freed
     bra.s   .oa_keepopen
 .oa_purge_ch:
-    move.b  #$14, d0
+    moveq   #CONF_PURGE_CHAIN, d0
     bsr     proj_confirm
     bne.s   .oa_keepopen
     bsr     purge_chains
@@ -15517,8 +15658,8 @@ str_o_empty: dc.b "(EMPTY)",0
 str_o_del:   dc.b "DELETE",0
 str_o_clr:   dc.b "CLEAR",0
 str_o_cancel: dc.b "CANCEL",0
-str_purge_ph: dc.b "PURGE PH",0
-str_purge_ch: dc.b "PURGE CH",0
+str_purge_ph: dc.b "PURGE PHRASE",0
+str_purge_ch: dc.b "PURGE CHAIN",0
 str_freed:   dc.b "FREED ",0
 str_p_tmpo: dc.b "TMPO",0
 str_p_new:  dc.b "NEW",0

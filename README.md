@@ -38,9 +38,9 @@ FM (F1 - F6), Kit (F6), Wave (F6), Tone (T1 - T3), Noise (No), Perc (F3)
 **Controls** — the *held* button picks the action:
 - **D-pad** — move the cursor.
 - **B** — tap = insert / edit · hold + D-pad = nudge the value (L/R small, U/D big) ·
-  double-tap = paste · tap on a note = audition it.
+  double-tap a SONG/CHAIN reference = mint/clone · tap on a note = audition it.
 - **A** (held) + D-pad = navigate within context: `A`+B = block-select · `A`+←/→ = switch channel · `A`+↑/↓ = page.
-- **C** (held) + D-pad = navigate to new context (change screen). 
+- **C** (held) + D-pad = navigate to new context (change screen) · clean double-tap = paste.
 - **C + B** = play from the exact cursor position (solo this screen); in SONG, reaching the
   end of that contiguous block loops back to its top.
 - **Start** = play / stop the song (in LIVE, launch the cursor row).

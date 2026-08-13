@@ -2,6 +2,20 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## Unreleased
+
+### Changed
+- Paste is now a **clean C double-tap**, leaving **B double-tap** exclusively for minting and
+  cloning SONG/CHAIN references. C chords, navigation and block cancellation do not count.
+- New chain/phrase allocation searches upward cyclically from the current reference and protects
+  empty records that are still referenced.
+- Every FILES action (**SAVE, LOAD, CLEAR, PURGE PHRASE, PURGE CHAIN**) now requires two taps;
+  the first displays **`SURE?`**. Purge labels are expanded in full.
+
+### Fixed
+- Editing chain and phrase references now uses unsigned bounds, so valid phrase values `$80`–`$BF`
+  no longer collapse to zero while incrementing or decrementing.
+
 ## v0.18 — 2026-08-13
 
 ### Added
