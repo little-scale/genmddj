@@ -22,6 +22,9 @@ All notable changes to genmddj. Versions increment by **0.01**.
 - Simultaneous FM notes now prepare their patches and frequencies before adjacent key-on writes,
   preventing F2 from starting one video frame after F1 on a two-voice cold trigger. Ordinary
   transport restarts retain valid per-channel patch shadows instead of reloading unchanged patches.
+- A normally loaded song now prewarms the first predicted FM/PERC patch for each FM track while
+  stopped, at two silent patches per frame. Immediate playback safely falls back to normal patching,
+  and live CONT transitions never prewarm underneath sounding voices.
 
 ## v0.18 — 2026-08-13
 

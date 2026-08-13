@@ -354,6 +354,11 @@ CONT_RAM_END     equ carry_row + NCARRY            ; guard (INSTR_SIZE=64 litera
     endc
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
 rle_buf    equ $00FF5D60            ; RLE staging: the free gap above the data block (~25 KB, to env_canvas $C000)
+fm_pre_mask equ $00FFBFE0           ; bits 0-5: stopped-load FM channels still waiting to prewarm
+fm_pre_inst equ $00FFBFE1           ; 6 predicted first-heard instrument numbers (one per FM channel)
+    ifgt (fm_pre_inst+6)-env_canvas
+        fail "FM prewarm state overruns the envelope canvas"
+    endc
 dir_ent    equ $00FFD440            ; 16-byte aligned scratch for one directory entry (save/load staging)
 dir_cache  equ $00FFD450            ; OPTIONS song-list cache: the whole directory (DIR_N*DIR_ENT = 512 B)
 opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (drives LOAD/DELETE)
@@ -7246,6 +7251,7 @@ init_ch:                                  ; a6 = channel (c_type/config already 
     rts
 
 invalidate_patches:                       ; instrument memory was replaced wholesale: no YM patch shadow is trustworthy
+    clr.b   fm_pre_mask                    ; discard any predictions made from the previous instrument/song data
     lea     pshadow, a0
     moveq   #NCH-1, d0
 .ip_all:
@@ -7255,6 +7261,7 @@ invalidate_patches:                       ; instrument memory was replaced whole
 
 invalidate_cur_instr_patches:             ; current instrument record changed: invalidate channels using that slot
     movem.l d0-d1/a0/a6, -(sp)
+    clr.b   fm_pre_mask                    ; editing during idle cancels the old background plan
     move.b  cur_instr, d1
     lea     pshadow, a0
     lea     ch_state, a6
@@ -7268,6 +7275,114 @@ invalidate_cur_instr_patches:             ; current instrument record changed: i
     lea     CHSIZE(a6), a6
     dbra    d0, .icip_loop
     movem.l (sp)+, d0-d1/a0/a6
+    rts
+
+fm_prewarm_plan:                          ; stopped normal load: predict each FM track's first playable instrument
+    movem.l d0-d7/a0-a4, -(sp)             ; deliberately scans only the first populated SONG chain per track
+    clr.b   fm_pre_mask                    ; (bounded work; later/unusual playback falls back to note-time patching)
+    lea     fm_pre_inst, a0
+    moveq   #5, d0
+.fpp_clear:
+    move.b  #$FF, (a0)+
+    dbra    d0, .fpp_clear
+    moveq   #0, d7                          ; FM track 0..5
+.fpp_track:
+    moveq   #0, d6                          ; SONG row 0..239: find this track's first valid chain
+.fpp_song:
+    move.w  d6, d0
+    mulu.w  #NCH, d0
+    add.w   d7, d0
+    lea     song, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    cmpi.w  #NCHAINS, d1
+    blo.s   .fpp_chain
+    addq.w  #1, d6
+    cmpi.w  #NSONGROWS, d6
+    blo.s   .fpp_song
+    bra     .fpp_next_track
+.fpp_chain:
+    mulu.w  #CHAIN_SIZE, d1
+    lea     chains, a2
+    adda.w  d1, a2                          ; a2 = first populated chain for this track
+    moveq   #0, d5                          ; chain step 0..15
+.fpp_step:
+    moveq   #0, d1
+    move.b  (a2), d1                       ; phrase reference (transpose does not affect patch choice)
+    cmpi.w  #NPHRASES, d1
+    bhs.s   .fpp_next_step
+    lsl.w   #6, d1
+    lea     phrases, a3
+    adda.w  d1, a3                          ; a3 = phrase
+    moveq   #15, d4                         ; phrase row 0..15
+.fpp_phrase:
+    moveq   #0, d0
+    move.b  (a3), d0                       ; playable note?
+    cmpi.w  #96, d0
+    bhs.s   .fpp_next_row
+    moveq   #0, d1
+    move.b  1(a3), d1                      ; predicted instrument
+    cmpi.w  #NINSTR, d1
+    bhs.s   .fpp_next_row
+    move.w  d1, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    move.b  (a4,d0.w), d0                  ; only FM(0) / PERC(5) need a YM channel patch
+    beq.s   .fpp_found
+    cmpi.b  #5, d0
+    bne.s   .fpp_next_row
+.fpp_found:
+    lea     fm_pre_inst, a0
+    move.b  d1, (a0,d7.w)
+    bset    d7, fm_pre_mask
+    bra.s   .fpp_next_track
+.fpp_next_row:
+    lea     4(a3), a3
+    dbra    d4, .fpp_phrase
+.fpp_next_step:
+    lea     2(a2), a2
+    addq.w  #1, d5
+    cmpi.w  #16, d5
+    blo.s   .fpp_step
+.fpp_next_track:
+    addq.w  #1, d7
+    cmpi.w  #6, d7
+    blo     .fpp_track
+    movem.l (sp)+, d0-d7/a0-a4
+    rts
+
+fm_prewarm_service:                       ; stopped path: append at most two predicted patches to this SCB
+    tst.b   playing
+    bne.s   .fps_cancel                    ; playback owns the channels; never warm underneath sounding voices
+    moveq   #0, d7                          ; FM track 0..5
+    lea     ch_state, a6
+.fps_loop:
+    btst    d7, fm_pre_mask
+    beq.s   .fps_next
+    cmpi.b  #MAXPATCH, patch_done
+    bhs.s   .fps_ret                       ; paced: the rest wait for a later stopped frame
+    cmpi.w  #PATCH_CAP, d5
+    bhi.s   .fps_ret
+    lea     fm_pre_inst, a0
+    moveq   #0, d1
+    move.b  (a0,d7.w), d1
+    cmpi.w  #NINSTR, d1
+    bhs.s   .fps_drop
+    bsr     emit_ch_patch                   ; silent: patch registers only, no frequency or $28 key-on
+    lea     pshadow, a0
+    move.b  d1, (a0,d7.w)                  ; mark warm only after the complete patch entered the SCB
+    addq.b  #1, patch_done
+.fps_drop:
+    bclr    d7, fm_pre_mask
+.fps_next:
+    lea     CHSIZE(a6), a6
+    addq.w  #1, d7
+    cmpi.w  #6, d7
+    blo.s   .fps_loop
+.fps_ret:
+    rts
+.fps_cancel:
+    clr.b   fm_pre_mask
     rts
 
 ; drop any legacy F1 A/V transient overrides; only request a full patch when one was live
@@ -7536,6 +7651,7 @@ live_setup_chan:                          ; d1 = track, d2 = songpos; arm that c
 ; reset every channel for playback per play_mode (kshadow=$FF forces a key-off,
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
+    clr.b   fm_pre_mask                    ; an immediate start cancels unfinished speculative warming
     lea     c_wbank, a0                   ; B command: clear per-channel wave-bank overrides ($FF = use iw_wave)
     moveq   #NCH-1, d0
 .epr_wb:
@@ -8229,7 +8345,7 @@ engine_tick:
     cmpi.b  #4, opt_sync                  ; SYNC=MIDI -> takeover: no advance, compose held voices
     beq     .midi
     tst.b   playing
-    bne.s   .play
+    bne     .play
     tst.w   audit_ctr                     ; stopped: an INSTR audition running -> voice the channels (no advance)
     beq.s   .sil_start
     subq.w  #1, audit_ctr
@@ -8255,7 +8371,10 @@ engine_tick:
     or.b    d5, d0
     or.b    repatch, d0                   ; a pending patch re-push also needs a push
     or.b    g_lfo_dirty, d0               ; ...as does a global-LFO ($22) change
+    or.b    fm_pre_mask, d0               ; ...or background FM patch prewarming after a song load
     beq.s   .sret
+    bsr     fm_prewarm_service            ; append up to two silent channel patches to this stopped SCB
+    move.b  d5, ym_count                   ; include the newly appended patches in the published count
     bsr     push_scb
 .sret:
     bsr     wave_silence                  ; stopped -> park any sounding wave
@@ -15394,6 +15513,8 @@ files_action:                             ; B-tap on FILES: run the selected sub
     bsr     dir_load
     tst.b   load_ok
     beq     .oa_done                         ; failed load kept the working song and title intact
+    clr.b   repatch                          ; the loaded bank invalidated legacy F1 override restoration
+    bsr     fm_prewarm_plan                  ; stopped normal load: silently prepare likely first FM patches
     clr.b   new_named                        ; loaded a song -> the (empty) slot is "(EMPTY)" again
     bra     .oa_done
 .oa_newproj:

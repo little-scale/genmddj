@@ -714,6 +714,79 @@ FM_SIMULTANEOUS = """    tst.b   $00FFD500
 .tfsdone:
 """
 
+FM_PREWARM = """    tst.b   $00FFD500
+    bne     .tfpdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, instrum+(31*INSTR_SIZE)   ; first F1 note is KIT: skip it and predict the later FM note
+    move.b  #0, song+(2*NCH)+0
+    move.b  #1, song+1
+    move.b  #2, song+2
+    move.b  #3, song+3
+    move.b  #4, song+4
+    move.b  #5, song+5
+    move.b  #0, chains+(0*CHAIN_SIZE)
+    move.b  #1, chains+(1*CHAIN_SIZE)
+    move.b  #2, chains+(2*CHAIN_SIZE)
+    move.b  #3, chains+(3*CHAIN_SIZE)
+    move.b  #4, chains+(4*CHAIN_SIZE)
+    move.b  #5, chains+(5*CHAIN_SIZE)
+    move.b  #48, phrases+(0*PHRASE_SIZE)
+    move.b  #31, phrases+(0*PHRASE_SIZE)+1
+    move.b  #49, phrases+(0*PHRASE_SIZE)+4
+    move.b  #0, phrases+(0*PHRASE_SIZE)+5
+    move.b  #49, phrases+(1*PHRASE_SIZE)
+    move.b  #1, phrases+(1*PHRASE_SIZE)+1
+    move.b  #50, phrases+(2*PHRASE_SIZE)
+    move.b  #2, phrases+(2*PHRASE_SIZE)+1
+    move.b  #51, phrases+(3*PHRASE_SIZE)
+    move.b  #3, phrases+(3*PHRASE_SIZE)+1
+    move.b  #52, phrases+(4*PHRASE_SIZE)
+    move.b  #4, phrases+(4*PHRASE_SIZE)+1
+    move.b  #53, phrases+(5*PHRASE_SIZE)
+    move.b  #5, phrases+(5*PHRASE_SIZE)+1
+    bsr     fm_prewarm_plan
+    move.b  fm_pre_mask, $00FFD800
+    lea     fm_pre_inst, a0
+    lea     $00FFD801, a1
+    moveq   #5, d0
+.tfp_copy:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .tfp_copy
+
+    clr.b   patch_done
+    lea     ym_data, a5
+    moveq   #0, d5
+    lea     ch_state, a6
+    bsr     fm_prewarm_service
+    move.b  fm_pre_mask, $00FFD807
+    move.b  d5, $00FFD808
+    move.b  pshadow, $00FFD809
+    move.b  pshadow+1, $00FFD80A
+    clr.b   patch_done
+    lea     ym_data, a5
+    moveq   #0, d5
+    lea     ch_state, a6
+    bsr     fm_prewarm_service
+    move.b  fm_pre_mask, $00FFD80B
+    move.b  d5, $00FFD80C
+    clr.b   patch_done
+    lea     ym_data, a5
+    moveq   #0, d5
+    lea     ch_state, a6
+    bsr     fm_prewarm_service
+    move.b  fm_pre_mask, $00FFD80D
+    move.b  d5, $00FFD80E
+    move.b  pshadow+4, $00FFD80F
+    move.b  pshadow+5, $00FFD810
+    bsr     fm_prewarm_plan
+    bsr     engine_play_reset
+    move.b  fm_pre_mask, $00FFD811
+    movem.l (sp)+, d0-d7/a0-a6
+.tfpdone:
+"""
+
 CUT_PRIMES_INSERT = """    tst.b   $00FFD500
     bne     .tcpdone
     move.b  #1, $00FFD500
@@ -1058,6 +1131,16 @@ def t_fm_simultaneous():
         'warm simultaneous FM queue %r' % warm
     return 'transport preserves patches; cold F1/F2 share 72-write SCB; warm pair uses 20; keys adjacent'
 
+def t_fm_prewarm():
+    """Stopped-load prediction scans first chains, warms two FM patches per pass, and cancels on start."""
+    ram = run_rom(build_rom('fm_prewarm', boot_inject=FM_PREWARM), 35)
+    assert list(ram[0xD800:0xD807]) == [0x3F, 0, 1, 2, 3, 4, 5], \
+        'FM prewarm plan %r' % list(ram[0xD800:0xD807])
+    assert list(ram[0xD807:0xD811]) == [0x3C, 52, 0, 1, 0x30, 52, 0, 52, 4, 5], \
+        'FM prewarm pacing/shadows %r' % list(ram[0xD807:0xD811])
+    assert ram[0xD811] == 0, 'playback start did not cancel pending prewarm ($%02X)' % ram[0xD811]
+    return 'first-chain prediction; six patches silently warm at two/frame; playback cancels pending work'
+
 def t_cut_primes_insert():
     """Single-cell cuts prime the corresponding next-insert memory before clearing."""
     ram = run_rom(build_rom('cut_primes_insert', boot_inject=CUT_PRIMES_INSERT), 45)
@@ -1104,6 +1187,7 @@ TESTS = [
     ('files_confirm', t_files_confirm),
     ('files_confirm_cancel', t_files_confirm_cancel),
     ('fm_simultaneous', t_fm_simultaneous),
+    ('fm_prewarm', t_fm_prewarm),
     ('cut_primes_insert', t_cut_primes_insert),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
