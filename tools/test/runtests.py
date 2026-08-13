@@ -1013,7 +1013,7 @@ def t_cont_bridge():
 
 def t_cont_quantize():
     """CONT: an armed swap HOLDS until the carried voice's phrase downbeat, then fires
-    (beat-quantized) -- not the instant LOAD is pressed."""
+    (beat-quantized), with the restarted song and carried bridge on the same row."""
     rom = build_rom('cont_quantize', boot_inject=CONT_LOAD_SONG, frame_inject=CONT_ARM)
     held = run_rom(rom, 60)
     assert held[0xD763] == 1, 'CONT fired before a downbeat (cont_pending cleared early)'
@@ -1022,7 +1022,10 @@ def t_cont_quantize():
     assert fired[0xE104] == 0xFE, 'fired but did not plant the bridge (c_chain=$%02X)' % fired[0xE104]
     # SONG mode: the non-carried F1 (track 0) is RESTARTED on the new song, not silenced
     assert fired[0xE014] != 0xFF, 'non-carried F1 silenced in SONG mode (should restart, c_chain=$%02X)' % fired[0xE014]
-    return 'armed, held past frame 60, fired on a downbeat; F1 restarted (SONG entry)'
+    assert fired[0xE007] == fired[0xE0F7], \
+        'new F1 row %d is out of phase with carried T1 row %d' % (fired[0xE007], fired[0xE0F7])
+    assert fired[0xE0F4] > 0, 'carried T1 did not recover its audible row state (c_vol=%d)' % fired[0xE0F4]
+    return 'armed, fired on a downbeat; new F1 + carried T1 resume on the same audible row'
 
 def t_save_roundtrip():
     """SAVE commits a verified directory entry and LOAD restores the exact saved snapshot."""

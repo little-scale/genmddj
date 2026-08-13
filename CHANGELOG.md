@@ -26,6 +26,8 @@ All notable changes to genmddj. Versions increment by **0.01**.
   stopped, at two silent patches per frame. Immediate playback safely falls back to normal patching,
   note-entry audition counts as warming its physical channel, and live CONT transitions never
   prewarm underneath sounding voices.
+- SONG-mode CONT transitions now resume newly loaded and carried tracks on the same sequencer row;
+  carried boundary notes are rebuilt after the load reset instead of returning one row late or silent.
 
 ## v0.18 — 2026-08-13
 

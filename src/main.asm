@@ -15038,6 +15038,37 @@ cont_plant_all:
     movem.l (sp)+, d0-d7/a0-a1/a6
     rts
 
+; SONG-mode CONT resets every runtime voice before planting the carried snapshots. The load fires
+; after the old channels have already entered their boundary row, so a plain reset leaves the new
+; song at pre-row-0 while each bridge is restored at the already-entered row: one row out of phase.
+; Rewind only the bridges by one row, then advance every eligible channel through the normal path.
+; That rebuilds note/command/envelope trigger state and makes the new song + bridges enter the same
+; audio update. LIVE mode does not call engine_play_reset and therefore must not use this catch-up.
+cont_resume_song:
+    movem.l d0-d7/a0-a2/a6, -(sp)
+    bsr     groove_step                    ; match a normal reset's first row launch (slot 0 -> slot 1)
+    moveq   #NCH-1, d7
+    lea     ch_state, a6
+.crs_loop:
+    cmpi.b  #CONT_BRIDGE, c_chain(a6)
+    bne.s   .crs_advance
+    move.b  c_row(a6), d0                  ; replay the snapshotted current row after reset erased
+    subq.b  #1, d0                         ; its trigger/runtime state (0 rewinds to 15)
+    andi.b  #$0F, d0
+    move.b  d0, c_row(a6)
+.crs_advance:
+    bsr     is_echo_target                 ; keep the normal engine's channel-ownership rules
+    tst.b   d0
+    bne.s   .crs_next
+    bsr     advance_ch                     ; inactive/empty channels safely no-op inside advance_ch
+.crs_next:
+    lea     CHSIZE(a6), a6
+    dbra    d7, .crs_loop
+    clr.b   g_gctr                         ; the jointly entered row receives its full groove duration
+    move.b  #1, eng_adv                    ; playheads changed during the handover
+    movem.l (sp)+, d0-d7/a0-a2/a6
+    rts
+
 ; Driver: swap to save slot d0 (1-based) live -- snapshot, load, plant. The v1
 ; test/prototype path; the beat-quantized fire + glide + SONG entry wrap this.
 cont_do_load:                              ; d0 = target directory entry index -> load it live
@@ -15057,6 +15088,10 @@ cont_do_load:                              ; d0 = target directory entry index -
     bsr     cont_groove_avg               ; the NEW tempo
     move.b  d0, glide_to
     bsr     cont_plant_all
+    tst.b   proj_mode
+    bne.s   .cdl_glide                     ; LIVE retained runtime state; replaying would double-trigger its row
+    bsr     cont_resume_song               ; SONG: new + carried tracks enter their rows on the same tick
+.cdl_glide:
     bsr     cont_glide_start              ; ramp old->new over SLID bars (if they differ)
 .cdl_fail:
     rts
