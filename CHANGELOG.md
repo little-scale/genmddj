@@ -2,7 +2,7 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## Unreleased
+## v0.19 — 2026-08-14
 
 ### Added
 - **Experimental GENMDDJ Player prototype.** A preliminary native offline player/renderer
@@ -11,6 +11,11 @@ All notable changes to genmddj. Versions increment by **0.01**.
   This is an early experiment rather than a finished end-user player.
 
 ### Changed
+- The browser palette patcher now loads palettes directly from a ROM, exports a re-checksummed
+  patched ROM, imports/exports individual palettes, and supports palette/colour copy, paste,
+  reordering and direct hexadecimal editing.
+- MIDI sync/takeover documentation now points to the shared **Chipbridge** hardware and
+  Pico-family firmware project.
 - Paste is now a **clean C double-tap**, leaving **B double-tap** exclusively for minting and
   cloning SONG/CHAIN references. C chords, navigation and block cancellation do not count.
 - New chain/phrase allocation searches upward cyclically from the current reference and protects
