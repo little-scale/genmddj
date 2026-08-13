@@ -781,8 +781,13 @@ FM_PREWARM = """    tst.b   $00FFD500
     move.b  pshadow+4, $00FFD80F
     move.b  pshadow+5, $00FFD810
     bsr     fm_prewarm_plan
-    bsr     engine_play_reset
+    move.b  #2, cur_chan
+    moveq   #54, d1
+    moveq   #6, d2
+    bsr     audit_voice
     move.b  fm_pre_mask, $00FFD811
+    bsr     engine_play_reset
+    move.b  fm_pre_mask, $00FFD812
     movem.l (sp)+, d0-d7/a0-a6
 .tfpdone:
 """
@@ -1138,8 +1143,9 @@ def t_fm_prewarm():
         'FM prewarm plan %r' % list(ram[0xD800:0xD807])
     assert list(ram[0xD807:0xD811]) == [0x3C, 52, 0, 1, 0x30, 52, 0, 52, 4, 5], \
         'FM prewarm pacing/shadows %r' % list(ram[0xD807:0xD811])
-    assert ram[0xD811] == 0, 'playback start did not cancel pending prewarm ($%02X)' % ram[0xD811]
-    return 'first-chain prediction; six patches silently warm at two/frame; playback cancels pending work'
+    assert ram[0xD811] == 0x3B, 'FM audition did not consume track F3 prediction ($%02X)' % ram[0xD811]
+    assert ram[0xD812] == 0, 'playback start did not cancel pending prewarm ($%02X)' % ram[0xD812]
+    return 'first-chain prediction; two patches/frame; FM audition consumes its channel; playback cancels rest'
 
 def t_cut_primes_insert():
     """Single-cell cuts prime the corresponding next-insert memory before clearing."""

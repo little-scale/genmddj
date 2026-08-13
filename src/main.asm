@@ -3767,6 +3767,25 @@ audit_voice:                              ; d1.b = note, d2.b = instrument -> au
     move.b  d1, c_note(a6)
     move.b  d2, c_instr(a6)
     bsr     note_trigger                   ; key-on (dispatches by the channel's voice type)
+    cmpi.b  #1, c_type(a6)                 ; an FM/PERC audition is itself a real physical-channel warm
+    bne.s   .av_armed
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    cmpi.w  #NINSTR, d0
+    bhs.s   .av_armed
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a0
+    move.b  (a0,d0.w), d0
+    beq.s   .av_consume
+    cmpi.b  #5, d0                          ; PERC also installs an FM operator patch
+    bne.s   .av_armed
+.av_consume:
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    cmpi.w  #6, d0
+    bhs.s   .av_armed
+    bclr    d0, fm_pre_mask                ; don't let the older load prediction overwrite this audition
+.av_armed:
     move.w  #90, audit_ctr                 ; ~1.5 s: keep engine_tick voicing it while stopped
     movem.l (sp)+, d0-d7/a0-a6
 .av_ret:

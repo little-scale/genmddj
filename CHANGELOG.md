@@ -24,7 +24,8 @@ All notable changes to genmddj. Versions increment by **0.01**.
   transport restarts retain valid per-channel patch shadows instead of reloading unchanged patches.
 - A normally loaded song now prewarms the first predicted FM/PERC patch for each FM track while
   stopped, at two silent patches per frame. Immediate playback safely falls back to normal patching,
-  and live CONT transitions never prewarm underneath sounding voices.
+  note-entry audition counts as warming its physical channel, and live CONT transitions never
+  prewarm underneath sounding voices.
 
 ## v0.18 — 2026-08-13
 
