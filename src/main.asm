@@ -292,6 +292,7 @@ CONF_LOAD equ $11
 CONF_CLEAR equ $12
 CONF_PURGE_PHRASE equ $13
 CONF_PURGE_CHAIN equ $14
+FILES_STATUS_ROW equ 17             ; blank row 16 separates actions from SURE?/FREED status
 PEN_STEP   equ 4                   ; WAVE pen: level change per B+Up/Down (with key-repeat)
 PREV_TOP   equ 20                  ; INSTR WAVE preview scope: top row (32x8 under the fields)
 PREV_COL   equ 4                   ; INSTR WAVE preview scope: left column (centres 32 cols)
@@ -370,7 +371,7 @@ opt_song   equ $00FFD433            ; OPTIONS: selected song list-position (driv
 save_full  equ $00FFD434            ; OPTIONS: 1 = the last save was refused (directory/SRAM full) -> the meter shows FULL
 save_busy  equ $00FFD435            ; nonzero while save/load owns SAVE_BASE (engine_tick must not mutate it)
 files_menu equ $00FFD436            ; FILES: 0 = browsing the slot list, 1 = the SAVE/LOAD/CLEAR sub-menu is open
-menu_row   equ $00FFD437            ; FILES sub-menu cursor (0=SAVE 1=LOAD 2=CLEAR 3=CANCEL)
+menu_row   equ $00FFD437            ; FILES action cursor 0..5; boots on CANCEL, then remembered this session
 files_namecol equ $00FFD438         ; FILES name-edit cursor: which of the 8 name chars (0-7) B+d-pad edits
 new_named  equ $00FFD439            ; FILES: 1 once a name has been typed on the (empty) slot (else it reads "(EMPTY)"); reset on save/load/new
 sync_shadow equ $00FFD43A           ; engine_tick: last-seen opt_sync, to detect MIDI takeover entry/exit (MIDI.md §5)
@@ -671,6 +672,7 @@ Start:
     move.b  #0, save_busy
     move.b  #FILE_ERR_NONE, files_error
     move.b  #0, load_ok
+    move.b  #5, menu_row                 ; first FILES open is safe; later opens remember this session's action
     move.b  #SCR_SONG, cur_screen
     move.b  #0, cur_chain
     move.b  #0, cur_instr
@@ -2003,7 +2005,7 @@ dpad_fire:
     moveq   #0, d1
     rts
 
-files_nav:                                 ; FILES: list mode = slots 0..count; sub-menu mode = the 4 actions
+files_nav:                                 ; FILES: list mode = slots 0..count; sub-menu mode = six actions
     tst.b   files_menu
     beq.s   .fn_list
     btst    #0, d2                            ; sub-menu: Up = previous action
@@ -14815,7 +14817,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
 .rf_sm4:
     lea     str_o_cancel, a1
     bsr     print_hl
-    moveq   #16, d3                         ; always erase the previous transient status first
+    moveq   #FILES_STATUS_ROW, d3           ; always erase the previous transient status first
     moveq   #22, d4                         ; (SURE? must disappear after navigation/timeout)
     lea     str_blank15, a1
     bsr     print_at
@@ -14825,7 +14827,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     cmpi.b  #CONF_PURGE_CHAIN, d0
     bhi.s   .rf_freed
 .rf_sure:
-    moveq   #16, d3
+    moveq   #FILES_STATUS_ROW, d3
     moveq   #22, d4
     lea     str_sure, a1
     bsr     print_at
@@ -14834,7 +14836,7 @@ render_files:                              ; FILES body: SRAM/FREE + the slot li
     move.b  purge_freed, d0
     cmpi.b  #$FF, d0
     beq.s   .rf_done
-    moveq   #16, d3
+    moveq   #FILES_STATUS_ROW, d3
     moveq   #22, d4
     lea     str_freed, a1                   ; "FREED " (6 ch) -> VDP auto-advances to col 28
     bsr     print_at
@@ -15611,7 +15613,7 @@ files_confirm_tick:                       ; cancel an armed FILES action as soon
     bls.s   .fct_ret
 .fct_clear:
     clr.b   proj_armed
-    move.b  #1, vdirty                      ; repaint row 16 so the stale SURE? is erased
+    move.b  #1, vdirty                      ; repaint the transient status row so stale SURE? is erased
 .fct_ret:
     rts
 
@@ -15846,13 +15848,13 @@ files_menu_toggle:                         ; FILES C+B: open/close the SAVE/LOAD
     tst.b   files_menu
     bne.s   .fmt_close
     move.b  cur_row, opt_song                ; freeze the selected slot
-    clr.b   menu_row
     move.b  #$FF, purge_freed                ; no purge readout until a purge runs this session
     clr.b   proj_armed                       ; no stale confirm carried into the menu
     move.b  #1, files_menu
     move.b  #1, need_clear
     rts
 .fmt_close:
+    clr.b   proj_armed                       ; closing immediately disarms SURE?; remember menu_row
     clr.b   files_menu
     move.b  #1, need_clear
 .fmt_x:

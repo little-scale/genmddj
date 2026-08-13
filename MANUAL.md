@@ -534,6 +534,10 @@ room — up to **32** songs. A small **SRAM / FREE** readout sits under the map.
 Every action below requires **two B taps** within the confirmation window; the first shows
 **`SURE?`**, and the second runs it:
 
+- The first time the menu opens after boot, its cursor starts on **CANCEL**. Later openings
+  remember the last selected action for the current powered session only.
+- The confirmation/result line appears one blank row below the action list.
+
 - **SAVE** — write the working song to the selected slot (overwrites an existing one; on the
   empty slot, creates a new file). *Saving only happens when you press SAVE* — edits aren't
   auto-saved, so save often.

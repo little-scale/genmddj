@@ -596,6 +596,7 @@ FILES_CONFIRM_CANCEL = """    tst.b   $00FFD500
     bne     .tfccdone
     move.b  #1, $00FFD500
     movem.l d0-d7/a0-a6, -(sp)
+    move.b  menu_row, $00FFD804
     move.b  #SCR_FILES, cur_screen
     move.b  #1, files_menu
     move.b  #CONF_SAVE, proj_armed
@@ -611,6 +612,14 @@ FILES_CONFIRM_CANCEL = """    tst.b   $00FFD500
     bsr     move_cursor
     move.b  proj_armed, $00FFD802
     move.b  menu_row, $00FFD803
+    move.b  #2, sram_layout
+    move.b  #CONF_LOAD, proj_armed
+    bsr     files_menu_toggle
+    move.b  proj_armed, $00FFD805
+    move.b  #2, menu_row
+    bsr     files_menu_toggle
+    move.b  menu_row, $00FFD806
+    move.b  files_menu, $00FFD807
     movem.l (sp)+, d0-d7/a0-a6
 .tfccdone:
 """
@@ -1120,11 +1129,13 @@ def t_files_confirm():
     return 'SAVE/LOAD/CLEAR/PURGE PHRASE/PURGE CHAIN arm first, execute second'
 
 def t_files_confirm_cancel():
-    """FILES confirmation state expires autonomously and navigation cancels it."""
+    """FILES confirmation lifetime and safe session-only action cursor behavior."""
     ram = run_rom(build_rom('files_confirm_cancel', boot_inject=FILES_CONFIRM_CANCEL), 35)
     got = list(ram[0xD800:0xD804])
     assert got == [0, 1, 0, 0], 'FILES confirmation cancel/expiry %r' % got
-    return 'timeout requests a repaint; moving actions cancels the armed confirmation'
+    state = list(ram[0xD804:0xD808])
+    assert state == [5, 0, 2, 1], 'FILES initial/remembered cursor state %r' % state
+    return 'timeout/nav/close cancel SURE?; first open is CANCEL; later opens remember the action'
 
 def t_fm_simultaneous():
     """Warm patch shadows survive transport reset; cold F1/F2 prepare in one SCB with adjacent keys."""
