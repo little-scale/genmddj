@@ -8246,6 +8246,40 @@ retrig_psg_rd:
 .rpr_ret:
     rts
 
+; R-command re-strike for a KIT instrument hosted on an FM track. KIT notes bypass
+; compose_fm, so their c_trig would otherwise only try to key the silent FM voice.
+; Restart the same kit/pad through the DAC, using dac_play_retrig so c_rtdrop selects
+; a progressively quieter pre-shifted PCM pool. Preserve hold_tick's live registers.
+retrig_kit_dac:
+    movem.l d0-d2/a1/a4, -(sp)
+    cmpi.b  #1, c_type(a6)                  ; only FM tracks can host KIT instruments
+    bne.s   .rkd_done
+    lea     instrum, a4
+    moveq   #0, d2
+    move.b  c_instr(a6), d2
+    mulu.w  #INSTR_SIZE, d2
+    cmpi.b  #1, (i_type,a4,d2.w)
+    bne.s   .rkd_done
+    tst.b   player_active                   ; stem passes expose the physical DAC as F6
+    beq.s   .rkd_play
+    move.w  player_mask, d0
+    btst    #5, d0
+    beq.s   .rkd_consume
+.rkd_play:
+    move.b  (i_kit,a4,d2.w), d0
+    moveq   #0, d1
+    move.b  c_note(a6), d1
+    andi.w  #$0F, d1
+    lea     0(a4,d2.w), a1                  ; same instrument retains its KIT, VOL and RATE
+    bsr     dac_play_retrig
+.rkd_consume:
+    move.b  #0, wave_on                     ; a KIT re-strike owns (or masks) the DAC path
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_trig(a6)                  ; do not fall through to the FM key-on composer
+.rkd_done:
+    movem.l (sp)+, d0-d2/a1/a4
+    rts
+
 ; --- Groove clock (Phase 1) -----------------------------------------------------------------------
 ; Grooves are the clock: each song row lasts active-groove[groove_pos] ticks (1 tick = 1 VBlank
 ; frame); groove_pos cycles through the groove (wraps at 16 or on a 0 entry = short groove). A flat
@@ -9018,6 +9052,7 @@ hold_tick:                                ; a6 = channel
     clr.b   (a1,d0.w)
 .hrt_nv:
     movem.l (sp)+, d0/d3/a1                ; restore (a1 = c_rtctr for .hrtset)
+    bsr     retrig_kit_dac                  ; KIT: restart the sample now; consume the fake FM trigger
 .hrtset:
     move.b  d2, (a1,d0.w)
 .hnort:
@@ -11535,6 +11570,15 @@ push_scb:
 ; window bank/pointer, and pushes the DAC command (own BUSREQ). Empty pad = no-op.
 dac_play:
     movem.l d2-d6/a0, -(sp)
+    moveq   #0, d6                          ; ordinary note-on uses the instrument's gain pool
+    bra.s   dac_play_gain_ready
+dac_play_retrig:
+    movem.l d2-d6/a0, -(sp)
+    moveq   #0, d6
+    move.b  c_track(a6), d6
+    lea     c_rtdrop, a0
+    move.b  (a0,d6.w), d6                  ; each R attenuation step selects one quieter pool
+dac_play_gain_ready:
     andi.w  #15, d0                         ; clamp kit 0..15 (guards an uninitialised i_kit)
     move.w  d0, d2                         ; member = pool + 16 (header) + (kit*16+pad)*16
     lsl.w   #4, d2
@@ -11546,14 +11590,17 @@ dac_play:
     move.l  4(a0,d2.w), d4                 ; member length
     tst.l   d4
     beq     .dpx                           ; empty pad -> nothing
-    moveq   #0, d6                          ; select a pre-shifted PCM pool without adding work
-    move.b  (i_gain,a1), d6                ; to the Z80's timing-critical feed loop
-    cmpi.b  #5, d6
+    moveq   #0, d5                          ; select a pre-shifted PCM pool without adding work
+    move.b  (i_gain,a1), d5                ; to the Z80's timing-critical feed loop
+    cmpi.b  #5, d5
     beq.s   .dp_mute
-    cmpi.b  #4, d6
+    cmpi.b  #4, d5
     bls.s   .dp_gvalid
-    moveq   #0, d6                          ; malformed old reserved value -> full volume
+    moveq   #0, d5                          ; malformed old reserved value -> full volume
 .dp_gvalid:
+    add.w   d5, d6                          ; retrigger decay is cumulative from the instrument VOL
+    cmpi.w  #5, d6
+    bhs.s   .dp_mute                        ; no quieter stored pool: replace the hit with silence
     tst.w   d6
     beq.s   .dp_addr
     move.l  12(a0), d5                     ; header stores the byte stride between gain pools

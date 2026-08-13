@@ -104,6 +104,26 @@ FRAME_LOGGER_NOARM = """    movem.l d0-d1/a1, -(sp)
     movem.l (sp)+, d0-d1/a1
 """
 
+# per-frame KIT retrigger logger: high byte = Z80 DAC trigger sequence, low byte =
+# F6's accumulated R-command attenuation. A healthy KIT retrigger advances both.
+DAC_TRIGGER_LOGGER = """    movem.l d0-d1/a1, -(sp)
+    move.w  #$0100, Z80_BUSREQ
+.tdtw:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tdtw
+    moveq   #0, d1
+    move.b  Z80_RAM+$1FB0, d1
+    lsl.w   #8, d1
+    move.w  #$0000, Z80_BUSREQ
+    move.b  c_rtdrop+5, d1
+    move.w  g_ticks, d0
+    andi.w  #63, d0
+    add.w   d0, d0
+    lea     $00FFD520, a1
+    move.w  d1, (a1,d0.w)
+    movem.l (sp)+, d0-d1/a1
+"""
+
 # stress song (boot inject): F1 = FM note with an R-retrig every 2 ticks (heavy YM
 # triples), T1 = TONE with vibrato (per-frame PSG writes); loops forever.
 STRESS_SONG = """    tst.b   $00FFD500
@@ -171,6 +191,13 @@ KIT_SONG = """    tst.b   $00FFD500
     movem.l (sp)+, d0-d7/a0-a6
 .tkdone:
 """
+
+# Same real F6 KIT hit, with R12: halve one gain-pool step and restart every 2 ticks.
+KIT_RETRIG_SONG = KIT_SONG.replace(
+    "    move.b  #3, $00FF0AE1\n",
+    "    move.b  #3, $00FF0AE1\n"
+    "    move.b  #18, $00FF0AE2\n"
+    "    move.b  #$12, $00FF0AE3\n")
 
 # Directly trigger a long KIT pad once so audio amplitude can be compared without any
 # FM/PSG voices contaminating the capture. The test replaces the i_gain immediate.
@@ -944,6 +971,19 @@ def t_kit_endstop():
     assert still >= 5, 'feed never stopped -- runaway sample? (%r)' % diffs
     return 'drum fed (%d moving frames) and stopped (%d still)' % (moving, still)
 
+def t_kit_retrigger():
+    """R on a KIT voice restarts the DAC while its attenuation advances."""
+    rom = build_rom('kit_retrigger', boot_inject=KIT_RETRIG_SONG,
+                    frame_inject=DAC_TRIGGER_LOGGER)
+    ram = run_rom(rom, 45)
+    r = ring(ram)
+    trig = [(x >> 8) & 0xFF for x in r]
+    drop = [x & 0xFF for x in r]
+    strikes = sum(1 for i in range(64) if ((trig[(i+1) % 64] - trig[i]) & 0xFF) == 1)
+    assert strikes >= 4, 'R decay advanced but DAC only triggered %d times (%r)' % (strikes, trig)
+    assert max(drop) >= 3, 'R attenuation did not advance with KIT strikes (%r)' % drop
+    return '%d DAC re-strikes; attenuation reached %d' % (strikes, max(drop))
+
 def t_kit_gain():
     """Pre-shifted KIT levels reduce amplitude without reducing Z80 feed cadence."""
     levels = []
@@ -1211,6 +1251,7 @@ TESTS = [
     ('cut_primes_insert', t_cut_primes_insert),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
+    ('kit_retrigger', t_kit_retrigger),
     ('kit_gain',     t_kit_gain),
     ('kit_navigation', t_kit_navigation),
     ('scb_delivery', t_scb_delivery),

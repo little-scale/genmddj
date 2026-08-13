@@ -2,6 +2,13 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## Unreleased
+
+### Fixed
+- KIT/DAC instruments now restart their sample on every `R` retrigger tick instead of routing the
+  event into the silent FM key-on path. Retrigger decay selects progressively quieter pre-shifted
+  sample pools, preserving deterministic DAC feed timing and the instrument's RATE setting.
+
 ## v0.19 — 2026-08-14
 
 ### Added
