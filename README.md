@@ -43,7 +43,8 @@ FM (F1 - F6), Kit (F6), Wave (F6), Tone (T1 - T3), Noise (No), Perc (F3)
 - **C** (held) + D-pad = navigate to new context (change screen) · clean double-tap = paste.
 - **C + B** = play from the exact cursor position (solo this screen); in SONG, reaching the
   end of that contiguous block loops back to its top.
-- **Start** = play / stop the song (in LIVE, launch the cursor row).
+- **Start** = play / stop the song; from SONG it begins at the exact cursor row and loops that
+  contiguous block (in LIVE, it launches the cursor row).
 
 
 

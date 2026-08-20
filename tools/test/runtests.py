@@ -401,6 +401,46 @@ CURSOR_BLOCK = """    tst.b   $00FFD500
 .tcbdone:
 """
 
+START_FROM_SONG_CURSOR = """    tst.b   $00FFD500
+    bne     .tscsdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_SONG, cur_screen
+    move.b  #4, song_page
+    move.b  #6, cur_row
+    move.b  #0, proj_mode
+    move.b  #7, song+(70*NCH)
+    move.b  #0, chains+(7*CHAIN_SIZE)
+    clr.b   playing
+    bsr     start_button
+    move.b  play_from, $00FFD501
+    move.b  ch_state+c_songpos, $00FFD502
+    move.b  ch_state+c_chain, $00FFD503
+    move.b  playing, $00FFD504
+    bsr     start_button
+    move.b  playing, $00FFD505
+    move.b  #$AA, play_from
+    move.b  #3, opt_sync
+    bsr     start_button
+    move.b  play_from, $00FFD506
+    move.b  sync_wait, $00FFD507
+    move.b  ch_state+c_songpos, $00FFD508
+    bsr     start_button
+    move.b  #$AA, play_from
+    bsr     play_context
+    move.b  play_from, $00FFD509
+    move.b  sync_wait, $00FFD50A
+    move.b  ch_state+c_songpos, $00FFD50B
+    bsr     play_context
+    move.b  #0, opt_sync
+    move.b  #SCR_PHRASE, cur_screen
+    move.b  #$AA, play_from
+    bsr     start_button
+    move.b  play_from, $00FFD50C
+    movem.l (sp)+, d0-d7/a0-a6
+.tscsdone:
+"""
+
 DEEP_CLONE_ALIASES = """    tst.b   $00FFD500
     bne     .tdcdone
     move.b  #1, $00FFD500
@@ -492,6 +532,90 @@ PASTE_AND_MINT = """    tst.b   $00FFD500
     sne     $00FFD504
     movem.l (sp)+, d0-d7/a0-a6
 .tpmdone:
+"""
+
+SONG_PAGE_ADDRESSING = """    tst.b   $00FFD500
+    bne     .tspdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_SONG, cur_screen
+    move.b  #1, song_page
+    move.b  #10, cur_row
+    clr.b   cur_col
+    move.b  #$11, song+(10*NCH)
+    clr.b   song+(26*NCH)
+    moveq   #8, d2
+    bsr     edit_value
+    move.b  song+(10*NCH), $00FFD501
+    move.b  song+(26*NCH), $00FFD502
+    move.b  #3, song_page
+    move.b  #15, cur_row
+    move.b  #9, cur_col
+    move.b  #$06, song+(15*NCH)+9
+    move.b  #$05, song+(63*NCH)+9
+    bsr     do_cut
+    move.b  song+(15*NCH)+9, $00FFD503
+    move.b  song+(63*NCH)+9, $00FFD504
+    move.b  #4, song_page
+    move.b  #6, cur_row
+    move.b  #2, cur_col
+    move.b  #5, song+(70*NCH)+2
+    move.b  #6, song+(70*NCH)+3
+    move.b  #0, chains+(5*CHAIN_SIZE)
+    move.b  #1, chains+(6*CHAIN_SIZE)
+    bsr     drill_down
+    move.b  cur_songrow, $00FFD505
+    move.b  cur_chain, $00FFD506
+    move.b  #3, cur_chan
+    bsr     load_chan
+    move.b  cur_chain, $00FFD507
+    move.b  #SCR_SONG, cur_screen
+    move.b  #SCR_SONG, clip_screen
+    move.b  #14, song_page
+    move.b  #14, cur_row
+    clr.b   cur_col
+    clr.b   clip_col0
+    move.b  #3, clip_rows
+    move.b  #1, clip_cols
+    move.b  #$A1, clip_buf
+    move.b  #$A2, clip_buf+1
+    move.b  #$A3, clip_buf+2
+    move.b  #$5A, phrases
+    bsr     block_paste
+    move.b  song+(238*NCH), $00FFD508
+    move.b  song+(239*NCH), $00FFD509
+    move.b  phrases, $00FFD50A
+    move.b  #SCR_PHRASE, cur_screen
+    move.b  #SCR_PHRASE, clip_screen
+    clr.b   cur_phrase
+    move.b  #15, cur_row
+    clr.b   cur_col
+    clr.b   clip_col0
+    move.b  #2, clip_rows
+    move.b  #1, clip_cols
+    move.b  #$B1, clip_buf
+    move.b  #$B2, clip_buf+1
+    move.b  #$5B, phrases+PHRASE_SIZE
+    bsr     block_paste
+    move.b  phrases+(15*4), $00FFD50B
+    move.b  phrases+PHRASE_SIZE, $00FFD50C
+    move.b  #SCR_SONG, cur_screen
+    move.b  #2, song_page
+    clr.b   cur_row
+    clr.b   cur_col
+    move.b  #1, sel_active
+    moveq   #1, d2
+    bsr     move_cursor
+    move.b  song_page, $00FFD50D
+    move.b  cur_row, $00FFD50E
+    move.b  #15, cur_row
+    moveq   #2, d2
+    bsr     move_cursor
+    move.b  song_page, $00FFD50F
+    move.b  cur_row, $00FFD510
+    clr.b   sel_active
+    movem.l (sp)+, d0-d7/a0-a6
+.tspdone:
 """
 
 REFERENCE_EDIT = """    tst.b   $00FFD500
@@ -1123,6 +1247,18 @@ def t_cursor_block():
     assert ram[0xD504] == 0, 'block loop loaded chain %d instead of row-0 chain 0' % ram[0xD504]
     return 'started at cursor row 1; block end looped to row 0'
 
+def t_start_from_song_cursor():
+    """Start/C+B use the SONG cursor and automatically wait when external sync is selected."""
+    ram = run_rom(build_rom('start_from_song_cursor', boot_inject=START_FROM_SONG_CURSOR), 30)
+    assert list(ram[0xD501:0xD506]) == [0x46, 0x46, 7, 1, 0], \
+        'SONG Start row/chain or stop state incorrect (%r)' % list(ram[0xD501:0xD506])
+    assert list(ram[0xD506:0xD509]) == [0x46, 1, 0x46], \
+        'external-sync Start did not arm at row 46 (%r)' % list(ram[0xD506:0xD509])
+    assert list(ram[0xD509:0xD50C]) == [0x46, 1, 0x46], \
+        'external-sync C+B did not arm at row 46 (%r)' % list(ram[0xD509:0xD50C])
+    assert ram[0xD50C] == 0, 'Start outside SONG retained row $%02X instead of row 0' % ram[0xD50C]
+    return 'Start/C+B launch row 46 and auto-arm external WAIT; other screens launch row 0'
+
 def t_deep_clone_aliases():
     """DEEP clones each unique phrase once while preserving repeated references and transposes."""
     rom = build_rom('deep_clone_aliases', boot_inject=DEEP_CLONE_ALIASES)
@@ -1144,6 +1280,19 @@ def t_paste_and_mint():
     assert ram[0xD503] == 0, 'cloned chain content missing (%d)' % ram[0xD503]
     assert ram[0xD504] == 0, 'C chord was incorrectly recorded as a clean paste tap'
     return 'clean C,C pastes; B,B clones; C chords ignored'
+
+def t_song_page_addressing():
+    """SONG edits and drill-down use absolute pages; block pastes stop at data bounds."""
+    ram = run_rom(build_rom('song_page_addressing', boot_inject=SONG_PAGE_ADDRESSING), 40)
+    assert list(ram[0xD501:0xD505]) == [0x11, 1, 0x06, 0xFF], \
+        'later-page edit/cut addressed the wrong cells (%r)' % list(ram[0xD501:0xD505])
+    assert list(ram[0xD505:0xD508]) == [0x46, 5, 6], \
+        'drill-down/channel context lost the absolute SONG row (%r)' % list(ram[0xD505:0xD508])
+    assert list(ram[0xD508:0xD50D]) == [0xA1, 0xA2, 0x5A, 0xB1, 0x5B], \
+        'SONG/phrase paste crossed a data boundary (%r)' % list(ram[0xD508:0xD50D])
+    assert list(ram[0xD50D:0xD511]) == [2, 0, 2, 15], \
+        'SONG selection escaped its page (%r)' % list(ram[0xD50D:0xD511])
+    return 'page edits/cuts isolated; row 46 context retained; SONG/phrase paste bounds protected'
 
 def t_reference_edit():
     """Reference edits remain unsigned through $80..$BF and clamp at their true ceilings."""
@@ -1240,8 +1389,10 @@ TESTS = [
     ('load_bad_checksum', t_load_bad_checksum),
     ('load_bad_rle', t_load_bad_rle),
     ('cursor_block', t_cursor_block),
+    ('start_from_song_cursor', t_start_from_song_cursor),
     ('deep_clone_aliases', t_deep_clone_aliases),
     ('paste_and_mint', t_paste_and_mint),
+    ('song_page_addressing', t_song_page_addressing),
     ('reference_edit', t_reference_edit),
     ('cyclic_alloc', t_cyclic_alloc),
     ('files_confirm', t_files_confirm),

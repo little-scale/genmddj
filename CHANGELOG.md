@@ -8,6 +8,15 @@ All notable changes to genmddj. Versions increment by **0.01**.
 - KIT/DAC instruments now restart their sample on every `R` retrigger tick instead of routing the
   event into the silent FM key-on path. Retrigger decay selects progressively quieter pre-shifted
   sample pools, preserving deterministic DAC feed timing and the instrument's RATE setting.
+- Pressing **Start** from SONG view now begins on the exact visible cursor row (including pages
+  `01`–`0E`) and loops that row's contiguous block. With external sync selected, ordinary **Start**
+  or **C+B** automatically arms WAIT at that row; Start from other editor screens retains the
+  full-song row-`00` behaviour. The redundant special **B+Start** gesture has been removed, and
+  Start is handled atomically so transport-reset scratch values cannot immediately stop it again.
+- SONG edits, inserts, cuts, copies, pastes and drill-down now address the visible absolute row
+  on pages `01`–`0E` instead of silently reading or overwriting the corresponding page-`00` row.
+  Multi-row pastes stop at the end of SONG, PHRASE and CHAIN storage, and SONG block selections
+  remain page-local so their anchor cannot change meaning while the selection is active.
 
 ## v0.19 — 2026-08-14
 

@@ -62,8 +62,7 @@ Think of it as:
 | **C** hold + D-pad | **Move between screens** (the screen map, §3) — context-following |
 | **C** clean double-tap | **Paste** the clipboard here. Chords, navigation and block-cancel C taps are ignored |
 | **C** + **B** | **Play from here / solo** the current thing (§3). On FILES it opens the action menu |
-| **Start** | **Play / stop.** SONG mode plays the whole song from the top; LIVE mode launches the cursor row |
-| **B** + **Start** | If SYNC = IN/IN24, arm **WAIT** for the incoming clock; otherwise a plain Start |
+| **Start** | **Play / stop.** From SONG it starts on the exact cursor row; from other editor screens it starts at row 0. LIVE mode launches the cursor row |
 | **A** hold ~3 s (alone) | Open / close the **HELP** screen — an on-console button reference, from any screen (§3) |
 
 You never have to time two simultaneous presses. (The one *deliberate* hold is the ~3-second
@@ -89,11 +88,12 @@ move operation; cutting an already-empty cell leaves the previous insert memory 
 
 ### Transport: full-song vs play-from-here
 
-There are two ways to start sound, and they differ from SMSGGDJ:
+There are two ways to start sound:
 
-- **Start** plays the **whole song from the top** (all ten tracks) — your master transport.
+- **Start** is your all-track master transport. From **SONG**, it starts on the exact cursor row;
+  from another editor screen, it starts at row 0.
 - **C + B** plays **from where you are**, so you can audition a section while you work:
-  - **SONG** — starts on the **exact cursor row**, then loops the cursor's **contiguous block**
+  - **SONG** — matches Start: it begins on the **exact cursor row**, then loops the cursor's **contiguous block**
     from its top when the block end is reached. (A *block* is a run of rows with no fully-empty
     row in it — see §4. With the cursor on row 3 of a rows-2–4 block, the first pass is
     3 → 4, then it loops 2 → 3 → 4.)
@@ -173,8 +173,9 @@ flips between the ten voices' chains/phrases.
 an empty cell, **loops back to the top of its current contiguous block** (the run of filled
 cells it's in). So a gap-free column plays whole and loops; an empty cell is a section break,
 and the blocks above/below it loop separately. Tracks loop independently, so columns of
-different lengths create polymeters. **Start** begins every column at the very top (row 0);
-**C+B** begins on the exact cursor row, then returns to that block's top when it loops (§2).
+different lengths create polymeters. From SONG, **Start** and **C+B** begin on the exact cursor
+row, then return to that block's top when they loop (§2). Start from another editor screen begins
+every column at row 0.
 (In **LIVE** mode the SONG grid is a clip
 launcher — §9.)
 
@@ -581,7 +582,7 @@ GGDJ, or analog-clock gear. Set it on **OPTIONS → SYNC**:
 - **OUT** — this unit is the **master**; it sends one clock per row while playing. A unit set
   to **IN** locks to it at any tempo. (Hardware-tested two-MD OUT→IN.)
 - **PULSE** — a simple analog pulse for Volca / Pocket Operator gear.
-- **IN** — **follow** an OUT master (one row per clock). Press **Start** (or **B+Start**) and
+- **IN** — **follow** an OUT master (one row per clock). Press **Start** or **C+B** and
   it waits — the top bar shows **WAIT** — until the clock starts, then locks on. While
   following, the master drives the timing (your groove is ignored, restored when you leave IN).
 - **IN24** — follow a **24-PPQN** source (e.g. the **smsggdj-link-esp32** Ableton Link
@@ -656,8 +657,8 @@ CHANNEL       A hold + Left/Right        (CHAIN / PHRASE)
 FLIP/PAGE     A hold + Up/Down           (phrase / chain / SONG page)
 SCREENS       C hold + D-pad
 PLAY FROM HERE  C + B                    (solo the current screen)
-PLAY SONG     Start                      (LIVE: launch cursor row)
-SYNC WAIT     B + Start                  (when SYNC = IN / IN24)
+PLAY SONG     Start                      (SONG/LIVE: cursor row)
+SYNC WAIT     Start or C + B             (SYNC IN / IN24)
 ```
 
 ```

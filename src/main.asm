@@ -1388,12 +1388,9 @@ input_tick:
     bne     .done                        ; toggled this frame -> skip the rest of the dispatch
     btst    #7, d4                        ; Start -> toggle transport
     beq.s   .nstart
-    btst    #5, d3                        ; B held + Start -> SYNC IN: arm WAIT for the incoming clock
-    bne.s   .bstart
-    bsr     toggle_play
-    bra.s   .nstart
-.bstart:
-    bsr     start_sync_wait
+    bsr     start_button
+    move.b  #1, vdirty
+    rts                                    ; transport reset clobbers button scratch registers: do not redispatch them
 .nstart:
     bsr     dpad_fire                     ; d5 = d-pad bits to act (once)
     move.b  d1, d5
@@ -1930,7 +1927,8 @@ drill_down:                               ; set the next screen's target from th
     cmpi.b  #SCR_SONG, d0
     bne.s   .d1
     move.b  cur_col, cur_chan              ; SONG: establish the editing context
-    move.b  cur_row, cur_songrow
+    bsr     song_cursor_row                ; retain the absolute row for later track switches
+    move.b  d0, cur_songrow
     bsr     get_field_addr                 ; SONG cell -> chain
     move.b  (a1), d1
     cmpi.b  #$FF, d1
@@ -2158,12 +2156,18 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     bpl.s   .nuw
     cmpi.b  #SCR_SONG, cur_screen          ; off the top: SONG pages up, others wrap
     bne.s   .nu_wrap
+    tst.b   sel_active                      ; SONG block selections are page-local: their anchor is
+    bne.s   .nu_selstop                     ; an on-screen row, so never cross a page while extending
     move.b  song_page, d3
     subq.b  #1, d3
     bpl.s   .nu_pgok
     moveq   #14, d3                          ; wrap to the last page
 .nu_pgok:
     move.b  d3, song_page
+    bra.s   .nu_wrap
+.nu_selstop:
+    moveq   #0, d0                          ; hold at the first row of this page
+    bra.s   .nuw
 .nu_wrap:
     move.b  d1, d0                          ; -> bottom row of the (now-previous) page
 .nuw:
@@ -2177,6 +2181,8 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     bls.s   .ndw
     cmpi.b  #SCR_SONG, cur_screen          ; off the bottom: SONG pages down, others wrap
     bne.s   .nd_wrap
+    tst.b   sel_active                      ; page-local SONG block selection: hold at row 15
+    bne.s   .nd_selstop
     move.b  song_page, d3
     addq.b  #1, d3
     cmpi.b  #15, d3
@@ -2184,6 +2190,10 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     moveq   #0, d3                          ; wrap to the first page
 .nd_pgok:
     move.b  d3, song_page
+    bra.s   .nd_wrap
+.nd_selstop:
+    move.b  d1, d0
+    bra.s   .ndw
 .nd_wrap:
     moveq   #0, d0                          ; -> top row of the (now-next) page
 .ndw:
@@ -2543,8 +2553,8 @@ block_clear:
     movem.l (sp)+, d2-d7
     rts
 
-; paste the clipboard block: rows anchored at the cursor row, columns kept (clip_col0). Clamps at
-; the grid bottom (NSONGROWS) so it never writes out of bounds. Caller checked clip_screen==cur_screen.
+; paste the clipboard block: rows anchored at the cursor row, columns kept (clip_col0). SONG uses
+; its absolute page+row limit; every other grid uses row_max. Caller checked clip_screen==cur_screen.
 block_paste:
     movem.l d2-d7/a3, -(sp)
     move.b  cur_row, d6
@@ -2556,8 +2566,17 @@ block_paste:
     move.b  clip_rows, d3
 .bp_rl:
     move.b  d2, cur_row
-    cmpi.b  #NSONGROWS, cur_row            ; past the grid bottom -> stop
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .bp_local_bound
+    bsr     song_cursor_row                ; page*16 + (possibly advanced) destination row
+    cmpi.w  #NSONGROWS, d0                 ; past absolute row EF -> protect the following data
     bhs.s   .bp_done
+    bra.s   .bp_bound_ok
+.bp_local_bound:
+    bsr     row_max                        ; PHRASE/CHAIN 0..15; TABLE selector+rows 0..16
+    cmp.w   d1, d2
+    bhi.s   .bp_done
+.bp_bound_ok:
     move.b  d4, cur_col
     moveq   #0, d5
     move.b  clip_cols, d5
@@ -2661,6 +2680,15 @@ prime_cut:                                ; a1=current field; prime only the rep
     move.b  1(a1), last_cprm                ; command cuts carry their parameter as one repeatable entry
     rts
 
+song_cursor_row:                          ; -> d0.w = page*16 + on-screen row (0..239); clobbers d1
+    moveq   #0, d0
+    move.b  song_page, d0
+    lsl.w   #4, d0
+    moveq   #0, d1
+    move.b  cur_row, d1
+    add.w   d1, d0
+    rts
+
 get_field_addr:                           ; -> a1 = cursor field byte
     move.b  cur_screen, d0
     beq     .phrase
@@ -2683,11 +2711,10 @@ get_field_addr:                           ; -> a1 = cursor field byte
     add.w   d1, d0
     adda.w  d0, a1
     rts
-.song:                                    ; song + row*NCH + col
+.song:                                    ; song + (page*16 + row)*NCH + col
     lea     song, a1
-    moveq   #0, d0
-    move.b  cur_row, d0
-    mulu.w  #NCH, d0                        ; row * NCH
+    bsr     song_cursor_row
+    mulu.w  #NCH, d0                        ; absolute row * NCH
     moveq   #0, d1
     move.b  cur_col, d1
     add.w   d1, d0
@@ -7462,6 +7489,15 @@ silence_all:                              ; STOP: cut every ringing voice -- FM 
     move.b  #6, ym_count
     bra     push_scb                        ; push (own BUSREQ); a restart re-emits via engine_play_reset
 
+start_button:                             ; SONG Start is exactly the same all-track context launch as C+B
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .sb_toggle
+    tst.b   proj_mode                     ; LIVE Start still launches the complete cursor row
+    bne.s   .sb_toggle
+    bra     play_context                  ; stopped: cursor start; running: ordinary stop
+.sb_toggle:
+    bra     toggle_play
+
 toggle_play:
     move.b  playing, d0
     eori.b  #1, d0
@@ -7472,8 +7508,7 @@ toggle_play:
     beq.s   .tp_stop
     tst.b   proj_mode                     ; LIVE: Start launches the cursor row, not the full song
     bne.s   .tp_live
-    move.b  #0, play_mode                 ; SONG: full song from the top
-    move.b  #0, play_from
+    bsr     prepare_song_start            ; SONG screen: absolute cursor row; other screens: row 0
     bsr     engine_play_reset
     bra.s   .tp
 .tp_live:
@@ -7485,21 +7520,14 @@ toggle_play:
 .tp:
     rts
 
-start_sync_wait:                          ; B+Start: SYNC IN/IN24 -> start the transport armed to wait for the clock
-    cmpi.b  #3, opt_sync
-    beq.s   .ssw_in
-    cmpi.b  #5, opt_sync
-    bne     toggle_play                    ; not a SYNC IN mode -> behave as a plain Start
-.ssw_in:
-    tst.b   playing
-    bne.s   .ssw_x                         ; already running -> leave it
-    move.b  #1, playing
-    bsr     clear_live_patch
-    bsr     engine_play_reset             ; opt_sync==1 arms the slave (sync_wait) -> waits for the clock
-    tst.b   proj_mode                     ; LIVE: arm the cursor row too (it waits for the clock)
-    beq.s   .ssw_x
-    bsr     live_launch_row
-.ssw_x:
+prepare_song_start:                       ; stopped SONG-mode transport: choose the full-song launch row
+    move.b  #0, play_mode
+    move.b  #0, play_from                 ; outside SONG view, Start retains the master row-0 launch
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .pss_done
+    bsr     song_cursor_row               ; SONG view: page*16 + visible cursor row
+    move.b  d0, play_from
+.pss_done:
     rts
 
 play_context:                             ; C+B: toggle audition of the current context
@@ -7518,14 +7546,7 @@ play_context:                             ; C+B: toggle audition of the current 
     move.b  cur_screen, d0
     cmpi.b  #SCR_SONG, d0
     bne.s   .pc_ch
-    move.b  #0, play_mode                 ; SONG: from the cursor's contiguous block (snapped to its top)
-    moveq   #0, d1                         ;   play_from = song_page*16 + cur_row (absolute song row)
-    move.b  song_page, d1
-    lsl.w   #4, d1
-    moveq   #0, d0
-    move.b  cur_row, d0
-    add.w   d0, d1
-    move.b  d1, play_from
+    bsr     prepare_song_start            ; SONG: exact absolute cursor row, then loop its contiguous block
     bra.s   .pc_go
 .pc_ch:
     cmpi.b  #SCR_CHAIN, d0
