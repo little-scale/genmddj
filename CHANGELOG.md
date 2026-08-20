@@ -2,7 +2,7 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## Unreleased
+## v0.20 — 2026-08-20
 
 ### Fixed
 - KIT/DAC instruments now restart their sample on every `R` retrigger tick instead of routing the
