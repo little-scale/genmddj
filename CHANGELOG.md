@@ -2,7 +2,7 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## Unreleased
+## v0.21 — 2026-08-22
 
 ### Added
 - **Experimental SONG structural editing.** Hold **A + Start** to close an already-empty
