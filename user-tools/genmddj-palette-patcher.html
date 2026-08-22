@@ -115,6 +115,7 @@
     </div>
     <div class="bar">
       <button class="ghost" id="exportAll" title="Download all 8 palettes as one file">Export All&hellip;</button>
+      <label class="btn" title="Load all 8 palettes from a .gmpalset file">Import All&hellip;<input type="file" id="palsetfile" accept=".gmpalset,.json,application/json" hidden></label>
     </div>
     <div class="bar">
       <button class="ghost" id="reset">Reset all</button>
@@ -143,7 +144,7 @@
       <label class="btn">Import palette&hellip;<input type="file" id="palfile" accept=".gmpal,.json,application/json" hidden></label>
       <button id="exportPal">Export this palette&hellip;</button>
     </div>
-    <div class="note" id="palstatus">Saves/loads just the selected palette (name + 3 colours) as its own small <code>.gmpal</code> file &mdash; handy for sharing or backing up one palette without a whole ROM. Import overwrites the currently-selected slot.</div>
+    <div class="note" id="palstatus">Saves/loads just the selected palette (name + 3 colours) as its own small <code>.gmpal</code> file &mdash; handy for sharing or backing up one palette without a whole ROM. Import overwrites the currently-selected slot. <b>Import All</b> (next to Export All, left) loads a full <code>.gmpalset</code> and overwrites all 8.</div>
 
     <h2 style="margin-top:18px">Or export source &mdash; paste into <code>pal_table</code></h2>
     <textarea id="out" readonly></textarea>
@@ -414,6 +415,32 @@ function exportAllPalettes(){
   setTimeout(()=>{ if(btn.textContent==="Exported!"||btn.textContent==="Failed!") btn.textContent=orig; },1200);
 }
 $("#exportAll").onclick=exportAllPalettes;
+
+function importAllPalettes(f){
+  if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    let obj;
+    try{ obj=JSON.parse(r.result); } catch(e){ $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: not a valid .gmpalset file (bad JSON)</b>`; return; }
+    if(!obj || obj.magic!==PALSET_MAGIC || !Array.isArray(obj.palettes) || obj.palettes.length!==8){
+      $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: not a genmddj palette-set (.gmpalset) file</b>`; return;
+    }
+    for(const p of obj.palettes){
+      if(!p || !Array.isArray(p.colors) || p.colors.length!==3){
+        $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: malformed entry, no palettes were changed</b>`; return;
+      }
+    }
+    obj.palettes.forEach((p,i)=>{
+      pals[i]=p.colors.map(parseWord);
+      if(p.name) names[i]=String(p.name).toUpperCase().slice(0,6);
+    });
+    renderAll();
+    $("#palstatus").innerHTML=`Imported all 8 palettes from <b>${f.name}</b>.`;
+  };
+  r.onerror=()=>{ $("#palstatus").innerHTML=`<b style="color:#ff8a8a">${f.name}: couldn't read the file</b>`; };
+  r.readAsText(f);
+}
+$("#palsetfile").onchange=e=>{ importAllPalettes(e.target.files[0]); e.target.value=""; };
 
 // ---- ROM patcher: find the "GMDJPAL0" locator, read/write the 8x3 words after it, re-fix the checksum
 let rom=null, romBase=-1, romName='';
