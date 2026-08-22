@@ -2,6 +2,21 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## Unreleased
+
+### Added
+- **Experimental SONG structural editing.** Hold **A + Start** to close an already-empty
+  current cell or block selection, shifting only the affected tracks upward across the complete
+  240-row SONG. Hold **C + Start** to insert a SONG clipboard block at the cursor channel, shifting
+  its destination track columns downward. A copied empty SONG block can therefore insert blank
+  space, including a complete row when all ten tracks are copied. Insertions are transactional:
+  **`NO ROOM`** refuses any operation that would discard populated tail cells or exceed SONG
+  bounds; **`NO CLIP`** rejects a missing or non-SONG clipboard; and gap closing reports
+  **`CUT FIRST`** rather than deleting populated cells. Ordinary cut and **C,C** overwrite-paste
+  remain unchanged. Structural edits are stopped-only, run atomically outside the video interrupt,
+  and report **`STOP FIRST`** during playback. The feature remains labelled experimental so its
+  interaction can be revised after longer use.
+
 ## v0.20 — 2026-08-20
 
 ### Fixed

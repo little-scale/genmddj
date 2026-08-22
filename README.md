@@ -45,6 +45,11 @@ FM (F1 - F6), Kit (F6), Wave (F6), Tone (T1 - T3), Noise (No), Perc (F3)
   end of that contiguous block loops back to its top.
 - **Start** = play / stop the song; from SONG it begins at the exact cursor row and loops that
   contiguous block (in LIVE, it launches the cursor row).
+- **SONG structural editing (experimental)** — with transport stopped, hold **A**, then tap
+  **Start** to close the current empty cell or selected empty block, shifting only those tracks
+  upward. Hold **C**, then tap **Start** to insert a copied SONG cell/block at the cursor channel,
+  shifting only its destination tracks downward. Ordinary **C,C** paste still overwrites; it does
+  not shift rows. See the manual for blank-row insertion and the safety messages.
 
 
 

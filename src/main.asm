@@ -229,6 +229,9 @@ opt_pal    equ $00FFE3E6           ; OPTIONS: UI palette 0..3
 opt_clon   equ $00FFD759           ; OPTIONS: clone depth 0=SLIM (share phrases) 1=DEEP (copy phrases) -- relocated off $E3E7 (collided with proj_tmpo!)
 opt_audit  equ $00FFD75A           ; OPTIONS: note-entry audition (prelisten) 0=OFF 1=ON (default ON) -- was $E3E8 (collided with proj_tsp!)
 opt_hints  equ $00FFD75B           ; OPTIONS: show INSTR per-field hints 0=OFF 1=ON (default ON)
+song_edit_msg equ $00FFD75C        ; provisional SONG structural-edit status (0 none, see SONG_EDIT_*)
+song_edit_ctr equ $00FFD75D        ; frames remaining for the status readout
+song_edit_pending equ $00FFD75E    ; foreground request: 0 none, 1 close gap, 2 insert clipboard
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
 proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
@@ -641,6 +644,9 @@ Start:
     move.l  #0, ctap_addr
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
+    move.b  #0, song_edit_msg             ; no provisional SONG edit warning at boot
+    move.b  #0, song_edit_ctr
+    move.b  #0, song_edit_pending
     move.b  #0, ch3_spc                   ; PERC CH3 special mode off at boot
     move.b  #$FF, perc_ld                 ; PERC: no live cluster loaded yet
     move.l  #$FFFFFFFF, perc_note         ; PERC: all 4 display notes = off
@@ -778,6 +784,21 @@ Start:
 .boot_ready:
     move    #$2000, sr
 .forever:                                  ; idle loop does the heavy envelope raster
+    tst.b   song_edit_pending              ; SONG shifting is too large for the VBlank input handler
+    beq.s   .no_song_edit                   ; (a full-width edit may move >2 KB), so run it here
+    move    #$2700, sr                      ; stopped-only edit: make the in-place move atomic
+    move.b  song_edit_pending, d0
+    clr.b   song_edit_pending
+    cmpi.b  #1, d0
+    bne.s   .foreground_insert
+    bsr     song_gap_close
+    bra.s   .foreground_edit_done
+.foreground_insert:
+    bsr     song_clip_insert
+.foreground_edit_done:
+    move    #$2000, sr
+    bra     .forever
+.no_song_edit:
     tst.b   env_dirty                     ; (kept OUT of VBlank -- see env_rasterize)
     beq.s   .forever
     move.b  #0, env_dirty
@@ -796,7 +817,7 @@ Start:
     clr.w   env_upos                      ; (re)start the chunked upload from tile 0
     clr.b   env_ntdone                    ; nametable first, then tile chunks
     move.b  #1, env_ready                 ; VBlank pushes it a chunk at a time
-    bra.s   .forever
+    bra     .forever
 
 ; ============================================================
 VBlankInt:
@@ -810,6 +831,7 @@ VBlankInt:
 .run:
     bsr     input_tick
     bsr     files_confirm_tick              ; expire FILES confirmations even when no new input arrives
+    bsr     song_edit_status_tick            ; expire provisional SONG shift warnings
     bsr     engine_tick
     lea     VDP_CTRL, a0
     ; redraw the grid only on change (per-frame VRAM writes during active H40
@@ -988,6 +1010,7 @@ VBlankInt:
 .gsg:
     bsr     render_song
     bsr     render_cont_hdr
+    bsr     render_song_edit_status
     bsr     render_song_playing
     bra     .gd
 .gph:
@@ -1153,7 +1176,7 @@ splash_tick:                              ; a0 = VDP_CTRL; incremental draw + co
     btst    #7, d0                        ; Start -> skip the splash
     bne.s   .end
     subq.w  #1, splash_ctr
-    bne.s   .ret
+    bne     .ret                           ; splash cleanup is larger than short-branch reach
 .end:
     moveq   #8, d2                        ; clear only the logo's right edge (rows 8-13,
 .ce:                                       ; cols 34-39); clear_grid wipes cols 0-33 and
@@ -1388,6 +1411,26 @@ input_tick:
     bne     .done                        ; toggled this frame -> skip the rest of the dispatch
     btst    #7, d4                        ; Start -> toggle transport
     beq.s   .nstart
+    cmpi.b  #SCR_SONG, cur_screen          ; provisional SONG structural edits use held modifiers
+    bne.s   .start_transport
+    btst    #4, d3                         ; hold A + tap Start -> close selected/current empty gap
+    beq.s   .start_insert
+    tst.b   playing                        ; structural moves are foreground/atomic and therefore stopped-only
+    bne.s   .start_edit_playing
+    move.b  #1, song_edit_pending
+    rts
+.start_insert:
+    btst    #6, d3                         ; hold C + tap Start -> insert SONG clipboard
+    beq.s   .start_transport
+    tst.b   playing
+    bne.s   .start_edit_playing
+    move.b  #2, song_edit_pending
+    rts
+.start_edit_playing:
+    moveq   #SONG_EDIT_STOP_FIRST, d0
+    bsr     song_edit_status_set
+    rts
+.start_transport:
     bsr     start_button
     move.b  #1, vdirty
     rts                                    ; transport reset clobbers button scratch registers: do not redispatch them
@@ -2595,6 +2638,276 @@ block_paste:
     move.b  d6, cur_row
     move.b  d7, cur_col
     movem.l (sp)+, d2-d7/a3
+    rts
+
+; --- provisional SONG structural editing (issue #5) -----------------------------
+; Ordinary cut and overwrite-paste remain unchanged. These explicit Start chords are
+; intentionally experimental so their feel can be assessed on hardware:
+;   hold A + tap Start = close an already-empty current cell/selection (shift up)
+;   hold C + tap Start = insert the SONG clipboard at the current/selection-top-left cell
+; A selection supplies the close-gap height/columns. Insert anchors the clipboard at the
+; cursor/selection-left column and uses the clipboard's own width and height.
+; Both operations span the full 240-row SONG, not merely the visible page.
+
+SONG_EDIT_CUT_FIRST equ 1
+SONG_EDIT_NO_ROOM   equ 2
+SONG_EDIT_NO_CLIP   equ 3
+SONG_EDIT_STOP_FIRST equ 4
+SONG_EDIT_FRAMES    equ 90                 ; ~1.5 s NTSC / 1.8 s PAL
+
+song_edit_status_set:                      ; d0.b = SONG_EDIT_* warning
+    move.b  d0, song_edit_msg
+    move.b  #SONG_EDIT_FRAMES, song_edit_ctr
+    move.b  #1, vdirty
+    rts
+
+song_edit_status_clear:
+    clr.b   song_edit_msg
+    clr.b   song_edit_ctr
+    move.b  #1, vdirty
+    rts
+
+song_edit_status_tick:
+    tst.b   song_edit_ctr
+    beq.s   .sest_done
+    subq.b  #1, song_edit_ctr
+    bne.s   .sest_done
+    clr.b   song_edit_msg
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .sest_done
+    move.b  #1, vdirty                     ; erase the expired readout on the next SONG render
+.sest_done:
+    rts
+
+; Return the current SONG structural-edit rectangle:
+;   d2.w = absolute top row, d3.w = height, d4.w = first col, d5.w = last col.
+; SONG selections are page-local, so adding song_page after sorting the rows is safe.
+song_edit_bounds:
+    moveq   #0, d2
+    move.b  cur_row, d2
+    moveq   #1, d3
+    moveq   #0, d4
+    move.b  cur_col, d4
+    move.w  d4, d5
+    tst.b   sel_active
+    beq.s   .seb_abs
+    moveq   #0, d0
+    move.b  sel_row0, d0
+    cmp.w   d2, d0
+    bls.s   .seb_rows
+    exg     d0, d2
+.seb_rows:
+    move.w  d2, d3
+    sub.w   d0, d3
+    addq.w  #1, d3
+    move.w  d0, d2
+    moveq   #0, d4
+    move.b  sel_col0, d4
+    moveq   #0, d5
+    move.b  cur_col, d5
+    cmp.w   d5, d4
+    bls.s   .seb_abs
+    exg     d4, d5
+.seb_abs:
+    moveq   #0, d0
+    move.b  song_page, d0
+    lsl.w   #4, d0
+    add.w   d0, d2
+    rts
+
+; Close an empty gap in the current SONG column(s). Populated cells are never removed:
+; the user must first use ordinary cut, which preserves the removed data in the clipboard.
+song_gap_close:
+    cmpi.b  #SCR_SONG, cur_screen
+    bne     .sgc_ret
+    movem.l d0-d7/a0-a2, -(sp)
+    bsr     song_edit_bounds
+
+    move.w  d2, d6                         ; preflight: every selected cell must be empty
+    move.w  d3, d7
+.sgc_check_row:
+    lea     song, a0
+    move.w  d6, d0
+    mulu.w  #NCH, d0
+    adda.w  d0, a0
+    move.w  d4, d1
+.sgc_check_col:
+    cmpi.b  #$FF, (a0,d1.w)
+    bne.s   .sgc_cut_first
+    addq.w  #1, d1
+    cmp.w   d5, d1
+    bls.s   .sgc_check_col
+    addq.w  #1, d6
+    subq.w  #1, d7
+    bne.s   .sgc_check_row
+
+    lea     song, a1                       ; shift selected columns row-wise (source is ahead,
+    move.w  d2, d0
+    mulu.w  #NCH, d0
+    add.w   d4, d0
+    adda.w  d0, a1
+    movea.l a1, a2                         ; a1 = destination; a2 = source height rows below
+    move.w  d3, d0
+    mulu.w  #NCH, d0
+    adda.w  d0, a2
+    move.w  d5, d7
+    sub.w   d4, d7                         ; d7 = width-1 (DBRA count)
+    move.w  #NCH-1, d0
+    sub.w   d7, d0                         ; d0 = row stride after postincrementing width bytes
+    move.w  #NSONGROWS, d6                 ; rows that move upward
+    sub.w   d2, d6
+    sub.w   d3, d6
+    beq.s   .sgc_fill
+.sgc_copy_row:
+    move.w  d7, d1
+.sgc_copy_cell:
+    move.b  (a2)+, (a1)+
+    dbra    d1, .sgc_copy_cell
+    adda.w  d0, a1
+    adda.w  d0, a2
+    subq.w  #1, d6
+    bne.s   .sgc_copy_row
+.sgc_fill:
+    move.w  d3, d6                         ; vacated tail rows become empty
+.sgc_fill_row:
+    move.w  d7, d1
+.sgc_fill_cell:
+    move.b  #$FF, (a1)+
+    dbra    d1, .sgc_fill_cell
+    adda.w  d0, a1
+    subq.w  #1, d6
+    bne.s   .sgc_fill_row
+
+    movem.l (sp)+, d0-d7/a0-a2
+    clr.b   sel_active
+    bra     song_edit_status_clear
+.sgc_cut_first:
+    movem.l (sp)+, d0-d7/a0-a2
+    moveq   #SONG_EDIT_CUT_FIRST, d0
+    bra     song_edit_status_set
+.sgc_ret:
+    rts
+
+; Insert the SONG clipboard without truncation. Preflight refuses the whole operation if
+; the clipboard does not fit or any affected track has populated cells in the tail that
+; would be pushed past row EF. The shift copies backwards, then writes the clipboard.
+song_clip_insert:
+    cmpi.b  #SCR_SONG, cur_screen
+    bne     .sci_ret
+    cmpi.b  #SCR_SONG, clip_screen
+    bne     .sci_no_clip
+    movem.l d0-d7/a0-a3, -(sp)
+    bsr     song_edit_bounds               ; insertion anchor = current/selection-top row in d2
+    moveq   #0, d3
+    move.b  clip_rows, d3
+    beq     .sci_bad_clip_saved
+    cmpi.w  #16, d3
+    bhi     .sci_bad_clip_saved
+    moveq   #0, d6
+    move.b  clip_cols, d6
+    beq     .sci_bad_clip_saved
+    cmpi.w  #NCH, d6
+    bhi     .sci_bad_clip_saved
+    ; d4 from song_edit_bounds is the current column, or the selection's left edge.
+    ; Unlike ordinary type-safe paste, every SONG column has the same chain-reference type,
+    ; so structural insert deliberately follows the destination cursor horizontally.
+    move.w  d4, d5
+    add.w   d6, d5
+    subq.w  #1, d5                         ; d4..d5 = destination columns at the cursor
+    cmpi.w  #NCH-1, d5
+    bhi     .sci_no_room_saved             ; destination block would extend past NO
+    move.w  d2, d0
+    add.w   d3, d0
+    cmpi.w  #NSONGROWS, d0
+    bhi     .sci_no_room_saved
+
+    move.w  #NSONGROWS, d7                 ; preflight the tail rows that insertion consumes
+    sub.w   d3, d7
+    move.w  d3, d6
+.sci_tail_row:
+    lea     song, a0
+    move.w  d7, d0
+    mulu.w  #NCH, d0
+    adda.w  d0, a0
+    move.w  d4, d1
+.sci_tail_col:
+    cmpi.b  #$FF, (a0,d1.w)
+    bne     .sci_no_room_saved
+    addq.w  #1, d1
+    cmp.w   d5, d1
+    bls.s   .sci_tail_col
+    addq.w  #1, d7
+    subq.w  #1, d6
+    bne.s   .sci_tail_row
+
+    move.w  #NSONGROWS, d7                 ; shift the selected rectangle down, copying
+    sub.w   d3, d7
+    subq.w  #1, d7                         ; last source row = EF - insertion height
+    cmp.w   d2, d7
+    blo.s   .sci_paste                     ; insertion starts at the tail: nothing precedes clipboard
+    lea     song, a1
+    move.w  d7, d0
+    mulu.w  #NCH, d0
+    add.w   d5, d0
+    addq.w  #1, d0
+    adda.w  d0, a1                         ; a1 = one byte past source row's last selected col
+    movea.l a1, a2
+    move.w  d3, d0
+    mulu.w  #NCH, d0
+    adda.w  d0, a2                         ; a2 = destination one-past-last, height rows below
+    move.w  d7, d6
+    sub.w   d2, d6
+    addq.w  #1, d6                         ; rows to move
+    move.w  d5, d7
+    sub.w   d4, d7                         ; d7 = width-1 (DBRA count)
+    move.w  #NCH-1, d0
+    sub.w   d7, d0                         ; d0 = stride to previous row's one-past-last
+.sci_copy_row:
+    move.w  d7, d1
+.sci_copy_cell:
+    move.b  -(a1), -(a2)
+    dbra    d1, .sci_copy_cell
+    suba.w  d0, a1
+    suba.w  d0, a2
+    subq.w  #1, d6
+    bne.s   .sci_copy_row
+
+.sci_paste:
+    lea     clip_buf, a3                   ; paste clipboard row-major into the opened gap
+    lea     song, a1
+    move.w  d2, d0
+    mulu.w  #NCH, d0
+    add.w   d4, d0
+    adda.w  d0, a1
+    move.w  d3, d7
+.sci_paste_row:
+    move.w  d5, d0
+    sub.w   d4, d0
+    addq.w  #1, d0                         ; width
+    move.w  d0, d1
+.sci_paste_col:
+    move.b  (a3)+, (a1)+
+    subq.w  #1, d1
+    bne.s   .sci_paste_col
+    move.w  #NCH, d1
+    sub.w   d0, d1
+    adda.w  d1, a1                         ; next SONG row, first clipboard column
+    subq.w  #1, d7
+    bne.s   .sci_paste_row
+
+    movem.l (sp)+, d0-d7/a0-a3
+    clr.b   sel_active
+    bra     song_edit_status_clear
+.sci_bad_clip_saved:
+    movem.l (sp)+, d0-d7/a0-a3
+.sci_no_clip:
+    moveq   #SONG_EDIT_NO_CLIP, d0
+    bra     song_edit_status_set
+.sci_no_room_saved:
+    movem.l (sp)+, d0-d7/a0-a3
+    moveq   #SONG_EDIT_NO_ROOM, d0
+    bra     song_edit_status_set
+.sci_ret:
     rts
 
 do_cut:                                   ; clear field under cursor (cut = save it first)
@@ -4600,6 +4913,41 @@ render_song:
     addq.b  #1, d6
     cmpi.b  #16, d6
     bne.s   .rl
+    rts
+
+; Provisional structural-edit warning at SONG row 1, cols 23-32. The field is always
+; erased before drawing so expiry and successful operations cannot leave stale text.
+render_song_edit_status:
+    movem.l d0-d4/a1, -(sp)
+    move.l  #$40AE0003, (a0)               ; row 1, col 23
+    moveq   #10-1, d0
+.rses_blank:
+    move.w  #' ', VDP_DATA
+    dbra    d0, .rses_blank
+    move.b  song_edit_msg, d0
+    beq.s   .rses_done
+    cmpi.b  #SONG_EDIT_CUT_FIRST, d0
+    bne.s   .rses_room
+    lea     str_cut_first, a1
+    bra.s   .rses_draw
+.rses_room:
+    cmpi.b  #SONG_EDIT_NO_ROOM, d0
+    bne.s   .rses_clip
+    lea     str_no_room, a1
+    bra.s   .rses_draw
+.rses_clip:
+    cmpi.b  #SONG_EDIT_NO_CLIP, d0
+    bne.s   .rses_stop
+    lea     str_no_clip, a1
+    bra.s   .rses_draw
+.rses_stop:
+    lea     str_stop_first, a1
+.rses_draw:
+    moveq   #1, d3
+    moveq   #23, d4
+    bsr     print_at
+.rses_done:
+    movem.l (sp)+, d0-d4/a1
     rts
 
 ; CONT carry/bridge markers on the SONG arrangement header (row 3), one per track just
@@ -16167,6 +16515,10 @@ str_p_load: dc.b "LOAD",0
 str_saved:    dc.b "SAVED  ",0
 str_unsaved:  dc.b "UNSAVED",0
 str_sure:     dc.b "SURE? TAP AGAIN",0
+str_cut_first: dc.b "CUT FIRST",0
+str_no_room:   dc.b "NO ROOM",0
+str_no_clip:   dc.b "NO CLIP",0
+str_stop_first: dc.b "STOP FIRST",0
 str_blank15:  dc.b "               ",0
 str_go:     dc.b "GO",0
 str_vid_n:  dc.b "NTSC",0

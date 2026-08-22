@@ -618,6 +618,157 @@ SONG_PAGE_ADDRESSING = """    tst.b   $00FFD500
 .tspdone:
 """
 
+SONG_STRUCTURAL_EDIT = """    tst.b   $00FFD500
+    bne     .tssedone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.tsseclear1:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tsseclear1
+
+    ; Single-track close-gap uses the absolute SONG page and preserves the clipboard.
+    move.b  #$22, song+(34*NCH)+2
+    move.b  #$33, song+(35*NCH)+2
+    move.b  #$7A, clip_buf
+    move.b  #2, song_page
+    move.b  #1, cur_row
+    move.b  #2, cur_col
+    clr.b   sel_active
+    bsr     song_gap_close
+    move.b  song+(33*NCH)+2, $00FFD501
+    move.b  song+(34*NCH)+2, $00FFD502
+    move.b  song+(35*NCH)+2, $00FFD503
+    move.b  clip_buf, $00FFD504
+
+    ; A two-row/two-track selection shifts only those tracks and exits selection.
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.tsseclear2:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tsseclear2
+    move.b  #$41, song+(68*NCH)+1
+    move.b  #$42, song+(68*NCH)+2
+    move.b  #$51, song+(69*NCH)+1
+    move.b  #$52, song+(69*NCH)+2
+    move.b  #$6A, song+(68*NCH)+0
+    move.b  #4, song_page
+    move.b  #3, cur_row
+    move.b  #2, cur_col
+    move.b  #2, sel_row0
+    move.b  #1, sel_col0
+    move.b  #1, sel_active
+    bsr     song_gap_close
+    move.b  song+(66*NCH)+1, $00FFD505
+    move.b  song+(66*NCH)+2, $00FFD506
+    move.b  song+(67*NCH)+1, $00FFD507
+    move.b  song+(67*NCH)+2, $00FFD508
+    move.b  song+(68*NCH)+0, $00FFD509
+    move.b  sel_active, $00FFD50A
+
+    ; Insert a two-row SONG clipboard, shifting its fixed source column downward.
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.tsseclear3:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tsseclear3
+    move.b  #$66, song+(70*NCH)+2
+    move.b  #$61, song+(70*NCH)+3
+    move.b  #$62, song+(71*NCH)+3
+    move.b  #$63, song+(72*NCH)+3
+    move.b  #SCR_SONG, clip_screen
+    move.b  #1, clip_col0                  ; source column differs: structural insert follows cursor
+    move.b  #2, clip_rows
+    move.b  #1, clip_cols
+    move.b  #$A1, clip_buf
+    move.b  #$A2, clip_buf+1
+    move.b  #4, song_page
+    move.b  #6, cur_row
+    move.b  #3, cur_col
+    clr.b   sel_active
+    bsr     song_clip_insert
+    move.b  song+(70*NCH)+3, $00FFD50B
+    move.b  song+(71*NCH)+3, $00FFD50C
+    move.b  song+(72*NCH)+3, $00FFD50D
+    move.b  song+(73*NCH)+3, $00FFD50E
+    move.b  song+(74*NCH)+3, $00FFD50F
+    move.b  song+(70*NCH)+2, $00FFD510
+
+    ; A populated tail refuses insertion transactionally.
+    move.b  #$EE, song+(239*NCH)+3
+    move.b  #1, clip_rows
+    move.b  #$B1, clip_buf
+    bsr     song_clip_insert
+    move.b  song_edit_msg, $00FFD511
+    move.b  song+(70*NCH)+3, $00FFD512
+    move.b  song+(239*NCH)+3, $00FFD513
+
+    ; Closing a populated cell refuses it, and a non-SONG clipboard is rejected.
+    bsr     song_gap_close
+    move.b  song_edit_msg, $00FFD514
+    move.b  song+(70*NCH)+3, $00FFD515
+    move.b  #SCR_PHRASE, clip_screen
+    bsr     song_clip_insert
+    move.b  song_edit_msg, $00FFD516
+
+    ; Warning expiry clears both the message and its rendered-state dirty flag.
+    move.b  #1, song_edit_ctr
+    clr.b   vdirty
+    bsr     song_edit_status_tick
+    move.b  song_edit_msg, $00FFD517
+    move.b  vdirty, $00FFD518
+
+    ; Full-width row shifts exercise the zero-stride fast path in both directions.
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.tsseclear4:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tsseclear4
+    move.b  #$10, song+(1*NCH)+0
+    move.b  #$19, song+(1*NCH)+9
+    clr.b   song_page
+    clr.b   cur_row
+    move.b  #9, cur_col
+    clr.b   sel_row0
+    clr.b   sel_col0
+    move.b  #1, sel_active
+    bsr     song_gap_close
+    move.b  song+(0*NCH)+0, $00FFD519
+    move.b  song+(0*NCH)+9, $00FFD51A
+
+    lea     song, a0
+    move.w  #(NSONGROWS*NCH)-1, d0
+.tsseclear5:
+    move.b  #$FF, (a0)+
+    dbra    d0, .tsseclear5
+    move.b  #$01, song+(10*NCH)+0
+    move.b  #$09, song+(10*NCH)+9
+    lea     clip_buf, a0
+    moveq   #0, d0
+.tsseclip10:
+    move.b  d0, d1
+    addi.b  #$C0, d1
+    move.b  d1, (a0)+
+    addq.b  #1, d0
+    cmpi.b  #10, d0
+    blo.s   .tsseclip10
+    move.b  #SCR_SONG, clip_screen
+    clr.b   clip_col0
+    move.b  #1, clip_rows
+    move.b  #10, clip_cols
+    move.b  #10, cur_row
+    clr.b   cur_col
+    clr.b   sel_active
+    bsr     song_clip_insert
+    move.b  song+(10*NCH)+0, $00FFD51B
+    move.b  song+(10*NCH)+9, $00FFD51C
+    move.b  song+(11*NCH)+0, $00FFD51D
+    move.b  song+(11*NCH)+9, $00FFD51E
+    movem.l (sp)+, d0-d7/a0-a6
+.tssedone:
+"""
+
 REFERENCE_EDIT = """    tst.b   $00FFD500
     bne     .tredone
     move.b  #1, $00FFD500
@@ -1294,6 +1445,25 @@ def t_song_page_addressing():
         'SONG selection escaped its page (%r)' % list(ram[0xD50D:0xD511])
     return 'page edits/cuts isolated; row 46 context retained; SONG/phrase paste bounds protected'
 
+def t_song_structural_edit():
+    """SONG gap-close/insert are absolute, column-scoped and refuse destructive boundaries."""
+    ram = run_rom(build_rom('song_structural_edit', boot_inject=SONG_STRUCTURAL_EDIT), 40)
+    assert list(ram[0xD501:0xD505]) == [0x22, 0x33, 0xFF, 0x7A], \
+        'single-track close-gap/page/clipboard result incorrect (%r)' % list(ram[0xD501:0xD505])
+    assert list(ram[0xD505:0xD50B]) == [0x41, 0x42, 0x51, 0x52, 0x6A, 0], \
+        'selected close-gap did not preserve rectangle/other track (%r)' % list(ram[0xD505:0xD50B])
+    assert list(ram[0xD50B:0xD511]) == [0xA1, 0xA2, 0x61, 0x62, 0x63, 0x66], \
+        'clipboard insertion/order/column isolation incorrect (%r)' % list(ram[0xD50B:0xD511])
+    assert list(ram[0xD511:0xD514]) == [2, 0xA1, 0xEE], \
+        'NO ROOM did not preserve destination/tail transactionally (%r)' % list(ram[0xD511:0xD514])
+    assert list(ram[0xD514:0xD517]) == [1, 0xA1, 3], \
+        'CUT FIRST/NO CLIP refusal status or data preservation incorrect (%r)' % list(ram[0xD514:0xD517])
+    assert list(ram[0xD517:0xD519]) == [0, 1], \
+        'structural-edit warning did not expire and request redraw (%r)' % list(ram[0xD517:0xD519])
+    assert list(ram[0xD519:0xD51F]) == [0x10, 0x19, 0xC0, 0xC9, 0x01, 0x09], \
+        'full-width close/insert zero-stride path incorrect (%r)' % list(ram[0xD519:0xD51F])
+    return 'page-aware gap close; block/column shift; atomic insert; refusal statuses'
+
 def t_reference_edit():
     """Reference edits remain unsigned through $80..$BF and clamp at their true ceilings."""
     ram = run_rom(build_rom('reference_edit', boot_inject=REFERENCE_EDIT), 35)
@@ -1393,6 +1563,7 @@ TESTS = [
     ('deep_clone_aliases', t_deep_clone_aliases),
     ('paste_and_mint', t_paste_and_mint),
     ('song_page_addressing', t_song_page_addressing),
+    ('song_structural_edit', t_song_structural_edit),
     ('reference_edit', t_reference_edit),
     ('cyclic_alloc', t_cyclic_alloc),
     ('files_confirm', t_files_confirm),

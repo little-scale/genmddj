@@ -63,6 +63,8 @@ Think of it as:
 | **C** clean double-tap | **Paste** the clipboard here. Chords, navigation and block-cancel C taps are ignored |
 | **C** + **B** | **Play from here / solo** the current thing (§3). On FILES it opens the action menu |
 | **Start** | **Play / stop.** From SONG it starts on the exact cursor row; from other editor screens it starts at row 0. LIVE mode launches the cursor row |
+| **A** hold, then **Start** tap | **Experimental, SONG only:** close the current empty cell/selection and shift those tracks upward |
+| **C** hold, then **Start** tap | **Experimental, SONG only:** insert the copied SONG cell/block at the cursor channel and shift its destination tracks downward |
 | **A** hold ~3 s (alone) | Open / close the **HELP** screen — an on-console button reference, from any screen (§3) |
 
 You never have to time two simultaneous presses. (The one *deliberate* hold is the ~3-second
@@ -81,6 +83,46 @@ anchored at the cursor.
 
 Then **cleanly double-tap C** to paste: the block drops in at the cursor, and each column lands
 back on its own column type, so nothing gets scrambled.
+
+### Experimental SONG gap closing and insertion
+
+There are two explicit structural operations on **SONG**. They are labelled experimental so
+their feel can be revised after longer use, but their button assignments are unambiguous: hold
+the named modifier first, then tap **Start**. Neither operation uses B. Stop the transport before
+using them; attempting either while playing displays **STOP FIRST**.
+
+#### Close an empty gap — hold A, tap Start
+
+Place the cursor on an empty SONG cell, or block-select an empty rectangle, then hold **A** and
+tap **Start**. Only the selected track column(s) shift upward, by the height of the gap, across
+the complete 240-row SONG. The vacated cells at the end become empty.
+
+This operation never deletes populated cells. If the current cell or any selected cell contains
+a chain, nothing changes and SONG displays **CUT FIRST**. Cut the material normally so it is
+preserved in the clipboard, then select the newly empty gap again if it spans multiple cells and
+use **A + Start** to close it.
+
+#### Insert a copied block — hold C, tap Start
+
+First copy a cell or block from **SONG**. Move the cursor to the desired destination row and
+channel, then hold **C** and tap **Start**. The copied block is inserted at the cursor: only its
+destination track column(s) shift downward by the block height. Its original source channel does
+not matter. For example, a block copied from F2 can be inserted at F5 by placing the cursor on F5.
+
+A copied empty SONG block is valid, so it can open a blank gap. To insert a complete blank row,
+copy an empty ten-track SONG row, move to the target row with the cursor on F1, then use
+**C + Start**. Copying one empty cell instead inserts space in only the current track.
+
+Insertion is all-or-nothing. **NO ROOM** means the block would extend past the NO track or row
+`EF`, or would push populated tail cells beyond row `EF`; no data is changed. **NO CLIP** means
+there is no valid SONG clipboard block. The shift itself runs atomically outside the video
+interrupt so a large move cannot be interrupted partway through.
+
+These operations are deliberately separate from ordinary editing:
+
+- **C,C** remains overwrite-paste and never shifts surrounding entries.
+- Normal single-cell and block cut still copy and clear without closing a gap automatically.
+- **A + Start** closes space; **C + Start** opens space and inserts the copied block.
 
 A single-field cut (**hold B, tap C**) also makes that note, instrument, command and
 parameter, phrase, or chain the next value inserted by B. This makes cut-then-insert a quick
@@ -653,6 +695,8 @@ COPY          B hold + A tap
 CUT/MOVE      B hold + C tap  → next B tap repeats the cut value
 MINT/CLONE    B double-tap on a SONG chain# / CHAIN phrase#
 BLOCK SELECT  A hold + B tap  → D-pad extend, B copy, A cut, C cancel
+SONG GAP      A hold, Start tap           (experimental; empty cell/selection)
+SONG INSERT   C hold, Start tap           (experimental; copied SONG block)
 CHANNEL       A hold + Left/Right        (CHAIN / PHRASE)
 FLIP/PAGE     A hold + Up/Down           (phrase / chain / SONG page)
 SCREENS       C hold + D-pad
