@@ -152,6 +152,9 @@ progress. Working today:
 - **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;
   OUT↔IN is 1-clock-per-row, two-MD tested; IN24 = 24-PPQN for the Ableton Link bridge),
   **wavetable** synthesis + **ECHO**, and **LIVE mode** (the clip launcher).
+- **Game Gear ↔ Nomad sync (hardware-tested)** — **[SMSGGDJ](https://github.com/little-scale/smsggdj)**
+  running on a **SEGA Game Gear** can be synchronised with GENMDDJ running on a **SEGA Nomad**
+  using the **GG sync-link-port PCB from [Chipbridge](https://github.com/little-scale/chipbridge)**.
 - **MIDI note takeover** (`SYNC: MIDI`) — a MIDI keyboard / DAW plays the ten voices live over
   **[Chipbridge](https://github.com/little-scale/chipbridge)**: the sequencer steps aside and the first 10 MIDI channels
   map 1:1 onto the console voices (F1–F6, T1–T3, NO), with Program Change / velocity / pitch-bend.
@@ -178,7 +181,8 @@ See [MANUAL.md](MANUAL.md) for how to use it.
   PSG layer, grooves, the command set, and the native DE-9 sync).
 - **[Chipbridge](https://github.com/little-scale/chipbridge)** — shared
   RP2040-Zero hardware and Pico-family firmware for wired MIDI Clock
-  (`SYNC: IN24`) and ten-channel MIDI note takeover (`SYNC: MIDI`).
+  (`SYNC: IN24`) and ten-channel MIDI note takeover (`SYNC: MIDI`), plus the GG
+  sync-link-port PCB used for hardware-tested Game Gear ↔ Nomad tracker sync.
 - **[smsggdj-link-esp32](https://github.com/little-scale/smsggdj-link-esp32)** — ESP32
   firmware bridging **Ableton Link** to the trackers' DE-9 hardware sync (a XIAO ESP32-C3
   driving the `SYNC IN` line). genmddj's SYNC IN was hardware-verified against this.
