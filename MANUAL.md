@@ -304,8 +304,20 @@ A **TONE** instrument played on **T1** can take over **T2** and **T3** and drive
 T1 — fat detuned unisons, fifths, octaves and chords, all from a single melody line. Set it
 with the **GROUP** field on the TONE instrument; when it's not OFF, two extra fields **RD1 /
 RD2** appear below it. T2/T3 then follow T1's timing, envelope, sweep and vibrato, and their
-own phrase notes are ignored while the group is active (leave those columns empty). It only
+own phrase notes are ignored until that slave voice receives a new note of its own. It only
 engages on **T1** — the same instrument played on T2 or T3 sounds as a normal tone.
+
+GROUP ownership is **per slave voice** and follows the most recent explicit note-on:
+
+- A grouped T1 note claims both T2 and T3.
+- A new note on T2 takes T2 back for independent playback; T3 remains grouped. A T3 note does
+  the equivalent for T3. Merely placing an instrument number on an empty row does not release it.
+- If T1 and a slave both contain notes on the same row, the slave's own note wins for that voice.
+- A later grouped T1 note claims both voices again. A T1 note using a TONE instrument with
+  **GROUP=OFF** releases both.
+
+Ownership does not change merely because an envelope decays, a rest is reached or playback is
+cut with `K00`; this prevents old masked slave material from appearing halfway through a phrase.
 
 | GROUP | T2 | T3 |
 |---|---|---|
@@ -328,7 +340,8 @@ so a two/three-voice stack doesn't overpower the mix.
 offsets — **high = T2, low = T3**, and `0` in a nibble keeps that voice silent. `C 47` = T2
 +4 (major third) and T3 +7 (fifth), a major triad over T1's root. The chord **latches** (it
 holds across the following notes until you change it, so the command column stays free for
-other commands); `C 00` clears it. In CHORD mode `C` no longer arps — T1 stays on its root.
+other commands). `C 00` clears the chord **and releases T2/T3**; a later non-zero `C` or grouped
+T1 note claims them again. In CHORD mode `C` no longer arps — T1 stays on its root.
 
 ---
 

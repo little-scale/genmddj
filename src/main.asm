@@ -254,6 +254,7 @@ clu_vol    equ $00FFD27B           ; GROUP: T1's final level (0-15) this tick
 clu_rd1    equ $00FFD27C           ; GROUP: T2 level drop (from T1 instrument RD1)
 clu_rd2    equ $00FFD27D           ; GROUP: T3 level drop (from T1 instrument RD2)
 clu_chord  equ $00FFD27E           ; GROUP CHORD: latched (hi<<4|lo) T2/T3 semitone offsets from T1's C command (0=off)
+clu_claim  equ $00FFD27F           ; GROUP ownership: bit0=T2, bit1=T3; bit7=C00 guard for this engine tick
 ; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
@@ -8134,6 +8135,7 @@ engine_play_reset:
     ; still holds its operator registers. Song/instrument replacement paths invalidate it explicitly.
     move.b  #0, g_wait                     ; W row-override off
     move.b  #0, clu_chord                 ; GROUP CHORD: no chord latched until a C sets one
+    move.b  #0, clu_claim                 ; GROUP: T2/T3 start independently until a grouped T1 note claims them
     lea     lq_b0, a0                     ; clear all per-channel command slots (Q/X/O/U/F/C)
     move.w  #(c_cphase+NCH)-lq_b0-1, d0
 .rlq:
@@ -8919,6 +8921,7 @@ engine_tick:
 .ch_muted:
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
+    bclr    #7, clu_claim                  ; C00 guard is one-tick only; the released ownership bits persist
     bsr     fmlfo_tick                    ; fold the 6 FM LFOs into the YM write list (a5/d5)
     bsr     flush_fm_keyons               ; all prepared FM voices now start back-to-back
     move.b  d6, scb_count
@@ -9856,6 +9859,43 @@ snap_note:
     rts
 
 note_trigger:                             ; trigger the note-on (a6 = channel); also entered from hold_tick after a delay
+    ; GROUP uses explicit per-slave ownership rather than T1's latched instrument alone. A grouped
+    ; T1 strike claims both slaves; an actual T2/T3 strike takes only that voice back. This state
+    ; deliberately survives envelope decay/rests so an old slave note cannot appear mid-phrase.
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    cmpi.b  #6, d0
+    beq.s   .gn_master
+    cmpi.b  #7, d0
+    beq.s   .gn_t2
+    cmpi.b  #8, d0
+    beq.s   .gn_t3
+    bra.s   .gn_done
+.gn_master:
+    moveq   #0, d1
+    move.b  c_instr(a6), d1
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a1
+    cmpi.b  #3, (i_type,a1,d1.w)          ; only a TONE instrument can own the PSG slaves
+    bne.s   .gn_release
+    tst.b   (i_cluster,a1,d1.w)
+    beq.s   .gn_release                    ; GROUP=OFF explicitly releases both
+    cmpi.b  #7, (i_cluster,a1,d1.w)       ; C00 on this same CHORD row wins over its root note
+    bne.s   .gn_claim
+    btst    #7, clu_claim
+    bne.s   .gn_release
+.gn_claim:
+    move.b  #3, clu_claim
+    bra.s   .gn_done
+.gn_release:
+    clr.b   clu_claim
+    bra.s   .gn_done
+.gn_t2:
+    bclr    #0, clu_claim                  ; an explicit T2 note takes T2 back; T3 may remain grouped
+    bra.s   .gn_done
+.gn_t3:
+    bclr    #1, clu_claim                  ; an explicit T3 note takes T3 back; T2 may remain grouped
+.gn_done:
     moveq   #0, d0                          ; an immediate (re)trigger clears any pending delay
     move.b  c_track(a6), d0
     lea     c_delay, a1
@@ -10326,7 +10366,14 @@ exec_cmd:
     bne.s   .cc_arp
     cmpi.b  #7, (i_cluster,a4)
     bne.s   .cc_arp
-    move.b  (3,a1,d1.w), clu_chord         ; latch (hi<<4|lo) for T2/T3; T1's own chord stays 0 (root)
+    move.b  #1, c_set                      ; a grouped C still counts as this row's C command
+    move.b  (3,a1,d1.w), d2
+    move.b  d2, clu_chord                  ; latch (hi<<4|lo) for T2/T3; T1's own chord stays 0 (root)
+    beq.s   .cc_release                    ; C00 is an explicit release, not a permanent silent reservation
+    move.b  #3, clu_claim                  ; a nonzero chord explicitly reclaims both slave voices
+    bra     .cmddone
+.cc_release:
+    move.b  #$80, clu_claim                ; release both; guard against a grouped root note on this tick
     bra     .cmddone
 .cc_arp:
     move.b  #1, c_set                      ; C on this row -> note-on keeps the chord
@@ -10769,7 +10816,7 @@ psg_xcap:                                 ; d0 = PSG env level (0-15) -> capped 
 
 ; GROUP cluster: called at the PSG square's .fp_done (d1 = atten, d2 = final period, a6 = channel).
 ; T1 (track 6) snapshots its final period/level + this instrument's GROUP settings; T2 (7) / T3 (8)
-; overwrite d1/d2 with the derived voice when a group is active (CHORD handled in a later commit).
+; overwrite d1/d2 only while their bit in clu_claim remains owned by T1.
 ; Preserves a3/a5/a6/d5/d6 (the SCB pointers); modifies only d1/d2.
 cluster_hook:
     movem.l d0/d3/d4/a1, -(sp)
@@ -10802,6 +10849,16 @@ cluster_hook:
     bhi    .chk_x                          ; NO or beyond -> no group
     move.b  clu_mode, d3
     beq    .chk_x                          ; OFF -> slave plays its own note
+    move.b  clu_claim, d4                  ; per-slave last-note-wins ownership
+    cmpi.b  #7, d0
+    bne.s   .chs_claim3
+    btst    #0, d4
+    beq    .chk_x                          ; T2 played explicitly after T1 claimed it
+    bra.s   .chs_claimed
+.chs_claim3:
+    btst    #1, d4
+    beq    .chk_x                          ; T3 played explicitly after T1 claimed it
+.chs_claimed:
     cmpi.b  #7, d3                          ; CHORD -> nibble-driven pitch
     beq    .chk_chord
     subq.b  #7, d0                          ; d0: 0 = T2, 1 = T3
@@ -16405,7 +16462,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_help: dc.b "HOLD A TO VIEW HELP",0
-ver_str:    dc.b "V0.21",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+ver_str:    dc.b "V0.22",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0

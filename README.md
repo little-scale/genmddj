@@ -146,7 +146,8 @@ progress. Working today:
 - **Per-instrument KIT volume** — six deterministic shift-scaled levels (`F / 8 / 4 / 2 / 1 / 0`),
   including mute, with pre-baked PCM pools so sample pitch and DAC feed timing stay unchanged.
 - **GROUP** — a TONE instrument on T1 drives T2/T3 for detuned unisons, fifths, power
-  chords, octaves and chords from a single line.
+  chords, octaves and chords from a single line. A new note on either slave voice takes that
+  channel back independently; `C00` releases both voices from CHORD mode.
 - **Region-aware** — separate **VIDEO** (50/60 Hz → tempo + display) and **CLOCK** (NTSC/PAL
   crystal → pitch) options, so PAL, NTSC and modded (PAL-60) consoles all play in tune and in time.
 - **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;

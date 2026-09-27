@@ -1168,6 +1168,77 @@ CUT_PRIMES_INSERT = """    tst.b   $00FFD500
 .tcpdone:
 """
 
+GROUP_OWNERSHIP = """    tst.b   $00FFD500
+    bne     .tgodone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #3, instrum+i_type
+    clr.b   instrum+i_cluster
+    move.b  #3, instrum+INSTR_SIZE+i_type
+    move.b  #7, instrum+INSTR_SIZE+i_cluster
+    clr.b   c_set
+    clr.b   clu_claim
+    lea     ch_state+(6*CHSIZE), a6
+    move.b  #1, c_instr(a6)
+    move.b  #48, c_note(a6)
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD501
+    lea     ch_state+(7*CHSIZE), a6
+    move.b  #1, c_instr(a6)
+    move.b  #52, c_note(a6)
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD502
+    move.b  #7, clu_mode
+    move.w  #400, clu_period
+    move.b  #15, clu_vol
+    clr.b   clu_rd1
+    clr.b   clu_rd2
+    move.b  #$47, clu_chord
+    moveq   #5, d1
+    move.w  #333, d2
+    bsr     cluster_hook
+    move.w  d2, $00FFD506
+    move.b  d1, $00FFD50A
+    lea     ch_state+(8*CHSIZE), a6
+    move.b  #1, c_instr(a6)
+    move.b  #55, c_note(a6)
+    moveq   #5, d1
+    move.w  #333, d2
+    bsr     cluster_hook
+    move.w  d2, $00FFD508
+    move.b  d1, $00FFD50B
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD503
+    lea     ch_state+(6*CHSIZE), a6
+    move.b  #1, c_instr(a6)
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD504
+    move.b  #0, c_instr(a6)
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD505
+    move.b  #$FF, $00FFD514
+    move.b  #1, $00FFD515
+    move.b  #3, $00FFD516
+    move.b  #$47, $00FFD517
+    move.b  #1, c_instr(a6)
+    lea     $00FFD514, a1
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  clu_claim, $00FFD50C
+    move.b  #0, $00FFD517
+    bsr     exec_cmd
+    move.b  clu_claim, $00FFD50D
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD50E
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD50F
+    lea     ch_state+(7*CHSIZE), a6
+    bsr     note_trigger
+    move.b  clu_claim, $00FFD510
+    movem.l (sp)+, d0-d7/a0-a6
+.tgodone:
+"""
+
 # arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
 CONT_GLIDE_ARM = """    move.w  g_ticks, d0
     cmpi.w  #5, d0
@@ -1528,6 +1599,21 @@ def t_cut_primes_insert():
     assert got == expect, 'cut-to-prime results %r' % got
     return 'chain/phrase/note/instrument/command+parameter prime next insert; empty cut preserves memory'
 
+def t_group_ownership():
+    """GROUP ownership is per slave and follows explicit note/C-command transitions."""
+    ram = run_rom(build_rom('group_ownership', boot_inject=GROUP_OWNERSHIP), 35)
+    masks = list(ram[0xD501:0xD506])
+    assert masks == [3, 2, 0, 3, 0], 'GROUP note ownership transitions %r' % masks
+    t2_period = int.from_bytes(ram[0xD506:0xD508], 'big')
+    t3_period = int.from_bytes(ram[0xD508:0xD50A], 'big')
+    assert (t2_period, ram[0xD50A]) == (333, 5), \
+        'released T2 was still overridden (%d, atten %d)' % (t2_period, ram[0xD50A])
+    assert (t3_period, ram[0xD50B]) == (267, 0), \
+        'still-owned T3 was not chord-derived (%d, atten %d)' % (t3_period, ram[0xD50B])
+    commands = list(ram[0xD50C:0xD511])
+    assert commands == [3, 0x80, 0, 3, 2], 'GROUP C00/reclaim/same-row priority %r' % commands
+    return 'per-slave release; C00 release; later T1 reclaim; same-row slave priority'
+
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
     back to the real groove (genmddj is groove-as-tempo, so tempo IS the scratch groove)."""
@@ -1571,6 +1657,7 @@ TESTS = [
     ('fm_simultaneous', t_fm_simultaneous),
     ('fm_prewarm', t_fm_prewarm),
     ('cut_primes_insert', t_cut_primes_insert),
+    ('group_ownership', t_group_ownership),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
     ('kit_retrigger', t_kit_retrigger),

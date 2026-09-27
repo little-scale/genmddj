@@ -2,6 +2,23 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.22 — 2026-09-27
+
+### Changed
+- **TONE GROUP ownership is now per slave voice.** A grouped T1 note claims T2/T3, while an
+  explicit note on T2 or T3 takes only that channel back for independent playback; on a shared
+  row the slave note wins. A later grouped T1 note reclaims both, a T1 `GROUP=OFF` note releases
+  both, and `C00` now clears and releases the CHORD voices. Ownership remains stable through
+  rests and envelope decay so masked material cannot appear unexpectedly mid-phrase.
+
+### Tools
+- The browser palette patcher can now import a complete eight-palette `.gmpalset`, complementing
+  its existing Export All function. Imports are validated in full before any palette is changed.
+
+### Docs
+- Documented the hardware-tested sync connection between SMSGGDJ on a SEGA Game Gear and
+  GENMDDJ on a SEGA Nomad using the Chipbridge GG sync-link-port PCB.
+
 ## v0.21 — 2026-08-22
 
 ### Added
