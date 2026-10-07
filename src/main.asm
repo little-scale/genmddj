@@ -255,7 +255,7 @@ clu_rd1    equ $00FFD27C           ; GROUP: T2 level drop (from T1 instrument RD
 clu_rd2    equ $00FFD27D           ; GROUP: T3 level drop (from T1 instrument RD2)
 clu_chord  equ $00FFD27E           ; GROUP CHORD: latched (hi<<4|lo) T2/T3 semitone offsets from T1's C command (0=off)
 clu_claim  equ $00FFD27F           ; GROUP ownership: bit0=T2, bit1=T3; bit7=C00 guard for this engine tick
-; FM LFO bank: 6 global LFOs, each routed to (channel, FM param). lfo_cfg saved with the song.
+; FM LFO bank: 16 song-scoped software LFOs, each routed to (channel, FM param).
 lfo_cfg    equ $00FFD280           ; NLFO * LF_SIZE config bytes (flags/chan/param/rate/depth/poff)
 lfo_phase  equ $00FFD2E0           ; NLFO 16-bit phases (past lfo_cfg's 16*6 = 96 bytes)
 phrase_plays equ $00FFD000         ; per-phrase play counters (NPHRASES bytes) for the I command; moved to the $D000 hole
@@ -464,7 +464,7 @@ iwl_cd     equ 27
 iw_pitch   equ 28                   ; PITCH detune: 8 = in tune, <8 flat, >8 sharp (LFO -> vibrato)
 iwl_pr     equ 29                   ; PITCH LFO rate / depth
 iwl_pd     equ 30
-; FM LFO bank record (6 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE).
+; FM LFO bank record (16 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE).
 NLFO       equ 16
 LF_SIZE    equ 6
 LF_FLAGS   equ 0                    ; bit0 = on; bits 1-2 = resync mode
@@ -754,11 +754,7 @@ Start:
                                           ; factory wave bank (GMDJWAV0) -- no separate boot init needed
     move.b  #0, wave_pidx                 ; preset cycle starts at sine
     move.b  #0, wave_on                   ; no wave note sounding yet
-    lea     lfo_cfg, a2                   ; clear the FM LFO bank (no stray LFOs at boot)
-    moveq   #(lfo_phase+NLFO*2-lfo_cfg-1), d0 ; through lfo_cfg records + the phase array
-.linit:
-    clr.b   (a2)+
-    dbra    d0, .linit
+                                          ; clear_song already cleared the FM-LFO bank and its runtime phase
     move.l  #$13571357, wave_rng          ; non-zero xorshift seed
     move.b  #0, playing                  ; boot stopped
     move.b  #0, player_active            ; ordinary tracker boot unless the private SRAM marker opts in
@@ -2315,7 +2311,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     moveq   #6, d1                          ; TMPO TSP MODE LFO SLID SCALE-KEY SCALE-TYPE (NAME read-only)
     rts
 .rmlfo:
-    moveq   #NLFO-1, d1                     ; 6 LFO rows
+    moveq   #NLFO-1, d1                     ; 16 software-LFO rows
     rts
 .rmgroove:
     moveq   #16, d1                          ; GROOVE: row 0 = GRV selector, rows 1-16 = the 16 ticks
@@ -5897,8 +5893,8 @@ render_psg_stub:
     bsr     print_at
     rts
 
-; FM LFO bank editor (SCR_LFO): 6 LFO rows x 6 columns ON/CH/PM/RT/DP/SY. Cursor = (cur_row
-; 0..5, cur_col 0..5). Reads the lfo_cfg records; ON and SY share the flags byte.
+; FM LFO bank editor (SCR_LFO): 16 LFO rows x 9 columns. Cursor = (cur_row 0..15,
+; cur_col 0..8). Reads the lfo_cfg records; ON, SY and DIR share the flags byte.
 render_lfo:                                ; a0 = VDP_CTRL
     moveq   #4, d3                          ; column header at row 4, col 3
     moveq   #3, d4
@@ -9519,6 +9515,7 @@ advance_ch:                               ; a6 = channel
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
     beq     nt_done
     moveq   #0, d0
+    bra.s   .gotrow                       ; pooled phrase row 0: count this new play for I/J
 .cont_bridgeloop:
     moveq   #0, d0                          ; CONT bridge wrap: row 0, keep c_phrase; skip the play-count
     move.b  d0, c_row(a6)                   ; (c_phrase points at the private carry buffer, not the pool)
@@ -14038,6 +14035,11 @@ sram_probe:
 ; The scattered song-level globals are staged into the head slot ($FF0000) on save, unpacked on load.
 ; ============================================================================================
 GLOB_N     equ 12
+GLOB_LFO_OFS equ $10                       ; reserved globals bytes $10-$6F hold 16 * 6-byte LFO records
+GLOB_LFO_LEN equ NLFO*LF_SIZE
+    ifgt GLOB_LFO_OFS+GLOB_LFO_LEN-256
+        fail "FM LFO save image overruns the 256-byte globals block"
+    endc
 glob_tab:                                  ; song-level globals, in head-slot order ($FF0000+i)
     dc.l    proj_tsp, proj_mode, proj_groove, g_lfo
     dc.l    echo_mode, echo_tap1, echo_tap2, echo_rd1, echo_rd2, echo_ster
@@ -14061,6 +14063,12 @@ gather_globals:                            ; scattered globals -> head slot, the
 .ggz:
     clr.b   (a1)+
     dbra    d0, .ggz
+    lea     lfo_cfg, a0                    ; persist the software-FM-LFO configuration, not its phase/meters
+    lea     SAVE_BASE+GLOB_LFO_OFS, a1
+    moveq   #GLOB_LFO_LEN-1, d0
+.ggl:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .ggl
     movem.l (sp)+, d0/a0-a2
     rts
 
@@ -14073,8 +14081,85 @@ scatter_globals:                           ; head slot -> scattered globals
     movea.l (a0)+, a2
     move.b  (a1)+, (a2)
     dbra    d0, .sg
+    lea     SAVE_BASE+GLOB_LFO_OFS, a0
+    lea     lfo_cfg, a1
+    moveq   #GLOB_LFO_LEN-1, d0
+.sgl:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .sgl
+    bsr     sanitize_lfo_cfg               ; reject unsafe/out-of-editor-range values in imported saves
+    bsr     reset_lfo_runtime              ; configuration is song data; phase and AMP meters are transient
     bsr     sanitize_song                  ; loaded pools -> clamp indices (see below)
     movem.l (sp)+, d0/a0-a2
+    rts
+
+sanitize_lfo_cfg:                          ; clamp all loaded records to values the LFO editor can create
+    movem.l d0-d2/a0, -(sp)
+    lea     lfo_cfg, a0
+    moveq   #NLFO-1, d0
+.slf_rec:
+    move.b  (LF_FLAGS,a0), d1
+    andi.b  #$1F, d1                       ; bit0 ON, bits1-2 SYNC, bits3-4 DIR; discard reserved bits
+    move.b  d1, d2
+    lsr.b   #1, d2
+    andi.b  #3, d2
+    cmpi.b  #3, d2                         ; SYNC 3 is invalid -> NOTE (0)
+    bne.s   .slf_dir
+    andi.b  #$F9, d1
+.slf_dir:
+    move.b  d1, d2
+    lsr.b   #3, d2
+    andi.b  #3, d2
+    cmpi.b  #3, d2                         ; DIR 3 is invalid -> BOTH (0)
+    bne.s   .slf_flags
+    andi.b  #$E7, d1
+.slf_flags:
+    move.b  d1, (LF_FLAGS,a0)
+    cmpi.b  #6, (LF_CHAN,a0)               ; software FM LFOs target F1-F6 only
+    blo.s   .slf_param
+    clr.b   (LF_CHAN,a0)
+.slf_param:
+    cmpi.b  #FMLFO_NPARM, (LF_PARM,a0)
+    blo.s   .slf_depth
+    clr.b   (LF_PARM,a0)
+.slf_depth:
+    cmpi.b  #15, (LF_DEPTH,a0)
+    bls.s   .slf_poff
+    move.b  #15, (LF_DEPTH,a0)
+.slf_poff:
+    cmpi.b  #15, (LF_POFF,a0)
+    bls.s   .slf_next
+    move.b  #15, (LF_POFF,a0)
+.slf_next:
+    lea     LF_SIZE(a0), a0
+    dbra    d0, .slf_rec
+    movem.l (sp)+, d0-d2/a0
+    rts
+
+reset_lfo_runtime:                         ; a song change restarts motion; phase/meters are never persisted
+    movem.l d0/a0, -(sp)
+    lea     lfo_phase, a0
+    moveq   #(NLFO*2)-1, d0
+.rlr_phase:
+    clr.b   (a0)+
+    dbra    d0, .rlr_phase
+    lea     lfo_amp, a0
+    moveq   #NLFO-1, d0
+.rlr_amp:
+    clr.b   (a0)+
+    dbra    d0, .rlr_amp
+    movem.l (sp)+, d0/a0
+    rts
+
+clear_lfo_bank:                            ; NEW/cold boot: all software LFOs off with fresh runtime state
+    movem.l d0/a0, -(sp)
+    lea     lfo_cfg, a0
+    moveq   #GLOB_LFO_LEN-1, d0
+.clb_cfg:
+    clr.b   (a0)+
+    dbra    d0, .clb_cfg
+    bsr     reset_lfo_runtime
+    movem.l (sp)+, d0/a0
     rts
 
 ; clamp every pool index in the just-loaded song so a valid-checksum but wrongly-BUILT
@@ -16452,6 +16537,7 @@ clear_song:                               ; blank project: phrases -> rests, cha
 .cz_w:
     move.b  (a1)+, (a2)+
     dbra    d0, .cz_w
+    bsr     clear_lfo_bank                 ; NEW owns a fresh, silent software-LFO bank
     rts
 
 Exception:
@@ -16462,7 +16548,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_help: dc.b "HOLD A TO VIEW HELP",0
-ver_str:    dc.b "V0.22",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+ver_str:    dc.b "V0.23",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0

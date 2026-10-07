@@ -2,6 +2,17 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.23 — 2026-10-07
+
+### Fixed
+- Normal SONG and CHAIN phrase wraps now advance the shared play-count used by the deterministic
+  `I` note gate and `J` transpose commands. Repeat masks such as `I55` and `IAA` therefore alternate
+  correctly outside PHRASE solo; private CONT bridge loops remain excluded from pooled phrase counts.
+- The 16-entry software FM-LFO bank is now stored and restored per song instead of leaking between
+  songs as session state. Existing saves remain compatible and load with an empty LFO bank; transient
+  phase/meters restart on LOAD or NEW, LFO-only edits participate in the UNSAVED check, and imported
+  configuration bytes are range-checked before use.
+
 ## v0.22 — 2026-09-27
 
 ### Changed

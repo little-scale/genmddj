@@ -380,7 +380,9 @@ change is heard on the next trigger, no stop/start.
 
 **FM LFO screen** (below INSTR): a software LFO bank that can modulate FM voices beyond the
 chip's single global LFO — assign an LFO to a channel and set its parameter, rate and
-depth. The channel column reads F1–F6.
+depth. The channel column reads F1–F6. All 16 LFO configurations are saved with the song;
+their running phase is transient and restarts when another song is loaded or a new blank
+project is created.
 
 ---
 
@@ -504,7 +506,8 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 cloning just to add a fill:
 
 - **`I`** — *whether* the note plays, on a fixed schedule (the 8-bit play-count mask:
-  `FF` always, `55`/`AA` alternate plays, `0F`/`F0` the first/last four of eight).
+  `FF` always; `55` plays passes 1, 3, 5 and 7; `AA` plays passes 2, 4, 6 and 8;
+  `0F`/`F0` play the first/last four of eight).
 - **`J`** — *what pitch* (or which drum pad) it plays, transposing on a 4-bit schedule.
 - **`Z`** — *whether* it plays, by random chance.
 

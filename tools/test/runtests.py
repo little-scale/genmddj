@@ -319,6 +319,104 @@ SAVE_ROUNDTRIP = """    tst.b   $00FFD500
 .tsrdone:
 """
 
+LFO_SAVE_STATE = """    tst.b   $00FFDD00
+    bne     .tlsdone
+    move.b  #1, $00FFDD00
+    movem.l d0-d7/a0-a6, -(sp)
+    lea     lfo_cfg, a0
+    moveq   #(NLFO*LF_SIZE)-1, d0
+.tlsclr:
+    clr.b   (a0)+
+    dbra    d0, .tlsclr
+    move.b  #$15, lfo_cfg+LF_FLAGS
+    move.b  #5, lfo_cfg+LF_CHAN
+    move.b  #34, lfo_cfg+LF_PARM
+    move.b  #$A7, lfo_cfg+LF_RATE
+    move.b  #$0D, lfo_cfg+LF_DEPTH
+    move.b  #$0E, lfo_cfg+LF_POFF
+    move.b  #$0B, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_FLAGS
+    move.b  #2, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_CHAN
+    move.b  #7, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_PARM
+    move.b  #$33, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_RATE
+    move.b  #4, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_DEPTH
+    move.b  #5, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_POFF
+    move.w  #$1234, lfo_phase
+    move.b  #7, lfo_amp
+    bsr     dir_save
+
+    move.b  #$FF, lfo_cfg+LF_FLAGS
+    move.b  #$EE, lfo_cfg+LF_CHAN
+    move.b  #$DD, lfo_cfg+LF_PARM
+    move.b  #$CC, lfo_cfg+LF_RATE
+    move.b  #$BB, lfo_cfg+LF_DEPTH
+    move.b  #$AA, lfo_cfg+LF_POFF
+    move.b  #$FF, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_FLAGS
+    move.w  #$5678, lfo_phase
+    move.b  #6, lfo_amp
+    moveq   #0, d0
+    bsr     dir_load
+    move.b  lfo_cfg+LF_FLAGS, $00FFDD01
+    move.b  lfo_cfg+LF_CHAN, $00FFDD02
+    move.b  lfo_cfg+LF_PARM, $00FFDD03
+    move.b  lfo_cfg+LF_RATE, $00FFDD04
+    move.b  lfo_cfg+LF_DEPTH, $00FFDD05
+    move.b  lfo_cfg+LF_POFF, $00FFDD06
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_FLAGS, $00FFDD07
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_CHAN, $00FFDD08
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_PARM, $00FFDD09
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_RATE, $00FFDD0A
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_DEPTH, $00FFDD0B
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_POFF, $00FFDD0C
+    move.b  lfo_phase, $00FFDD0D
+    move.b  lfo_phase+1, $00FFDD0E
+    move.b  lfo_amp, $00FFDD0F
+    move.b  load_ok, $00FFDD10
+
+    eori.b  #1, lfo_cfg+LF_RATE
+    bsr     check_dirty
+    move.b  song_dirty, $00FFDD11
+
+    lea     SAVE_BASE+GLOB_LFO_OFS, a0
+    moveq   #(NLFO*LF_SIZE)-1, d0
+.tlslegacy:
+    clr.b   (a0)+
+    dbra    d0, .tlslegacy
+    move.b  #$1F, lfo_cfg
+    move.b  #$7F, lfo_cfg+((NLFO-1)*LF_SIZE)+LF_RATE
+    move.w  #$1357, lfo_phase
+    move.b  #5, lfo_amp
+    bsr     scatter_globals
+    move.b  lfo_cfg, $00FFDD12
+    move.b  lfo_cfg+((NLFO-1)*LF_SIZE)+LF_RATE, $00FFDD13
+    move.w  lfo_phase, $00FFDD14
+    move.b  lfo_amp, $00FFDD16
+
+    lea     SAVE_BASE+GLOB_LFO_OFS, a0
+    move.b  #$FF, LF_FLAGS(a0)
+    move.b  #$FF, LF_CHAN(a0)
+    move.b  #$FF, LF_PARM(a0)
+    move.b  #$CC, LF_RATE(a0)
+    move.b  #$FE, LF_DEPTH(a0)
+    move.b  #$FD, LF_POFF(a0)
+    bsr     scatter_globals
+    move.b  lfo_cfg+LF_FLAGS, $00FFDD17
+    move.b  lfo_cfg+LF_CHAN, $00FFDD18
+    move.b  lfo_cfg+LF_PARM, $00FFDD19
+    move.b  lfo_cfg+LF_RATE, $00FFDD1A
+    move.b  lfo_cfg+LF_DEPTH, $00FFDD1B
+    move.b  lfo_cfg+LF_POFF, $00FFDD1C
+
+    move.b  #$1F, lfo_cfg
+    move.w  #$2468, lfo_phase
+    move.b  #4, lfo_amp
+    bsr     clear_song
+    move.b  lfo_cfg, $00FFDD1D
+    move.w  lfo_phase, $00FFDD1E
+    move.b  lfo_amp, $00FFDD20
+    movem.l (sp)+, d0-d7/a0-a6
+.tlsdone:
+"""
+
 LOAD_BAD_CHECKSUM = """    tst.b   $00FFD500
     bne.s   .tlbdone
     move.b  #1, $00FFD500
@@ -439,6 +537,65 @@ START_FROM_SONG_CURSOR = """    tst.b   $00FFD500
     move.b  play_from, $00FFD50C
     movem.l (sp)+, d0-d7/a0-a6
 .tscsdone:
+"""
+
+PHRASE_ITERATION = """    tst.b   $00FFD500
+    bne     .tipdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #0, play_mode
+    move.b  #0, song
+    move.b  #$FF, song+NCH
+    move.b  #0, chains
+    move.b  #0, chains+1
+    move.b  #$FF, chains+2
+    move.b  #48, phrases
+    move.b  #0, phrases+1
+    move.b  #9, phrases+2
+    move.b  #$AA, phrases+3
+    move.b  #0, instrum+i_type
+    move.b  #0, instrum+i_tsp
+    move.b  #$FF, instrum+i_tbl
+    clr.b   phrase_plays
+    lea     ch_state, a6
+    move.b  #0, c_chain(a6)
+    move.b  #$FF, c_cstep(a6)
+    move.b  #15, c_row(a6)
+    move.b  #0, c_track(a6)
+    move.b  #0, c_songpos(a6)
+    move.b  #0, c_transp(a6)
+    move.b  #1, c_type(a6)
+    move.l  #phrases, c_phrase(a6)
+
+    move.b  #40, c_note(a6)
+    bsr     advance_ch
+    move.b  phrase_plays, $00FFD501
+    move.b  c_note(a6), $00FFD502
+    move.b  #15, c_row(a6)
+    move.b  #40, c_note(a6)
+    bsr     advance_ch
+    move.b  phrase_plays, $00FFD503
+    move.b  c_note(a6), $00FFD504
+    move.b  #15, c_row(a6)
+    move.b  #40, c_note(a6)
+    bsr     advance_ch
+    move.b  phrase_plays, $00FFD505
+    move.b  c_note(a6), $00FFD506
+    move.b  #15, c_row(a6)
+    move.b  #40, c_note(a6)
+    bsr     advance_ch
+    move.b  phrase_plays, $00FFD507
+    move.b  c_note(a6), $00FFD508
+
+    clr.b   phrase_plays+1
+    move.b  #$FF, phrases+PHRASE_SIZE
+    move.l  #phrases+PHRASE_SIZE, c_phrase(a6)
+    move.b  #CONT_BRIDGE, c_chain(a6)
+    move.b  #15, c_row(a6)
+    bsr     advance_ch
+    move.b  phrase_plays+1, $00FFD509
+    movem.l (sp)+, d0-d7/a0-a6
+.tipdone:
 """
 
 DEEP_CLONE_ALIASES = """    tst.b   $00FFD500
@@ -1433,6 +1590,24 @@ def t_save_roundtrip():
     assert ram[0xD505] == 0, 'load reported error %d' % ram[0xD505]
     return 'payload verified, entry committed, snapshot restored exactly'
 
+def t_lfo_save_state():
+    """Software-FM-LFO config is per-song; runtime phase is transient and loads are sanitized."""
+    ram = run_rom(build_rom('lfo_save_state', boot_inject=LFO_SAVE_STATE), 240)
+    assert list(ram[0xDD01:0xDD07]) == [0x15, 5, 34, 0xA7, 0x0D, 0x0E], \
+        'LFO 0 did not survive save/load (%r)' % list(ram[0xDD01:0xDD07])
+    assert list(ram[0xDD07:0xDD0D]) == [0x0B, 2, 7, 0x33, 4, 5], \
+        'LFO F did not survive save/load (%r)' % list(ram[0xDD07:0xDD0D])
+    assert list(ram[0xDD0D:0xDD11]) == [0, 0, 0, 1], \
+        'LFO runtime phase/amp or load result incorrect (%r)' % list(ram[0xDD0D:0xDD11])
+    assert ram[0xDD11] == 1, 'LFO-only edit was not detected as UNSAVED'
+    assert list(ram[0xDD12:0xDD17]) == [0, 0, 0, 0, 0], \
+        'legacy zero LFO block did not clear config/runtime (%r)' % list(ram[0xDD12:0xDD17])
+    assert list(ram[0xDD17:0xDD1D]) == [1, 0, 0, 0xCC, 0x0F, 0x0F], \
+        'loaded LFO fields were not sanitized (%r)' % list(ram[0xDD17:0xDD1D])
+    assert list(ram[0xDD1D:0xDD20]) == [0, 0, 0] and ram[0xDD20] == 0, \
+        'NEW project did not clear LFO config/runtime (%r, %d)' % (list(ram[0xDD1D:0xDD20]), ram[0xDD20])
+    return '16 configs round-trip; legacy zeros, sanitization, dirty state and NEW reset verified'
+
 def t_load_bad_checksum():
     """A bad stored checksum leaves both the working song and its title untouched."""
     rom = build_rom('load_bad_checksum', boot_inject=LOAD_BAD_CHECKSUM)
@@ -1480,6 +1655,16 @@ def t_start_from_song_cursor():
         'external-sync C+B did not arm at row 46 (%r)' % list(ram[0xD509:0xD50C])
     assert ram[0xD50C] == 0, 'Start outside SONG retained row $%02X instead of row 0' % ram[0xD50C]
     return 'Start/C+B launch row 46 and auto-arm external WAIT; other screens launch row 0'
+
+def t_phrase_iteration():
+    """Normal SONG phrase wraps advance I/J play counts; IAA gates alternate passes."""
+    ram = run_rom(build_rom('phrase_iteration', boot_inject=PHRASE_ITERATION), 30)
+    got = list(ram[0xD501:0xD509])
+    assert got == [1, 40, 2, 48, 3, 40, 4, 48], \
+        'SONG IAA repeat count/gate sequence incorrect (%r)' % got
+    assert ram[0xD509] == 0, \
+        'CONT private-phrase wrap changed a pooled phrase counter (%d)' % ram[0xD509]
+    return 'SONG counts 1-4; IAA is off/on/off/on; CONT private wrap remains isolated'
 
 def t_deep_clone_aliases():
     """DEEP clones each unique phrase once while preserving repeated references and transposes."""
@@ -1641,11 +1826,13 @@ def t_boot_smoke():
 TESTS = [
     ('boot_smoke',   t_boot_smoke),
     ('save_roundtrip', t_save_roundtrip),
+    ('lfo_save_state', t_lfo_save_state),
     ('save_freeze', t_save_freeze),
     ('load_bad_checksum', t_load_bad_checksum),
     ('load_bad_rle', t_load_bad_rle),
     ('cursor_block', t_cursor_block),
     ('start_from_song_cursor', t_start_from_song_cursor),
+    ('phrase_iteration', t_phrase_iteration),
     ('deep_clone_aliases', t_deep_clone_aliases),
     ('paste_and_mint', t_paste_and_mint),
     ('song_page_addressing', t_song_page_addressing),
