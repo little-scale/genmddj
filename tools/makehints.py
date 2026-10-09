@@ -8,7 +8,7 @@ current INSTR field to a hint and draws it (inverted, ">> "-prefixed) on the bot
 Sections map to the INSTR field layout in src/main.asm:
   [COMMON]  rows 0-1 shared by every type (INST selector, TYPE)
   [FM]      FM voice rows 2+   (voice_lbl: HLD VOL PAN TSP TBL TBS ALGO FB AMS FMS SWEEP)
-  [FM.OP]   FM op-grid cols, SCREEN order: ML DT TL RS AR D1 D2 RR SL AM
+  [FM.OP]   FM op-grid cols, SCREEN order: ML DT TL RS AR D1 D2 RR SL AM SG
             (keyed by cur_col = display column, not the i_op storage slot)
   [TONE]/[NOISE]  psg_off rows 2+   [WAVE] wave_off rows 2+   [KIT]/[PERC] rows 2+
 Lines within a section are in on-screen field order; a blank line = no hint for that field.
@@ -22,7 +22,7 @@ import sys
 
 MAX_W = 35   # chars/line; the renderer adds a ">> " prefix -> <=38 on the 40-col plane
 ROWS  = 16   # per-type row-array length (INSTR top rows never exceed ~12)
-OPS   = 10   # FM operator-grid columns
+OPS   = 11   # FM operator-grid columns (10 ordinary parameters + packed SSG-EG)
 
 # i_type order (src/main.asm i_type equ): 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE, 5 PERC
 TYPE_ORDER = ['FM', 'KIT', 'WAVE', 'TONE', 'NOISE', 'PERC']

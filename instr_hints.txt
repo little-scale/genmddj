@@ -10,7 +10,7 @@
 # Sections map to the field layout in src/main.asm:
 #   [COMMON] rows 0-1 for every type   : INST selector, TYPE
 #   [FM]     voice_lbl (rows 2+)        : HLD VOL PAN TSP TBL TBS ALGO FB AMS FMS SWEEP
-#   [FM.OP]  op grid columns (i_op)     : MUL DT TL RS AR AM D1 D2 RR SL
+#   [FM.OP]  op grid columns (screen)   : MUL DT TL RS AR D1 D2 RR SL AM SG
 #   [TONE]   psg_off (rows 2+)          : VOL ATK HLD DCY TSP SWP VIB TRM TBL TBS MODE RATE
 #   [NOISE]  psg_off (rows 2+)          : same set as TONE
 #   [WAVE]   wave_off (rows 2+)         : WAVE VOL ATK HLD DCY WARP DRIVE FOLD CRUSH TBL TBS
@@ -48,6 +48,7 @@ DECAY2 RATE, HIGHER IS FASTER
 RELEASE RATE, HIGHER IS FASTER
 SUSTAIN LEVEL, LOWER IS LOUDER
 AMP MOD, GLOBAL LFO, ON OR OFF
+SSG-EG SHAPE --/8-F; USE AR 1F
 
 [TONE]
 VOLUME, 0-F, HIGHER IS LOUDER

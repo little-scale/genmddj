@@ -417,6 +417,72 @@ LFO_SAVE_STATE = """    tst.b   $00FFDD00
 .tlsdone:
 """
 
+LFO_CHAIN_SYNC = """    tst.b   $00FFDD30
+    bne     .tlcdone
+    move.b  #1, $00FFDD30
+    movem.l d0-d7/a0-a6, -(sp)
+    lea     lfo_cfg, a0
+    moveq   #(NLFO*LF_SIZE)-1, d0
+.tlcclr:
+    clr.b   (a0)+
+    dbra    d0, .tlcclr
+    move.b  #((LFRS_CHAIN<<1)|1), lfo_cfg+LF_FLAGS
+    move.b  #0, lfo_cfg+LF_CHAN
+    move.b  #0, lfo_cfg+LF_PARM
+    move.b  #0, lfo_cfg+LF_RATE
+    move.b  #0, lfo_cfg+LF_DEPTH
+    move.b  #2, lfo_cfg+LF_POFF
+    move.b  #1, ch_state+c_type
+    move.b  #0, ch_state+c_instr
+
+    move.w  #$5555, lfo_phase
+    move.b  #2, ch_state+c_lfosync          ; PHRASE alone must not reset CHAIN sync
+    lea     $00FFDD80, a5
+    moveq   #0, d5
+    bsr     fmlfo_tick
+    move.w  lfo_phase, $00FFDD32
+
+    move.w  #$5555, lfo_phase
+    move.b  #8, ch_state+c_lfosync          ; CHAIN event resets to PO=2 -> phase $2000
+    lea     $00FFDD80, a5
+    moveq   #0, d5
+    bsr     fmlfo_tick
+    move.w  lfo_phase, $00FFDD34
+
+    move.b  #5, cur_col                     ; editor: FREE -> CHAIN -> NOTE -> CHAIN backwards
+    move.b  #0, cur_row
+    move.b  #((LFRS_FREE<<1)|1), lfo_cfg+LF_FLAGS
+    moveq   #1, d2
+    bsr     edit_lfo
+    move.b  lfo_cfg+LF_FLAGS, $00FFDD36
+    bsr     edit_lfo
+    move.b  lfo_cfg+LF_FLAGS, $00FFDD37
+    moveq   #4, d2
+    bsr     edit_lfo
+    move.b  lfo_cfg+LF_FLAGS, $00FFDD38
+
+    lea     ch_state, a6                    ; chain step 0 raises the event; interior steps do not
+    move.b  #0, c_chain(a6)
+    move.b  #$FF, c_cstep(a6)
+    move.b  #0, chains
+    move.b  #0, chains+1
+    move.b  #1, chains+2
+    move.b  #0, chains+3
+    move.b  #$FF, chains+4
+    clr.b   c_lfosync(a6)
+    bsr     advance_chain
+    move.b  c_lfosync(a6), $00FFDD39
+    clr.b   c_lfosync(a6)
+    bsr     advance_chain
+    move.b  c_lfosync(a6), $00FFDD3A
+    move.b  #1, play_mode                  ; end-of-chain loop returns to step 0
+    clr.b   c_lfosync(a6)
+    bsr     advance_chain
+    move.b  c_lfosync(a6), $00FFDD3B
+    movem.l (sp)+, d0-d7/a0-a6
+.tlcdone:
+"""
+
 LOAD_BAD_CHECKSUM = """    tst.b   $00FFD500
     bne.s   .tlbdone
     move.b  #1, $00FFD500
@@ -1182,6 +1248,93 @@ FM_SIMULTANEOUS = """    tst.b   $00FFD500
 .tfsdone:
 """
 
+FM_SSG_EG = """    tst.b   $00FFD820
+    bne     .tssgdone
+    move.b  #1, $00FFD820
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    move.b  #$81, (i_op+5,a0)                    ; SSG 8 + AM on
+    move.b  #$A0, (i_op+FM_NPARM+5,a0)           ; SSG A + AM off
+    move.b  #$F1, (i_op+(2*FM_NPARM)+5,a0)       ; SSG F + AM on
+    move.b  #$70, (i_op+(3*FM_NPARM)+5,a0)       ; invalid old nibble -> OFF
+    bsr     sanitize_fm_ssg_record
+    move.b  (i_op+5,a0), $00FFD821
+    move.b  (i_op+FM_NPARM+5,a0), $00FFD822
+    move.b  (i_op+(2*FM_NPARM)+5,a0), $00FFD823
+    move.b  (i_op+(3*FM_NPARM)+5,a0), $00FFD824
+
+    move.b  #SCR_INSTR, cur_screen
+    clr.b   cur_instr
+    move.b  #NVOICE+2, cur_row
+    move.b  #FM_NPARM, cur_col
+    move.b  #1, (i_op+5,a0)                    ; OFF + AM on
+    moveq   #8, d2                             ; Right: OFF -> 8
+    bsr     edit_fm
+    move.b  instrum+i_op+5, $00FFD825
+    moveq   #4, d2                             ; Left: 8 -> OFF
+    bsr     edit_fm
+    move.b  instrum+i_op+5, $00FFD826
+    move.b  #9, cur_col                        ; AM edit preserves SSG A
+    move.b  #$A0, instrum+i_op+5
+    moveq   #8, d2
+    bsr     edit_fm
+    move.b  instrum+i_op+5, $00FFD827
+    move.b  #FM_NPARM, cur_col
+    bsr     col_max
+    move.b  d1, $00FFD828
+
+    move.b  #$81, instrum+i_op+5
+    move.b  #5, instrum+i_op+6
+    move.b  #$A0, instrum+i_op+FM_NPARM+5
+    move.b  #6, instrum+i_op+FM_NPARM+6
+    move.b  #$F1, instrum+i_op+(2*FM_NPARM)+5
+    move.b  #7, instrum+i_op+(2*FM_NPARM)+6
+    clr.b   instrum+i_op+(3*FM_NPARM)+5
+    move.b  #8, instrum+i_op+(3*FM_NPARM)+6
+    move.b  #$FF, c_eatk
+    move.b  #$FF, c_edcy
+    lea     ch_state, a6
+    clr.b   c_ympart(a6)
+    clr.b   c_ymchreg(a6)
+    clr.b   c_track(a6)
+    lea     ym_data, a5
+    moveq   #0, d5
+    moveq   #0, d1
+    bsr     emit_ch_patch
+    move.b  d5, $00FFD829
+    move.b  ym_data+10, $00FFD82A             ; op1 $60 register/value
+    move.b  ym_data+11, $00FFD82B
+    move.b  ym_data+19, $00FFD82C             ; op1 $90 register/value
+    move.b  ym_data+20, $00FFD82D
+    move.b  ym_data+40, $00FFD82E             ; op3 $90 register/value
+    move.b  ym_data+41, $00FFD82F
+    move.b  ym_data+61, $00FFD830             ; op2 $90 register/value
+    move.b  ym_data+62, $00FFD831
+    move.b  ym_data+82, $00FFD832             ; op4 $90 register/value
+    move.b  ym_data+83, $00FFD833
+
+    clr.b   playing
+    clr.b   cur_instr
+    move.b  #$FF, live_algo
+    move.b  #$FF, live_vol
+    move.b  #$FF, live_fb
+    lea     ym_data, a2
+    moveq   #0, d7
+    bsr     ym_build_patch
+    move.b  d7, $00FFD834
+    move.b  ym_data+19, $00FFD835
+    move.b  ym_data+20, $00FFD836
+    move.b  ym_data+40, $00FFD837
+    move.b  ym_data+41, $00FFD838
+    move.b  ym_data+61, $00FFD839
+    move.b  ym_data+62, $00FFD83A
+    move.b  ym_data+82, $00FFD83B
+    move.b  ym_data+83, $00FFD83C
+    movem.l (sp)+, d0-d7/a0-a6
+.tssgdone:
+"""
+
 FM_PREWARM = """    tst.b   $00FFD500
     bne     .tfpdone
     move.b  #1, $00FFD500
@@ -1602,11 +1755,22 @@ def t_lfo_save_state():
     assert ram[0xDD11] == 1, 'LFO-only edit was not detected as UNSAVED'
     assert list(ram[0xDD12:0xDD17]) == [0, 0, 0, 0, 0], \
         'legacy zero LFO block did not clear config/runtime (%r)' % list(ram[0xDD12:0xDD17])
-    assert list(ram[0xDD17:0xDD1D]) == [1, 0, 0, 0xCC, 0x0F, 0x0F], \
+    assert list(ram[0xDD17:0xDD1D]) == [7, 0, 0, 0xCC, 0x0F, 0x0F], \
         'loaded LFO fields were not sanitized (%r)' % list(ram[0xDD17:0xDD1D])
     assert list(ram[0xDD1D:0xDD20]) == [0, 0, 0] and ram[0xDD20] == 0, \
         'NEW project did not clear LFO config/runtime (%r, %d)' % (list(ram[0xDD1D:0xDD20]), ram[0xDD20])
     return '16 configs round-trip; legacy zeros, sanitization, dirty state and NEW reset verified'
+
+def t_lfo_chain_sync():
+    """CHAIN is a fourth LFO sync mode and resets only when the target enters chain step 0."""
+    ram = run_rom(build_rom('lfo_chain_sync', boot_inject=LFO_CHAIN_SYNC), 40)
+    assert list(ram[0xDD32:0xDD36]) == [0x55, 0x55, 0x20, 0x00], \
+        'CHAIN mode responded to PHRASE or missed CHAIN reset (%r)' % list(ram[0xDD32:0xDD36])
+    assert list(ram[0xDD36:0xDD39]) == [7, 1, 7], \
+        'SYNC editor did not cycle FREE/CHAIN/NOTE correctly (%r)' % list(ram[0xDD36:0xDD39])
+    assert list(ram[0xDD39:0xDD3C]) == [8, 0, 8], \
+        'chain-start event incorrect for initial/interior/loop steps (%r)' % list(ram[0xDD39:0xDD3C])
+    return 'CHAIN phase reset, four-way editor cycle, and step-0/loop events verified'
 
 def t_load_bad_checksum():
     """A bad stored checksum leaves both the working song and its title untouched."""
@@ -1758,19 +1922,34 @@ def t_fm_simultaneous():
     assert list(ram[0xD800:0xD803]) == [3, 4, 0], \
         'warm patch shadows/repatch state %r' % list(ram[0xD800:0xD803])
     cold = list(ram[0xD803:0xD80D])
-    assert cold == [72, 0, 0, 2, 0, 0x28, 0xF0, 0, 0x28, 0xF1], \
+    assert cold == [80, 0, 0, 2, 0, 0x28, 0xF0, 0, 0x28, 0xF1], \
         'cold simultaneous FM queue %r' % cold
     warm = list(ram[0xD80D:0xD815])
     assert warm == [20, 0, 0, 0x28, 0xF0, 0, 0x28, 0xF1], \
         'warm simultaneous FM queue %r' % warm
-    return 'transport preserves patches; cold F1/F2 share 72-write SCB; warm pair uses 20; keys adjacent'
+    return 'transport preserves patches; cold F1/F2 share 80-write SCB; warm pair uses 20; keys adjacent'
+
+def t_fm_ssg_eg():
+    """SSG-EG packs beside AM, edits independently, sanitizes old bytes and emits $90 everywhere."""
+    ram = run_rom(build_rom('fm_ssg_eg', boot_inject=FM_SSG_EG), 35)
+    assert list(ram[0xD821:0xD825]) == [0x81, 0xA0, 0xF1, 0], \
+        'packed AM/SSG sanitization %r' % list(ram[0xD821:0xD825])
+    assert list(ram[0xD825:0xD829]) == [0x81, 0x01, 0xA1, 10], \
+        'SSG/AM editor independence or column bound %r' % list(ram[0xD825:0xD829])
+    emitted = list(ram[0xD829:0xD834])
+    assert emitted == [30, 0x60, 0x85, 0x90, 8, 0x94, 0x0A, 0x98, 0x0F, 0x9C, 0], \
+        'channel patch SSG register stream %r' % emitted
+    built = list(ram[0xD834:0xD83D])
+    assert built == [30, 0x90, 8, 0x94, 0x0A, 0x98, 0x0F, 0x9C, 0], \
+        'boot/editor patch SSG register stream %r' % built
+    return 'packed AM/SSG; --/8-F editor; sanitization; $90 writes in both patch builders'
 
 def t_fm_prewarm():
     """Stopped-load prediction scans first chains, warms two FM patches per pass, and cancels on start."""
     ram = run_rom(build_rom('fm_prewarm', boot_inject=FM_PREWARM), 35)
     assert list(ram[0xD800:0xD807]) == [0x3F, 0, 1, 2, 3, 4, 5], \
         'FM prewarm plan %r' % list(ram[0xD800:0xD807])
-    assert list(ram[0xD807:0xD811]) == [0x3C, 52, 0, 1, 0x30, 52, 0, 52, 4, 5], \
+    assert list(ram[0xD807:0xD811]) == [0x3C, 60, 0, 1, 0x30, 60, 0, 60, 4, 5], \
         'FM prewarm pacing/shadows %r' % list(ram[0xD807:0xD811])
     assert ram[0xD811] == 0x3B, 'FM audition did not consume track F3 prediction ($%02X)' % ram[0xD811]
     assert ram[0xD812] == 0, 'playback start did not cancel pending prewarm ($%02X)' % ram[0xD812]
@@ -1827,6 +2006,7 @@ TESTS = [
     ('boot_smoke',   t_boot_smoke),
     ('save_roundtrip', t_save_roundtrip),
     ('lfo_save_state', t_lfo_save_state),
+    ('lfo_chain_sync', t_lfo_chain_sync),
     ('save_freeze', t_save_freeze),
     ('load_bad_checksum', t_load_bad_checksum),
     ('load_bad_rle', t_load_bad_rle),
@@ -1841,6 +2021,7 @@ TESTS = [
     ('cyclic_alloc', t_cyclic_alloc),
     ('files_confirm', t_files_confirm),
     ('files_confirm_cancel', t_files_confirm_cancel),
+    ('fm_ssg_eg', t_fm_ssg_eg),
     ('fm_simultaneous', t_fm_simultaneous),
     ('fm_prewarm', t_fm_prewarm),
     ('cut_primes_insert', t_cut_primes_insert),

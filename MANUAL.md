@@ -373,6 +373,22 @@ OP4** — that's the chip's true slot order, so each row reads as the operator i
 - **D1R / D2R** — first decay / second (sustain) decay rate.
 - **SL / RR** — sustain level / release rate.
 - **AM** — enable this operator's amplitude modulation from the LFO.
+- **SG** — the operator's hardware **SSG-EG** envelope. `--` is off; `8`–`F` select the
+  eight YM2612 shapes. The bottom hint names the selected behaviour, and an enabled
+  operator is labelled `OPn:X` beneath its envelope diagram (for example `OP3:A`). Use
+  **AR `1F`** for predictable SSG-EG behaviour. On a carrier it produces audible amplitude
+  motion; on a modulator it usually produces repeating timbral or brightness motion.
+
+| SG | Behaviour |
+|---:|---|
+| `8` | Loop |
+| `9` | Play once |
+| `A` | Zigzag loop |
+| `B` | Play once, then full volume |
+| `C` | Inverted loop |
+| `D` | Inverted play, then full volume |
+| `E` | Inverted zigzag loop |
+| `F` | Inverted play once |
 
 **INIT** resets the patch to a basic sine. Because the engine reads instruments straight
 from RAM on every note, you can **leave the song playing and edit a patch live** — every
@@ -382,7 +398,10 @@ change is heard on the next trigger, no stop/start.
 chip's single global LFO — assign an LFO to a channel and set its parameter, rate and
 depth. The channel column reads F1–F6. All 16 LFO configurations are saved with the song;
 their running phase is transient and restarts when another song is loaded or a new blank
-project is created.
+project is created. **SYNC** selects when an LFO phase restarts: **NOTE** on every note,
+**PHRSE** on every phrase, **CHAIN** whenever that track enters chain step 0, or **FREE**
+for uninterrupted running. CHAIN therefore resets at initial playback, on a SONG chain
+change, and when a chain loops, but not between the phrases inside that chain.
 
 ---
 

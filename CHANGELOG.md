@@ -2,6 +2,18 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## Unreleased
+
+### Added
+- FM instruments now expose the YM2612's per-operator **SSG-EG** envelopes as a new `SG`
+  column: `--` disables it and `8`–`F` select the eight hardware shapes. Context hints name
+  each shape, the envelope labels show `OPn:X` when active, and the HELP screen includes a
+  compact reference. The setting is saved losslessly in the existing 64-byte instrument
+  record, with old songs and patches loading SSG-EG off.
+- The software FM-LFO screen now offers **CHAIN** sync alongside NOTE, PHRASE and FREE.
+  CHAIN restarts the LFO whenever its target track enters chain step 0, including initial
+  playback, SONG chain changes and chain loops, without resetting between phrases.
+
 ## v0.23 — 2026-10-07
 
 ### Fixed

@@ -61,7 +61,7 @@ c_modph2   equ 35                   ; PSG tremolo LFO phase
 c_tbl      equ 36                   ; active macro table ($FF = none)
 c_trow     equ 37                   ; macro table row 0-15
 c_tctr     equ 38                   ; macro table tick counter (advances at TBS speed)
-c_lfosync  equ 39                   ; FM LFO resync flags this tick: bit0 note-on, bit1 phrase-start
+c_lfosync  equ 39                   ; FM LFO resync flags this tick: bit0 note, bit1 phrase, bit3 chain-start
 
 ; ---- globals / cursor / scb ---- (relocated above the 10-channel array)
 g_gctr     equ $00FFE200
@@ -136,9 +136,9 @@ patch_done equ $00FFE3BE           ; count of FM operator patches emitted this t
 fm_keypend equ $00FFE3BF           ; bits 0-5: FM key-ons prepared this tick; appended together at SCB tail
 MAXPATCH   equ 2                   ; max full operator patches per tick. Dense multi-channel repatch rows
                                    ;   serialise across this many ticks (was hard 1/tick). Ceiling ~3-4:
-                                   ;   each patch is ~28 triples and the whole SCB must flush inside one
+                                   ;   each patch is 30 triples and the whole SCB must flush inside one
                                    ;   frame (~139-triple drain budget with the su_fin busy guard).
-PATCH_CAP  equ 48                  ; max ym_count before emitting a 26-write patch. A cold two-note row
+PATCH_CAP  equ 48                  ; max ym_count before emitting a 30-write patch. A cold two-note row
                                    ;   reaches d5=41 before F2's patch; 48 admits it, MAXPATCH blocks F3.
 YM_CAP     equ 64                  ; max ym_count before a note's freq/key (per-tick work budget; raised
                                    ;   with PATCH_CAP so 2 patches + keys don't spuriously defer same-instr
@@ -421,8 +421,9 @@ i_ams      equ 4                    ; LFO amplitude-mod sensitivity 0-3
 i_fms      equ 5                    ; LFO freq-mod (vibrato) sensitivity 0-7
 i_hld      equ 6                    ; gate time: note-off after HLD*2 ticks; $F = hold
 i_vol      equ 7                    ; instrument volume 0-15 (attenuates carriers); $F = full
-i_op       equ 8                    ; 4 ops x 10: MUL DT TL RS AR AM D1 D2 RR SL
-FM_NPARM   equ 10
+i_op       equ 8                    ; 4 ops x 10: MUL DT TL RS AR AM/SSG D1 D2 RR SL
+FM_NPARM   equ 10                   ; stored bytes/operator (SSG is packed into AM bits 7-4)
+FM_NCOL    equ 11                   ; displayed fields/operator: the 10 above + SG
 ; --- PERC type (CH3 special mode): reuses the record -- base instr ref + per-op freq/mul/dt ---
 i_pbase    equ 1                    ; PERC: base instrument # (borrows algo/fb/TL/envelopes; reuses i_algo)
 p_fnum     equ 0                    ; PERC op: F-number word (block<<11 | 11-bit F-number)
@@ -464,7 +465,7 @@ iwl_cd     equ 27
 iw_pitch   equ 28                   ; PITCH detune: 8 = in tune, <8 flat, >8 sharp (LFO -> vibrato)
 iwl_pr     equ 29                   ; PITCH LFO rate / depth
 iwl_pd     equ 30
-; FM LFO bank record (16 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE).
+; FM LFO bank record (16 of them in lfo_cfg). flags: bit0 ON, bits1-2 resync (NOTE/PHRASE/FREE/CHAIN).
 NLFO       equ 16
 LF_SIZE    equ 6
 LF_FLAGS   equ 0                    ; bit0 = on; bits 1-2 = resync mode
@@ -476,6 +477,7 @@ LF_POFF    equ 5                    ; coarse phase offset 0-F: resync restarts p
 LFRS_NOTE  equ 0                    ; resync: reset phase on each note-on of the target channel
 LFRS_PHRASE equ 1                   ; reset phase when the target channel enters a new phrase
 LFRS_FREE  equ 2                    ; never reset (free-running)
+LFRS_CHAIN equ 3                    ; reset phase when the target channel enters chain step 0
 i_tbl      equ 48                   ; macro table # ($FF = none) -- shared FM+PSG, at record tail
 i_tbs      equ 49                   ; table speed (ticks per row)
 i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
@@ -2275,7 +2277,7 @@ row_max:                                  ; -> d1 = highest row index for cur_sc
     cmpi.b  #SCR_PROJ, d0
     beq.s   .rmproj
     cmpi.b  #SCR_LFO, d0
-    beq.s   .rmlfo                           ; FM LFO bank: 6 rows
+    beq.s   .rmlfo                           ; FM LFO bank: 16 rows
     cmpi.b  #SCR_ECHO, d0
     beq.s   .rmecho                          ; ECHO: 6 settings fields
     cmpi.b  #SCR_GROOVE, d0
@@ -2367,7 +2369,7 @@ clamp_row:                                ; clamp cur_row into [0, row_max]
 col_max:                                  ; -> d1 = highest column index for cur_screen
     move.b  cur_screen, d1
     cmpi.b  #SCR_LFO, d1
-    beq.s   .clfo                            ; FM LFO bank: 6 columns ON/CH/PM/RT/DP/SY
+    beq.s   .clfo                            ; FM LFO bank: 8 editable columns + live AMP display
     cmpi.b  #SCR_PROJ, d1
     beq.s   .cproj                           ; PROJECT: row 9 (song NAME) = 8 chars; else single col
     cmpi.b  #SCR_ECHO, d1
@@ -2451,7 +2453,7 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #0, d1                        ; other voice rows: single column
     rts
 .fmop:
-    moveq   #FM_NPARM-1, d1
+    moveq   #FM_NCOL-1, d1
     rts
 .ph:
     moveq   #3, d1                        ; PHRASE: NOT,IN,C,PR
@@ -3274,25 +3276,74 @@ edit_fm:
     moveq   #4, d4                           ; B+Up/Down = big step (4) across the library slots
     bra     adj_field
 .opedit:
-    moveq   #0, d0                         ; op grid: i_op + (row-(NVOICE+2))*10 + col
+    moveq   #0, d0                         ; op grid: i_op + (row-(NVOICE+2))*10
     move.b  cur_row, d0
     subi.w  #NVOICE+2, d0
     mulu.w  #FM_NPARM, d0
     moveq   #0, d1
     move.b  cur_col, d1
+    cmpi.b  #FM_NPARM, d1                  ; final display col is SG, packed into AM's high nibble
+    beq.s   .opssg
     lea     fm_disp, a2                    ; display col -> storage param (AM last)
     move.b  (a2,d1.w), d1
     add.w   d1, d0
     addi.w  #i_op, d0
     lea     0(a3,d0.w), a1
+    cmpi.b  #5, d1                         ; AM shares its byte with SSG: edit only bit 0
+    bne.s   .opnormal
+    eori.b  #1, (a1)
+    bra.s   .fmchanged
+.opnormal:
     lea     fm_pmax, a2
     moveq   #0, d3
     move.b  (a2,d1.w), d3
     lea     fm_pstep, a2
     moveq   #0, d4
     move.b  (a2,d1.w), d4
+    bra.s   .adj
+.opssg:
+    addi.w  #i_op+5, d0                    ; a1 = packed AM/SSG byte for this operator
+    lea     0(a3,d0.w), a1
+    moveq   #0, d0                         ; state 0=OFF, 1..8=shape 8..F
+    move.b  (a1), d0
+    lsr.b   #4, d0
+    beq.s   .oss_state
+    cmpi.b  #8, d0
+    bhs.s   .oss_valid
+    moveq   #0, d0                         ; malformed reserved nibble -> OFF before editing
+    bra.s   .oss_state
+.oss_valid:
+    subi.b  #7, d0
+.oss_state:
+    move.b  d2, d1
+    andi.b  #%00001001, d1                 ; Right/Up -> next
+    beq.s   .oss_prev                       ; Left/Down -> previous
+    addq.b  #1, d0
+    cmpi.b  #9, d0
+    blo.s   .oss_store
+    moveq   #0, d0
+    bra.s   .oss_store
+.oss_prev:
+    tst.b   d0
+    bne.s   .oss_dec
+    moveq   #8, d0
+    bra.s   .oss_store
+.oss_dec:
+    subq.b  #1, d0
+.oss_store:
+    move.b  (a1), d1                       ; retain AM bit 0; reserved bits 1-3 stay clear
+    andi.b  #1, d1
+    tst.b   d0
+    beq.s   .oss_write
+    addi.b  #7, d0                         ; state 1..8 -> raw YM shape 8..F
+    lsl.b   #4, d0
+    or.b    d0, d1
+.oss_write:
+    move.b  d1, (a1)
+    bra.s   .fmchanged
 .adj:
     bsr     adj_field                      ; a1=field d2=buttons d3=max d4=step -> wrap-adjust
+.fmchanged:
     ; an FM patch field changed -> invalidate the shadow ONLY for channels currently playing this
     ; instrument, so they re-patch on their next note-on (live edit on any track, no stray writes)
     lea     ch_state, a6
@@ -3357,6 +3408,7 @@ edit_psg:
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
     move.b  (i_type,a3), d0
+    move.b  d0, d5                          ; remember the old type for FM SSG overlay cleanup
     btst    #3, d2
     beq.s   .ep_tl
     addq.b  #1, d0
@@ -3375,6 +3427,17 @@ edit_psg:
     subq.b  #1, d0
 .ep_tw:
     move.b  d0, (i_type,a3)
+    tst.b   d0                              ; entering FM from another union type: SSG starts safely OFF
+    bne.s   .ep_nfm
+    tst.b   d5
+    beq.s   .ep_nfm
+    lea     (i_op+5,a3), a1
+    moveq   #3, d1
+.ep_fmssg:
+    andi.b  #1, (a1)                        ; retain only the ordinary AM switch
+    lea     FM_NPARM(a1), a1
+    dbra    d1, .ep_fmssg
+.ep_nfm:
     cmpi.b  #2, d0                          ; switched to WAVE -> install clean defaults so the
     bne.s   .ep_nwav                         ; old type's bytes don't read as random LFO/detune
     lea     8(a3), a1                        ; clear the WAVE field block (offsets 8..30)
@@ -5900,7 +5963,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     moveq   #3, d4
     lea     str_lfo_hdr, a1
     bsr     print_at
-    moveq   #0, d6                          ; LFO row r = 0..5
+    moveq   #0, d6                          ; LFO row r = 0..15
 .lfr:
     move.w  d6, d5                          ; screen row = 6 + r + r/4 (a blank row every 4 LFOs)
     lsr.w   #2, d5
@@ -5922,7 +5985,7 @@ render_lfo:                                ; a0 = VDP_CTRL
     lea     lfo_cfg, a3
     adda.w  d0, a3
     lea     lf_col, a2
-    moveq   #0, d7                          ; column c = 0..5
+    moveq   #0, d7                          ; column c = 0..8
 .lfc:
     move.w  d7, d0
     add.w   d0, d0
@@ -6113,7 +6176,7 @@ lf_pnames:                                  ; 35 FM-param names (4 chars), in fm
     dc.b "AR1 AR3 AR2 AR4 D1R1D1R3D1R2D1R4D2R1D2R3D2R2D2R4"
     dc.b "RR1 RR3 RR2 RR4 SL1 SL3 SL2 SL4 TUNE"
     even
-lf_snames: dc.b "NOTE PHRSEFREE "           ; resync modes (5 chars): NOTE / PHRASE / FREE
+lf_snames: dc.b "NOTE PHRSEFREE CHAIN"      ; resync modes (5 chars): NOTE / PHRASE / FREE / CHAIN
     even
 str_lfo_hdr: dc.b "ON CH PARAM R  % SYNC  ` ",$7F," A",0
     even
@@ -6139,15 +6202,17 @@ edit_lfo:
     rts
 .el_nc0:
     cmpi.b  #5, d0
-    beq.s   .el_cyc1                        ; col 5 SYNC -> 2-bit field at bit 1
+    beq.s   .el_sync                        ; col 5 SYNC -> 2-bit field at bit 1, four values
     cmpi.b  #7, d0
     bne.s   .el_field
     moveq   #3, d0                          ; col 7 DIR -> 2-bit field at bit 3
+    moveq   #3, d4                          ; three values: BOTH / UP / DOWN
     bra.s   .el_cyc
-.el_cyc1:
+.el_sync:
     moveq   #1, d0
+    moveq   #4, d4                          ; four values: NOTE / PHRASE / FREE / CHAIN
 .el_cyc:
-    move.b  (LF_FLAGS,a3), d3               ; cycle the 2-bit field (shift d0) over 0..2
+    move.b  (LF_FLAGS,a3), d3               ; cycle the 2-bit field at shift d0 over d4 values
     move.b  d3, d1
     lsr.b   d0, d1
     andi.b  #3, d1
@@ -6156,14 +6221,15 @@ edit_lfo:
     btst    #1, d2
     bne.s   .el_sdec
     addq.b  #1, d1
-    cmpi.b  #3, d1
+    cmp.b   d4, d1
     blo.s   .el_sset
     moveq   #0, d1
     bra.s   .el_sset
 .el_sdec:
     subq.b  #1, d1
     bpl.s   .el_sset
-    moveq   #2, d1
+    move.b  d4, d1
+    subq.b  #1, d1
 .el_sset:
     moveq   #3, d4                          ; clear the field (3 << shift), then insert
     lsl.b   d0, d4
@@ -7032,7 +7098,7 @@ render_fm:                                ; a0 = VDP_CTRL
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
     dbra    d2, .oplbl
-    moveq   #0, d5                         ; param 0..7
+    moveq   #0, d5                         ; displayed param 0..10
 .parm:
     moveq   #0, d0                         ; addr at (FM_OTOP+op, fm_scol[param])
     move.w  d6, d0
@@ -7046,6 +7112,8 @@ render_fm:                                ; a0 = VDP_CTRL
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
+    cmpi.w  #FM_NPARM, d5                  ; SG is packed in the AM byte, not an 11th stored byte
+    beq.s   .pssg
     lea     fm_disp, a1                    ; display col d5 -> storage param d7 (AM shown last)
     moveq   #0, d7
     move.b  (a1,d5.w), d7
@@ -7053,6 +7121,17 @@ render_fm:                                ; a0 = VDP_CTRL
     mulu.w  #FM_NPARM, d0
     add.w   d7, d0
     move.b  (i_op,a3,d0.w), d3
+    bra.s   .pval
+.pssg:
+    moveq   #FM_NPARM, d7                  ; sentinel: draw the packed SSG shape
+    move.w  d6, d0
+    mulu.w  #FM_NPARM, d0
+    move.b  (i_op+5,a3,d0.w), d3
+    lsr.b   #4, d3
+    cmpi.b  #8, d3                         ; malformed reserved nibble 1..7 behaves as OFF
+    bhs.s   .pval
+    moveq   #0, d3
+.pval:
     moveq   #0, d4                          ; highlight if cur_row==NVOICE+2+op && cur_col==display col
     move.b  cur_row, d1
     subi.b  #NVOICE+2, d1
@@ -7063,10 +7142,27 @@ render_fm:                                ; a0 = VDP_CTRL
     bne.s   .nhl
     moveq   #$60, d4
 .nhl:
+    cmpi.b  #FM_NPARM, d7                  ; SG -> two-character cell: -- or hex + blank
+    bne.s   .nhsg
+    tst.b   d3
+    bne.s   .sgon
+    move.w  #'-', d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    move.w  d0, VDP_DATA
+    bra.s   .pnext
+.sgon:
+    bsr     draw_hex1
+    move.w  #' ', d0
+    add.w   d4, d0
+    move.w  d0, VDP_DATA
+    bra.s   .pnext
+.nhsg:
     cmpi.b  #5, d7                          ; AM -> a toggle box glyph, like the LFO / global-LFO screens
     bne.s   .nham
     moveq   #0, d0                          ; am 0/1 -> $7B off-box / $7D on-box
     move.b  d3, d0
+    andi.w  #1, d0                         ; upper nibble is the independent SSG shape
     add.w   d0, d0
     addi.w  #$7B, d0
     add.w   d4, d0                          ; + highlight (inverse tile)
@@ -7083,18 +7179,27 @@ render_fm:                                ; a0 = VDP_CTRL
     bsr     draw_hex2
 .pnext:
     addq.w  #1, d5
-    cmpi.w  #FM_NPARM, d5
+    cmpi.w  #FM_NCOL, d5
     bne     .parm
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .oprow
     bsr     draw_algo_diagram             ; a3 still = instrum[cur_instr]
-    moveq   #0, d5                         ; OP labels centered under each envelope box
+    moveq   #0, d5                         ; OP labels; enabled SSG shapes show as OPn:X
 .eolbl:
+    move.w  d5, d0                         ; d7 = this operator's SSG nibble, or 0 for OFF
+    mulu.w  #FM_NPARM, d0
+    moveq   #0, d7
+    move.b  (i_op+5,a3,d0.w), d7
+    lsr.b   #4, d7
+    cmpi.b  #8, d7
+    bhs.s   .eolshape
+    moveq   #0, d7
+.eolshape:
     moveq   #0, d0                          ; clear high word (swap below puts it in cmd low!)
     move.w  d5, d0
     lsl.w   #3, d0                         ; slot*8
-    addi.w  #ENV_LBLROW*64+ENV_COL+2, d0   ; row 25, col = ENV_COL+2 + slot*8 (centered)
+    addi.w  #ENV_LBLROW*64+ENV_COL+1, d0   ; five-char label centered in the operator's 8-col lane
     add.w   d0, d0
     swap    d0
     ori.l   #$40000003, d0
@@ -7104,15 +7209,34 @@ render_fm:                                ; a0 = VDP_CTRL
     add.w   d5, d0
     lea     op_names, a1
     adda.w  d0, a1
+    tst.b   d7
+    bne.s   .eolon
+    move.w  #' ', VDP_DATA                 ; OFF: " OPn "
     moveq   #2, d6
-.eolc:
+.eolcoff:
     move.b  (a1)+, d0
     andi.w  #$00FF, d0
     move.w  d0, VDP_DATA
-    dbra    d6, .eolc
+    dbra    d6, .eolcoff
+    move.w  #' ', VDP_DATA
+    bra.s   .eolnext
+.eolon:                                    ; ON: "OPn:X"
+    moveq   #2, d6
+.eolcon:
+    move.b  (a1)+, d0
+    andi.w  #$00FF, d0
+    move.w  d0, VDP_DATA
+    dbra    d6, .eolcon
+    move.w  #':', VDP_DATA
+    move.w  d7, d0
+    lea     hexd, a1
+    move.b  (a1,d0.w), d0
+    andi.w  #$00FF, d0
+    move.w  d0, VDP_DATA
+.eolnext:
     addq.w  #1, d5
     cmpi.w  #4, d5
-    bne.s   .eolbl
+    bne     .eolbl
     rts
 
 ; draw the current algorithm's routing diagram (tilemap) for instrum a3
@@ -8221,10 +8345,10 @@ engine_play_reset:
     dbra    d7, .r
     rts
 
-; ---- per tick: fold the 6 FM LFOs into the SCB's YM write list. a5 = YM ptr, d5 = count
+; ---- per tick: fold the 16 software FM LFOs into the SCB's YM write list. a5 = YM ptr, d5 = count
 ; (both in/out). Each on-LFO modulates its target channel's FM param additively around the
 ; channel's patch value and appends one YM write; the diff isn't needed because we only emit
-; when the LFO is on. Resync resets the phase on note-on / phrase-start per the c_lfosync flag.
+; when the LFO is on. Resync resets phase on note / phrase / chain start per c_lfosync.
 fmlfo_tick:
     movem.l d0-d4/d6-d7/a1-a4, -(sp)
     lea     c_lfopitch, a1                  ; clear all TUNE pitch offsets first (an off LFO -> no detune)
@@ -8247,12 +8371,12 @@ fmlfo_tick:
     adda.w  d1, a3
     cmpi.b  #1, c_type(a3)                  ; only FM channels carry these registers
     bne     .fltn
-    move.b  (LF_FLAGS,a2), d0               ; resync mode (bits 1-2): 0 note / 1 phrase / 2 free
+    move.b  (LF_FLAGS,a2), d0               ; resync mode: 0 note / 1 phrase / 2 free / 3 chain
     lsr.b   #1, d0
     andi.w  #3, d0
     cmpi.b  #LFRS_FREE, d0
     beq.s   .flnors
-    move.b  c_lfosync(a3), d1               ; mode 0 -> bit0 (note), 1 -> bit1 (phrase)
+    move.b  c_lfosync(a3), d1               ; mode value maps to event bit: 0 note, 1 phrase, 3 chain
     btst    d0, d1
     beq.s   .flnors
     lea     lfo_phase, a4                    ; resync: restart 16-bit phase at offset*16 (hi byte)
@@ -8918,7 +9042,7 @@ engine_tick:
     lea     CHSIZE(a6), a6
     dbra    d7, .ch
     bclr    #7, clu_claim                  ; C00 guard is one-tick only; the released ownership bits persist
-    bsr     fmlfo_tick                    ; fold the 6 FM LFOs into the YM write list (a5/d5)
+    bsr     fmlfo_tick                    ; fold the 16 software FM LFOs into the YM write list (a5/d5)
     bsr     flush_fm_keyons               ; all prepared FM voices now start back-to-back
     move.b  d6, scb_count
     move.b  d5, ym_count
@@ -10162,6 +10286,10 @@ advance_song:                             ; a6 = channel
     ; fall into load_step
 
 load_step:                                ; a6 = channel; d1 = chain step
+    tst.b   d1                              ; step 0 is the start of a chain (initial, SONG advance, or loop)
+    bne.s   .ls_nosync
+    bset    #3, c_lfosync(a6)               ; -> FM LFO chain-resync flag (mode value 3 maps to bit 3)
+.ls_nosync:
     lea     chains, a2
     moveq   #0, d0
     move.b  c_chain(a6), d0
@@ -11376,7 +11504,7 @@ flush_fm_keyons:                          ; append prepared F1-F6 $28 writes con
 .ffk_ret:
     rts
 
-; Append channel a6's full FM operator patch (operators $30-$80 + $B0/$B4) into the SCB at (a5)+,
+; Append channel a6's full FM operator patch (operators $30-$90 + $B0/$B4) into the SCB at (a5)+,
 ; advancing the triple count d5. Channel-aware: emits to c_ympart / (reg + c_ymchreg), reads c_instr.
 emit_ch_patch:                              ; d1 = instrument # to patch from (caller passes c_instr)
     movem.l d1-d4/d6/a3-a4, -(sp)
@@ -11458,7 +11586,8 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
 .ecp_noea:
     move.b  #$50, d3
     bsr     .ecp_emit
-    move.b  (5,a3,d4.w), d1                 ; $60: (AM<<7)|D1R
+    move.b  (5,a3,d4.w), d1                 ; $60: (AM<<7)|D1R (SSG is packed in bits 7-4)
+    andi.b  #1, d1
     lsl.b   #7, d1
     move.b  (6,a3,d4.w), d0
     or.b    d1, d0
@@ -11492,6 +11621,14 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
     or.b    d1, d0
 .ecp_noed:
     move.b  #$80, d3
+    bsr     .ecp_emit
+    move.b  (5,a3,d4.w), d0                 ; $90: SSG-EG shape 8-F, or 0 to clear stale SSG
+    lsr.b   #4, d0
+    cmpi.b  #8, d0
+    bhs.s   .ecp_ssgok
+    moveq   #0, d0
+.ecp_ssgok:
+    move.b  #$90, d3
     bsr     .ecp_emit
     addq.w  #1, d6
     cmpi.w  #4, d6
@@ -12518,7 +12655,7 @@ rate_half:  dc.b 0, 0, 0, 1               ; i_rate 3 (0.5x) feeds each byte twic
 ; push a YM2612 write list (part,reg,value triples) once: patch + key-on
 ; build YM ch0's patch from instrument 0's record and push it to the Z80.
 ; per op (n=0..3, reg offset n*4): $30=(DT<<4)|MUL $40=TL $50=AR $60=D1R
-; $70=D2R $80=(SL<<4)|RR; then $B0=(FB<<3)|ALGO, $B4=$C0 (L+R)
+; $70=D2R $80=(SL<<4)|RR $90=SSG-EG; then $B0=(FB<<3)|ALGO, $B4=$C0 (L+R)
 ym_setup:                                 ; editor/boot path: own BUSREQ, build into the mailbox, push
     move.w  #$0100, Z80_BUSREQ
 .w:
@@ -12605,7 +12742,8 @@ ym_build_patch:
     or.b    d1, d0
     move.b  #$50, d2
     bsr     .emit
-    move.b  (5,a3,d5.w), d1               ; $60: (AM<<7)|D1R
+    move.b  (5,a3,d5.w), d1               ; $60: (AM<<7)|D1R (SSG is packed in bits 7-4)
+    andi.b  #1, d1
     lsl.b   #7, d1
     move.b  (6,a3,d5.w), d0
     or.b    d1, d0
@@ -12619,6 +12757,14 @@ ym_build_patch:
     move.b  (8,a3,d5.w), d0
     or.b    d1, d0
     move.b  #$80, d2
+    bsr     .emit
+    move.b  (5,a3,d5.w), d0               ; $90: SSG-EG shape 8-F, or 0 to clear stale SSG
+    lsr.b   #4, d0
+    cmpi.b  #8, d0
+    bhs.s   .ybssgok
+    moveq   #0, d0
+.ybssgok:
+    move.b  #$90, d2
     bsr     .emit
     addq.w  #1, d6
     cmpi.w  #4, d6
@@ -12759,7 +12905,7 @@ hint_tick:
 ;   key (d1): INSTR = cur_row<<8|cur_col (high byte <= $10); CMD = $8000|cmdval -- the
 ;   $8000 bit keeps the two key spaces disjoint. ptr (a1): the hint string, 0 = blank.
 HINT_ROW   equ 27
-HINT_OPS   equ 10
+HINT_OPS   equ FM_NCOL
 hint_bar_draw:
     cmpi.b  #SCR_INSTR, cur_screen
     beq     .hb_instr
@@ -12798,8 +12944,31 @@ hint_bar_draw:
     move.b  cur_col, d0
     cmpi.b  #HINT_OPS, d0
     bhs     .hb_none
+    cmpi.b  #FM_NPARM, d0                  ; SG hint names the currently selected shape
+    beq.s   .hb_ssg
     lsl.w   #2, d0
     lea     hint_op, a1
+    movea.l (a1,d0.w), a1
+    bra     .hb_apply
+.hb_ssg:
+    moveq   #0, d0
+    move.b  cur_row, d0
+    subi.w  #NVOICE+2, d0
+    mulu.w  #FM_NPARM, d0
+    move.b  (i_op+5,a3,d0.w), d0
+    lsr.b   #4, d0                         ; raw 0/8-F -> table index 0/1-8
+    cmpi.b  #8, d0
+    blo.s   .hb_ssgoff
+    subi.b  #7, d0
+    bra.s   .hb_ssgptr
+.hb_ssgoff:
+    moveq   #0, d0
+.hb_ssgptr:
+    move.w  d0, d2                         ; include the value in the redraw key while cursor stays put
+    lsl.w   #4, d2
+    or.w    d2, d1
+    lsl.w   #2, d0
+    lea     ssg_hint_ptr, a1
     movea.l (a1,d0.w), a1
     bra     .hb_apply
 .hb_none:
@@ -14100,12 +14269,6 @@ sanitize_lfo_cfg:                          ; clamp all loaded records to values 
 .slf_rec:
     move.b  (LF_FLAGS,a0), d1
     andi.b  #$1F, d1                       ; bit0 ON, bits1-2 SYNC, bits3-4 DIR; discard reserved bits
-    move.b  d1, d2
-    lsr.b   #1, d2
-    andi.b  #3, d2
-    cmpi.b  #3, d2                         ; SYNC 3 is invalid -> NOTE (0)
-    bne.s   .slf_dir
-    andi.b  #$F9, d1
 .slf_dir:
     move.b  d1, d2
     lsr.b   #3, d2
@@ -14215,7 +14378,46 @@ sanitize_song:
 .sz_p3:
     addq.l  #4, a0
     dbra    d0, .sz_ph
+    bsr     sanitize_fm_ssg_pool            ; old records have AM=0/1; reject malformed reserved nibbles
     movem.l (sp)+, d0-d1/a0
+    rts
+
+sanitize_fm_ssg_pool:                      ; validate the packed AM/SSG bytes in all song instruments
+    movem.l d0/a0, -(sp)
+    lea     instrum, a0
+    moveq   #NINSTR-1, d0
+.sfsp_loop:
+    bsr     sanitize_fm_ssg_record
+    lea     INSTR_SIZE(a0), a0
+    dbra    d0, .sfsp_loop
+    movem.l (sp)+, d0/a0
+    rts
+
+sanitize_fm_ssg_record:                    ; a0 = one 64-byte record; non-FM union data is untouched
+    movem.l d0-d2/a0, -(sp)
+    tst.b   (i_type,a0)
+    bne.s   .sfsr_done
+    lea     (i_op+5,a0), a0                ; each operator's packed AM/SSG byte
+    moveq   #3, d2
+.sfsr_op:
+    moveq   #0, d0
+    move.b  (a0), d0
+    move.b  d0, d1
+    andi.b  #1, d1                         ; ordinary AM switch
+    lsr.b   #4, d0                         ; SSG nibble: only 0 or 8-F is meaningful
+    beq.s   .sfsr_store
+    cmpi.b  #8, d0
+    bhs.s   .sfsr_valid
+    moveq   #0, d0                         ; old/malformed reserved value -> SSG OFF
+.sfsr_valid:
+    lsl.b   #4, d0
+    or.b    d0, d1
+.sfsr_store:
+    move.b  d1, (a0)                       ; also clears reserved bits 1-3
+    lea     FM_NPARM(a0), a0
+    dbra    d2, .sfsr_op
+.sfsr_done:
+    movem.l (sp)+, d0-d2/a0
     rts
 
 ; sram_setup: d0.b = 0-based slot -> a1 = SRAM physical base, d5.l = byte stride; maps SRAM.
@@ -15518,6 +15720,9 @@ bank_load_instr:                           ; d0 = bank slot -> load SRAM bank sl
     move.b  (a1), (a0)+
     adda.l  d5, a1
     dbra    d2, .bli_r
+    lea     instrum, a0                    ; SRAM libraries may predate packed SSG-EG
+    adda.l  d1, a0
+    bsr     sanitize_fm_ssg_record
 .bli_unmap:
     move.b  #0, $A130F1
 .bli_done:
@@ -16553,7 +16758,7 @@ str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
-str_hdr_fm: dc.b "OP  ML DT TL RS AR D1 D2 RR SL AM",0
+str_hdr_fm: dc.b "OP  ML DT TL RS AR D1 D2 RR SL AM SG",0
 str_scr_ph: dc.b "PHRASE",0
 str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
@@ -16588,10 +16793,21 @@ str_hdr_tb: dc.b "   V  TSP CMD",0
     even
 table_scol: dc.b 4, 7, 11, 12             ; V(1) TSP(2) CMD-letter PRM(2) -> "A00" adjacent
 op_names:   dc.b "OP1OP3OP2OP4"            ; rows in YM2612 register order (S1,S3,S2,S4)
-fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32   ; 10 op-param columns
+fm_scol:    dc.b 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35 ; 10 params + packed SSG
 fm_disp:    dc.b 0, 1, 2, 3, 4, 6, 7, 8, 9, 5           ; display col -> storage param (AM shown last)
 fm_pmax:    dc.b 15, 7, 127, 3, 31, 1, 31, 31, 15, 15   ; MUL DT TL RS AR AM D1 D2 RR SL (storage order)
 fm_pstep:   dc.b 4, 4, 16, 1, 16, 1, 16, 4, 4, 4         ; B+U/D coarse step (<= range)
+    even
+ssg_hint_ptr: dc.l str_ssg_off, str_ssg_8, str_ssg_9, str_ssg_a, str_ssg_b, str_ssg_c, str_ssg_d, str_ssg_e, str_ssg_f
+str_ssg_off: dc.b "SSG-EG OFF",0
+str_ssg_8:   dc.b "SSG 8: LOOP; USE AR 1F",0
+str_ssg_9:   dc.b "SSG 9: PLAY ONCE; USE AR 1F",0
+str_ssg_a:   dc.b "SSG A: ZIGZAG LOOP; USE AR 1F",0
+str_ssg_b:   dc.b "SSG B: ONCE THEN FULL; AR 1F",0
+str_ssg_c:   dc.b "SSG C: INVERTED LOOP; AR 1F",0
+str_ssg_d:   dc.b "SSG D: INVERTED THEN FULL; AR 1F",0
+str_ssg_e:   dc.b "SSG E: INV ZIGZAG LOOP; AR 1F",0
+str_ssg_f:   dc.b "SSG F: INVERTED ONCE; AR 1F",0
     even
 str_inst:   dc.b "INST",0
 str_wip:    dc.b "(WIP)",0

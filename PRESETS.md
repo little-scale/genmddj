@@ -42,7 +42,7 @@ transpose tail. Decimal ranges:
 | `fms` | 0–7 | `+$05` | LFO freq-mod (vibrato) sensitivity |
 | `hld` | 0–15 | `+$06` | gate ticks×2; 15 = hold until next note |
 | `vol` | 0–15 | `+$07` | carrier level; 15 = full |
-| **per op ×4** | | `+$08 + 10·slot` | mul, dt, tl(0–127), rs, ar(0–31), am, d1r(0–31), d2r(0–31), rr(0–15), sl(0–15) |
+| **per op ×4** | | `+$08 + 10·slot` | mul, dt, tl(0–127), rs, ar(0–31), packed am/SSG, d1r(0–31), d2r(0–31), rr(0–15), sl(0–15) |
 | `tbl` | 0–31 / 255 | `+$30` | macro table (255 = none) |
 | `tbs` | 0–255 | `+$31` | table speed (0 = per note) |
 | `tsp` | −128…127 | `+$35` | signed-semitone transpose |
@@ -52,6 +52,11 @@ transpose tail. Decimal ranges:
 Bytes `+$32..$34` are the **KIT/sample union** (`kit` / `gain` / `rate`) and `+$3F` is `pmode`
 (PERC) — unused in an FM record. Non-FM types (KIT/WAVE/TONE/NOISE/PERC) reuse the same 64
 bytes as a union.
+
+For an FM operator, byte 5 of its 10-byte group packs two independent controls: bit 0 is
+`AM`, while bits 7–4 contain the raw SSG-EG shape (`0` off or `8`–`F`). Bits 3–1 are zero.
+This extends the existing record without changing its 64-byte size; older records have a zero
+upper nibble and therefore load with SSG-EG disabled.
 
 ### 2.2 Operator order — the one gotcha ⚠
 
