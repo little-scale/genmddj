@@ -273,7 +273,7 @@ live_when  equ $00FFD3D6           ; LIVE: per-track queue (0 none, 1 at next ma
 c_wbank    equ $00FFD3E0           ; B command: per-channel wave# override (0-15; $FF = use instrument iw_wave)
 c_delay    equ $00FFD3EA           ; D command: per-channel note-on delay countdown (ticks; 0 = none)
 d_set      equ $00FFD3F4           ; D command: 1 if D delayed the note this row (skip the immediate trigger)
-c_srate    equ $00FFD3F5           ; S command: per-channel sample-rate override (0-3; $FF = use instrument i_rate)
+c_srate    equ $00FFD3F5           ; KIT S command: per-channel sample-rate override (0-3; $FF = use instrument i_rate)
 a_set      equ $00FFD3FF           ; A command: 1 if A switched the macro table this row (note-on keeps c_tbl)
 c_eatk     equ $00FFD400           ; E command: per-channel attack-rate override (ticks/step; $FF = use instrument)
 c_edcy     equ $00FFD40A           ; E command: per-channel decay-rate override (ticks/step; $FF = use instrument)
@@ -359,8 +359,13 @@ CONT_RAM_END     equ carry_row + NCARRY            ; guard (INSTR_SIZE=64 litera
     endc
 player_active equ CONT_RAM_END               ; host player: private SRAM marker was present at boot
 player_mask   equ CONT_RAM_END+2             ; aligned 10-bit hardware-voice mask (F1..NO)
-    ifgt (player_mask+2)-$00FFDFE0
-        fail "player host state overruns into perc_live ($FFDFE0)"
+c_ssgmask    equ player_mask+2               ; FM S command: active logical-operator mask (bits 0..3 = OP1..OP4)
+c_ssgmode    equ c_ssgmask+NCH               ; FM S command: live SSG-EG shape (0 or 8-F)
+c_ssgdirty   equ c_ssgmode+NCH               ; FM S command: operators whose $9x registers need updating
+s_set        equ c_ssgdirty+NCH               ; FM S command occurred on this phrase row (keep override on note-on)
+PLAYER_RAM_END equ s_set+1
+    ifgt PLAYER_RAM_END-$00FFDFE0
+        fail "player/command state overruns into perc_live ($FFDFE0)"
     endc
 SAVE_BASE  equ $00FF0000            ; M8: head of the contiguous saved-data block (globals..waves)
 rle_buf    equ $00FF5D60            ; RLE staging: the free gap above the data block (~25 KB, to env_canvas $C000)
@@ -885,7 +890,11 @@ VBlankInt:
     move.w  d0, VDP_DATA
     dbra    d1, .nm_sgnm
 .nm_nosg:
-    cmpi.b  #SCR_HELP, cur_screen          ; HELP: page indicator "N/M" after the title (row1 col7)
+    move.l  #$41020003, (a0)              ; row 2, col 1: erase a HELP page counter left by the prior screen
+    move.w  #' ', VDP_DATA                ; clear only its three cells; rows 0-2 otherwise stay persistent
+    move.w  #' ', VDP_DATA
+    move.w  #' ', VDP_DATA
+    cmpi.b  #SCR_HELP, cur_screen          ; HELP: page indicator "N/M" beneath the title (row 2, col 1)
     bne.s   .nohelppg
     lea     help_pgbuf, a1                 ; build "N/M",0 -> current page / total (single-digit)
     moveq   #0, d0
@@ -8195,6 +8204,12 @@ engine_play_reset:
 .epr_sr:
     move.b  #$FF, (a0)+
     dbra    d0, .epr_sr
+    lea     c_ssgmask, a0                 ; FM S command: no live SSG-EG overrides or pending $9x writes
+    moveq   #(NCH*3)-1, d0
+.epr_ssg:
+    clr.b   (a0)+
+    dbra    d0, .epr_ssg
+    clr.b   s_set
     lea     c_eatk, a0                   ; E command: clear per-channel attack/decay overrides ($FF = use instrument)
     moveq   #(NCH*2)-1, d0
 .epr_e:
@@ -9683,6 +9698,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, d_set                      ; D command: clear this row's delay flag
     move.b  #0, a_set                      ; A command: clear this row's table-switch flag
     move.b  #0, l_set                      ; L command: clear this row's slide flag
+    move.b  #0, s_set                      ; FM S command: clear this row's SSG-EG-override flag
     move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
     cmpi.b  #$FF, (a1,d1.w)               ; R persists across empty rows: only a NEW NOTE here stops it
     beq.s   .rt_keep                       ;   (decay-to-silence in the fire is the other stop). rest -> keep
@@ -9892,6 +9908,15 @@ advance_ch:                               ; a6 = channel
     lea     c_edcy, a0
     move.b  #$FF, (a0,d0.w)
 .cre:
+    tst.b   s_set                          ; no valid FM S on this note -> restore the instrument's stored SSG-EG
+    bne.s   .crs
+    lea     c_ssgmask, a0
+    move.b  (a0,d0.w), d1                 ; operators covered by the previous note's override
+    beq.s   .crs
+    clr.b   (a0,d0.w)                     ; the override ends at this ordinary note
+    lea     c_ssgdirty, a0
+    or.b    d1, (a0,d0.w)                 ; emit each affected instrument $9x value before key-on
+.crs:
     tst.b   x_set                          ; no X this row -> PSG output level back to full
     bne.s   .crx
     lea     lx_pvol, a0
@@ -10359,7 +10384,7 @@ exec_cmd:
     beq     .cmd_b
     cmpi.b  #4, d2                          ; D xx = delay the note-on by xx ticks
     beq     .cmd_d
-    cmpi.b  #19, d2                         ; S xx = sample speed (DAC walk rate; KIT voice)
+    cmpi.b  #19, d2                         ; S xy = FM SSG-EG op mask/shape; KIT sample speed
     beq     .cmd_s
     cmpi.b  #1, d2                          ; A xx = switch/restart the macro table
     beq     .cmd_a
@@ -10619,13 +10644,65 @@ exec_cmd:
     move.b  d2, (a4,d3.w)                  ; arm the per-channel countdown
     move.b  #1, d_set                      ; -> .notbset skips the immediate trigger
     bra     .cmddone
-.cmd_s:                                   ; S xx = sample speed: override the DAC walk rate 0-3 for the channel
-    moveq   #0, d3
+.cmd_s:                                   ; S is type-safe and overloaded by the effective instrument:
+                                            ; FM Sxy: x=logical OP1..OP4 mask, y=SSG-EG 0(off)/8-F.
+                                            ; KIT Sxx: low two bits keep the existing DAC rate override.
+                                            ; Every other instrument/channel combination ignores S.
+    cmpi.b  #1, c_type(a6)                 ; both FM synthesis and KIT DAC notes live on an FM track
+    bne     .cmddone
+    moveq   #0, d0                         ; resolve the command's effective instrument
+    move.l  a1, d3
+    cmpi.l  #tbl_ram, d3                   ; exec_cmd is called with either a phrase/carry row or TABLE row
+    blo.s   .cs_phrase
+    cmpi.l  #tbl_ram+(NTABLE*TBL_ROWS*TROW), d3
+    blo.s   .cs_current                    ; TABLE has no IN column: use the channel's current instrument
+.cs_phrase:
+    move.b  (1,a1,d1.w), d0               ; phrase row's IN takes effect after commands execute
+    cmpi.b  #$FF, d0
+    bne.s   .cs_havei
+.cs_current:
+    move.b  c_instr(a6), d0
+.cs_havei:
+    cmpi.b  #NINSTR, d0                   ; malformed/empty instrument references never touch command state
+    bhs     .cmddone
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    adda.w  d0, a4
+    tst.b   (i_type,a4)
+    beq.s   .cs_fm
+    cmpi.b  #1, (i_type,a4)
+    bne     .cmddone                       ; WAVE/TONE/NOISE/PERC: S has no meaning
+    cmpi.b  #5, c_track(a6)
+    bne     .cmddone                       ; KIT is valid only on the F6/DAC hardware track
+    moveq   #0, d3                         ; KIT: preserve the historical S sample-rate command
     move.b  c_track(a6), d3
-    move.b  (3,a1,d1.w), d2               ; param low 2 bits = rate 0-3 (1x/2x/4x/0.5x, matches i_rate)
+    move.b  (3,a1,d1.w), d2
     andi.b  #3, d2
     lea     c_srate, a4
     move.b  d2, (a4,d3.w)
+    bra     .cmddone
+.cs_fm:
+    move.b  (3,a1,d1.w), d2               ; FM: high nibble is logical OP mask, low is YM SSG-EG shape
+    move.b  d2, d0
+    lsr.b   #4, d0
+    andi.b  #$0F, d0
+    beq     .cmddone                       ; mask 0 selects no operators -> ignore
+    andi.b  #$0F, d2
+    beq.s   .cs_valid                      ; 0 explicitly disables SSG-EG on the selected operators
+    cmpi.b  #8, d2
+    blo     .cmddone                       ; YM values 1-7 are reserved: reject rather than corrupt the shape
+.cs_valid:
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_ssgmask, a4
+    move.b  (a4,d3.w), d1                 ; dirty both the old and new selections so dropped ops restore
+    or.b    d0, d1
+    move.b  d0, (a4,d3.w)
+    lea     c_ssgmode, a4
+    move.b  d2, (a4,d3.w)
+    lea     c_ssgdirty, a4
+    or.b    d1, (a4,d3.w)
+    move.b  #1, s_set                     ; a note on this row retains the just-installed override
     bra     .cmddone
 .cmd_a:                                   ; A xx = switch/restart the channel's macro table to table 0-31
     move.b  (3,a1,d1.w), d2               ; table #
@@ -11400,6 +11477,7 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
     bsr     emit_ch_patch                   ; d1 = chosen instrument's operator patch (before key-on)
     bra.s   .cf_emit
 .cf_keys:
+    bsr     emit_s_ssg                      ; same patch: apply/restore only the selected $9x registers
     cmpi.w  #YM_CAP, d5
     bhi     .cf_defer
 .cf_emit:
@@ -11418,6 +11496,7 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .cf_defer:
     rts                                     ; c_trig stays set -> retry next tick (no key-on yet)
 .nochg:
+    bsr     emit_s_ssg                      ; S on a rest/TABLE row can reshape the currently sounding note
     cmpi.b  #2, c_track(a6)               ; F3: a BASE/MODE edit re-emits the patch live (no re-key)
     bne.s   .nrepatch
     tst.b   perc_repatch
@@ -11628,11 +11707,26 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
     bhs.s   .ecp_ssgok
     moveq   #0, d0
 .ecp_ssgok:
+    moveq   #0, d1                         ; an active S command overrides this logical operator only
+    lea     ssg_opbit, a4                  ; storage slots are OP1,OP3,OP2,OP4; mask bits are OP1..OP4
+    move.b  (a4,d6.w), d1
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    lea     c_ssgmask, a4
+    btst    d1, (a4,d3.w)
+    beq.s   .ecp_ssgemit
+    lea     c_ssgmode, a4
+    move.b  (a4,d3.w), d0
+.ecp_ssgemit:
     move.b  #$90, d3
     bsr     .ecp_emit
     addq.w  #1, d6
     cmpi.w  #4, d6
     bne     .ecp_op
+    moveq   #0, d0                         ; a full patch resolves every pending SSG-EG register write
+    move.b  c_track(a6), d0
+    lea     c_ssgdirty, a4
+    clr.b   (a4,d0.w)
     moveq   #0, d2                          ; $B0: (FB<<3)|ALGO -- reg = $B0 + channel reg
     move.b  c_ymchreg(a6), d2
     move.b  (i_fb,a3), d1
@@ -11662,6 +11756,82 @@ emit_ch_patch:                              ; d1 = instrument # to patch from (c
     move.b  d0, (a5)+
     addq.w  #1, d5
     rts
+
+; Emit the FM S command's pending per-operator $9x changes without repushing a 30-write patch.
+; Active command values come from c_ssgmask/c_ssgmode; operators removed from the mask restore
+; the currently selected FM instrument's stored shape. Non-FM instruments discard the live state
+; and invalidate pshadow so the next genuine FM note must restore a complete patch.
+emit_s_ssg:                                ; a6=channel, a5/d5=YM stream; preserves compose scratch
+    movem.l d0-d4/d6/a1-a4, -(sp)
+    moveq   #0, d4
+    move.b  c_track(a6), d4
+    lea     c_ssgdirty, a4
+    moveq   #0, d6
+    move.b  (a4,d4.w), d6
+    beq     .ess_done
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    cmpi.b  #NINSTR, d0
+    bhs     .ess_invalid
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a3
+    adda.w  d0, a3
+    tst.b   (i_type,a3)                    ; only a genuine FM instrument owns SSG-EG fields
+    bne.s   .ess_invalid
+    moveq   #0, d3                         ; operator storage slot: OP1,OP3,OP2,OP4
+.ess_op:
+    moveq   #0, d2                         ; convert storage slot to the user's logical OP1..OP4 mask bit
+    lea     ssg_opbit, a4
+    move.b  (a4,d3.w), d2
+    btst    d2, d6
+    beq.s   .ess_next
+    cmpi.w  #YM_CAP, d5                    ; leave this and later bits dirty if the stream is already full
+    bhi.s   .ess_save
+    move.w  d3, d1                         ; instrument's stored fallback shape for this operator
+    mulu.w  #FM_NPARM, d1
+    move.b  (i_op+5,a3,d1.w), d0
+    lsr.b   #4, d0
+    cmpi.b  #8, d0
+    bhs.s   .ess_defaultok
+    moveq   #0, d0
+.ess_defaultok:
+    lea     c_ssgmask, a4                  ; selected by S -> replace fallback with the command's mode
+    btst    d2, (a4,d4.w)
+    beq.s   .ess_value
+    lea     c_ssgmode, a4
+    move.b  (a4,d4.w), d0
+.ess_value:
+    bclr    d2, d6                         ; this logical operator will be resolved by the following write
+    move.b  c_ympart(a6), (a5)+
+    move.w  d3, d1
+    lsl.w   #2, d1
+    addi.w  #$90, d1
+    moveq   #0, d2
+    move.b  c_ymchreg(a6), d2
+    add.w   d2, d1
+    move.b  d1, (a5)+
+    move.b  d0, (a5)+
+    addq.w  #1, d5
+.ess_next:
+    addq.w  #1, d3
+    cmpi.w  #4, d3
+    bne.s   .ess_op
+.ess_save:
+    lea     c_ssgdirty, a4
+    move.b  d6, (a4,d4.w)
+    bra.s   .ess_done
+.ess_invalid:
+    clr.b   (a4,d4.w)                      ; a4 still addresses c_ssgdirty
+    lea     c_ssgmask, a4
+    clr.b   (a4,d4.w)
+    lea     pshadow, a4                    ; KIT/WAVE/PERC may have bypassed FM patching entirely
+    move.b  #$FF, (a4,d4.w)
+.ess_done:
+    movem.l (sp)+, d0-d4/d6/a1-a4
+    rts
+
+ssg_opbit: dc.b 0, 2, 1, 3                 ; register slots OP1,OP3,OP2,OP4 -> logical mask bits
+    even
 
 ; X command helper: emit the channel's carrier $40 (TL) with live volume d1 (0-15).
 ; carrier TL = stored TL + (15-vol)*8, clamped 127. a6=ch, a5/d5=SCB.
@@ -16753,7 +16923,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_help: dc.b "HOLD A TO VIEW HELP",0
-ver_str:    dc.b "V0.23",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+ver_str:    dc.b "V0.24",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0

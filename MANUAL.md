@@ -506,7 +506,20 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 |---|---|---|---|
 | `N` | Noise | x = mode (0 white / 1 periodic), y = rate 0–3 | NOISE |
 | `B` | Wave bank | Select wave 0–F for the channel | WAVE |
-| `S` | Sample rate | DAC walk rate 0–3 | KIT |
+| `S` | SSG-EG / sample rate | FM: `x` selects operators and `y` sets SSG-EG; KIT: DAC walk rate 0–3 | FM / KIT |
+
+On a genuine **FM instrument**, `Sxy` is a per-note SSG-EG override. The high nibble is a
+logical operator mask: bit `1` = OP1, `2` = OP2, `4` = OP3 and `8` = OP4, so `F` selects
+all four operators. The low nibble is `0` to turn SSG-EG off on those operators, or `8`–`F`
+for the eight hardware shapes shown in the INSTR editor. For example, `S58` selects OP1 +
+OP3 and gives both shape `8`; `SF0` temporarily turns SSG-EG off for every operator.
+
+The override affects only that FM channel and does not edit the instrument. A following
+note without `S` restores the instrument's stored `SG` settings. An `S` on an empty phrase
+row or in a TABLE can reshape the currently sounding FM note. A zero operator mask or the
+reserved shape values `1`–`7` are ignored. On a **KIT instrument on F6**, `S00`–`S03` retain
+their existing sample-rate meaning. `S` is ignored for WAVE, TONE, NOISE and PERC instruments,
+and for any incompatible hardware channel.
 
 **Tables, grooves & timing**
 

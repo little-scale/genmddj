@@ -1331,6 +1331,95 @@ FM_SSG_EG = """    tst.b   $00FFD820
     move.b  ym_data+62, $00FFD83A
     move.b  ym_data+82, $00FFD83B
     move.b  ym_data+83, $00FFD83C
+
+    ; FM S58: logical OP1+OP3 mask -> physical $90/$94 writes, shape 8
+    lea     ch_state, a6
+    move.b  #1, c_type(a6)
+    clr.b   c_track(a6)
+    clr.b   c_instr(a6)
+    clr.b   c_ssgmask
+    clr.b   c_ssgmode
+    clr.b   c_ssgdirty
+    clr.b   s_set
+    move.b  #48, phrases
+    clr.b   phrases+1
+    move.b  #19, phrases+2
+    move.b  #$58, phrases+3
+    lea     phrases, a1
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  c_ssgmask, $00FFD83D
+    move.b  c_ssgmode, $00FFD83E
+    move.b  c_ssgdirty, $00FFD83F
+    move.b  s_set, $00FFD840
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     emit_s_ssg
+    move.b  d5, $00FFD841
+    move.b  ym_data, $00FFD842
+    move.b  ym_data+1, $00FFD843
+    move.b  ym_data+2, $00FFD844
+    move.b  ym_data+3, $00FFD845
+    move.b  ym_data+4, $00FFD846
+    move.b  ym_data+5, $00FFD847
+    move.b  c_ssgdirty, $00FFD848
+
+    ; reserved FM shape 1 is rejected without changing/rearming the live state
+    clr.b   s_set
+    move.b  #$51, phrases+3
+    lea     phrases, a1
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  c_ssgmask, $00FFD849
+    move.b  c_ssgmode, $00FFD84A
+    move.b  c_ssgdirty, $00FFD84B
+    move.b  s_set, $00FFD84C
+
+    ; the same S command on a genuine KIT keeps the old low-two-bit rate behavior
+    move.b  #1, instrum+INSTR_SIZE+i_type
+    move.b  #1, phrases+1
+    move.b  #$03, phrases+3
+    move.b  #5, c_track(a6)
+    move.b  #$FF, c_srate+5
+    lea     phrases, a1
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  c_srate+5, $00FFD84D
+    move.b  c_ssgmask, $00FFD84E
+    move.b  c_ssgdirty, $00FFD84F
+
+    ; even a genuine FM instrument cannot use SSG-EG from a PSG hardware track
+    clr.b   c_track(a6)
+    clr.b   c_type(a6)
+    clr.b   phrases+1
+    move.b  #$F8, phrases+3
+    clr.b   s_set
+    lea     phrases, a1
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  c_ssgmask, $00FFD850
+    move.b  s_set, $00FFD851
+
+    ; removing the override restores all four stored shapes in logical/physical order
+    move.b  #1, c_type(a6)
+    clr.b   c_ssgmask
+    move.b  #$0F, c_ssgdirty
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     emit_s_ssg
+    move.b  d5, $00FFD852
+    move.b  ym_data, $00FFD853
+    move.b  ym_data+1, $00FFD854
+    move.b  ym_data+2, $00FFD855
+    move.b  ym_data+3, $00FFD856
+    move.b  ym_data+4, $00FFD857
+    move.b  ym_data+5, $00FFD858
+    move.b  ym_data+6, $00FFD859
+    move.b  ym_data+7, $00FFD85A
+    move.b  ym_data+8, $00FFD85B
+    move.b  ym_data+9, $00FFD85C
+    move.b  ym_data+10, $00FFD85D
+    move.b  ym_data+11, $00FFD85E
     movem.l (sp)+, d0-d7/a0-a6
 .tssgdone:
 """
@@ -1930,7 +2019,7 @@ def t_fm_simultaneous():
     return 'transport preserves patches; cold F1/F2 share 80-write SCB; warm pair uses 20; keys adjacent'
 
 def t_fm_ssg_eg():
-    """SSG-EG packs beside AM, edits independently, sanitizes old bytes and emits $90 everywhere."""
+    """SSG-EG storage/editor plus the type-safe, per-channel S command and restoration path."""
     ram = run_rom(build_rom('fm_ssg_eg', boot_inject=FM_SSG_EG), 35)
     assert list(ram[0xD821:0xD825]) == [0x81, 0xA0, 0xF1, 0], \
         'packed AM/SSG sanitization %r' % list(ram[0xD821:0xD825])
@@ -1942,7 +2031,20 @@ def t_fm_ssg_eg():
     built = list(ram[0xD834:0xD83D])
     assert built == [30, 0x90, 8, 0x94, 0x0A, 0x98, 0x0F, 0x9C, 0], \
         'boot/editor patch SSG register stream %r' % built
-    return 'packed AM/SSG; --/8-F editor; sanitization; $90 writes in both patch builders'
+    assert list(ram[0xD83D:0xD841]) == [5, 8, 5, 1], \
+        'FM S58 did not arm mask/mode/dirty state %r' % list(ram[0xD83D:0xD841])
+    assert list(ram[0xD841:0xD849]) == [2, 0, 0x90, 8, 0, 0x94, 8, 0], \
+        'FM S58 logical operator routing/write stream %r' % list(ram[0xD841:0xD849])
+    assert list(ram[0xD849:0xD84D]) == [5, 8, 0, 0], \
+        'reserved FM S shape was not ignored %r' % list(ram[0xD849:0xD84D])
+    assert list(ram[0xD84D:0xD850]) == [3, 5, 0], \
+        'KIT S dispatch changed FM state or lost sample rate %r' % list(ram[0xD84D:0xD850])
+    assert list(ram[0xD850:0xD852]) == [5, 0], \
+        'FM S command leaked onto a PSG hardware channel %r' % list(ram[0xD850:0xD852])
+    restored = list(ram[0xD852:0xD85F])
+    assert restored == [4, 0, 0x90, 8, 0, 0x94, 0x0A, 0, 0x98, 0x0F, 0, 0x9C, 0], \
+        'FM S override restoration stream %r' % restored
+    return 'stored SG + editor; S mask routing; type guards; reserved rejection; next-note restoration'
 
 def t_fm_prewarm():
     """Stopped-load prediction scans first chains, warms two FM patches per pass, and cancels on start."""

@@ -2,7 +2,7 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## Unreleased
+## v0.24 — 2026-10-10
 
 ### Added
 - FM instruments now expose the YM2612's per-operator **SSG-EG** envelopes as a new `SG`
@@ -10,9 +10,17 @@ All notable changes to genmddj. Versions increment by **0.01**.
   each shape, the envelope labels show `OPn:X` when active, and the HELP screen includes a
   compact reference. The setting is saved losslessly in the existing 64-byte instrument
   record, with old songs and patches loading SSG-EG off.
+- The phrase/TABLE `S` command is now safely overloaded by instrument type. On a genuine FM
+  instrument, `Sxy` applies shape `y` (`0` or `8`–`F`) to the logical OP1–OP4 mask `x` for
+  that channel, restoring the instrument on the next ordinary note; on KIT it retains its
+  existing sample-rate meaning, and incompatible instrument/channel combinations ignore it.
 - The software FM-LFO screen now offers **CHAIN** sync alongside NOTE, PHRASE and FREE.
   CHAIN restarts the LFO whenever its target track enters chain step 0, including initial
   playback, SONG chain changes and chain loops, without resetting between phrases.
+
+### Fixed
+- Leaving HELP now clears its `N/M` page counter instead of leaving it visible beneath the
+  title of the destination screen.
 
 ## v0.23 — 2026-10-07
 
