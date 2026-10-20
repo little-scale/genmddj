@@ -238,7 +238,7 @@ function renderEditor(){
     f.innerHTML=`<label>${label}</label>`; const s=document.createElement('select');
     opts.forEach((o,i)=>{ const op=document.createElement('option'); op.value=i; op.textContent=o; if(i===val)op.selected=true; s.appendChild(op); });
     s.onchange=()=>{ cb(+s.value); renderList(); }; f.appendChild(s); return f; };
-  head.appendChild(mksel('TYPE',TYPES,getB(sel,0),v=>setB(sel,0,v)));
+  head.appendChild(mksel('TYPE',TYPES,getB(sel,0),v=>{ const old=getB(sel,0); setB(sel,0,v); if(v===0&&old!==0)setB(sel,63,0); }));
   head.appendChild(mksel('PAN',PANS,getB(sel,3),v=>setB(sel,3,v)));
   // load one or more patches (.gmi native, lossless; also imports .tfi/.vgi/.adv). Multi-select -> consecutive slots.
   const lb=document.createElement('label'); lb.className='key'; lb.style.cursor='pointer'; lb.textContent='load patches…';
@@ -262,9 +262,11 @@ function renderEditor(){
   const hg=document.createElement('div'); hg.className='hdrsl';
   hg.appendChild(slider('ALGO',getB(sel,1),0,7,v=>{ setB(sel,1,v); updateBadges(v); renderList(); }));
   [['FB',2,7],['AMS',4,3],['FMS',5,7],['HLD',6,15],['VOL',7,15]].forEach(([l,o,mx])=> hg.appendChild(slider(l,getB(sel,o),0,mx,v=>setB(sel,o,v))));
-  // pitch sweep (the FM-kick swoop): byte 62 = hi nibble depth (x4 semis, downward) | lo nibble rate
-  hg.appendChild(slider('P.SWEEP', getB(sel,62)>>4, 0,15, v=>setB(sel,62,(v<<4)|(getB(sel,62)&15)), v=>(v*4)+'st'));
-  hg.appendChild(slider('P.RATE',  getB(sel,62)&15, 0,15, v=>setB(sel,62,(getB(sel,62)&0xF0)|v)));
+  // pitch sweep (the FM-kick swoop): a non-zero byte targets C in the played octave;
+  // hi nibble = depth (x64 F-num), lo nibble = rate (x16 F-num/frame)
+  hg.appendChild(slider('FSWP DEPTH', getB(sel,62)>>4, 0,15, v=>setB(sel,62,(v<<4)|(getB(sel,62)&15)), v=>(v*64)+' fn'));
+  hg.appendChild(slider('FSWP RATE',  getB(sel,62)&15, 0,15, v=>setB(sel,62,(getB(sel,62)&0xF0)|v), v=>(v*16)+' fn/f'));
+  if(getB(sel,0)===0){ const gm=getB(sel,63); hg.appendChild(mksel('GROUP',['OFF','CHORD','UNISON','OCTAVE','POWER'],gm<=4?gm:0,v=>setB(sel,63,v))); }
   el.appendChild(hg);
 
   // operator panels (sliders), carrier/mod badge per panel from ALGO
@@ -297,6 +299,7 @@ function renderEditor(){
 // ratios and per-op AR/D1R/D2R/RR/SL/TL/RS. (DT detune is approximated; the global LFO and
 // SSG-EG are not modelled. The real YM2612 / Emulicious still has the final word on tone.)
 const CHIPRATE=53267;                                 // NTSC YM2612 FM sample rate (clock/144)
+const FNUM=[644,682,723,766,811,859,910,965,1022,1083,1147,1215]; // tracker NTSC C..B table
 const SLOTOF=[0,2,1,3];                               // logical OP1,OP2,OP3,OP4 -> record slot
 const MULT=[0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
 // per algorithm: modulators feeding each logical op (idx 0..3), and the carrier set
@@ -364,14 +367,17 @@ function makeOp(o,freq,kc){
 function renderVoice(p,freq){
   const A=ALG[p.algo], n=Math.floor(1.9*CHIPRATE), koff=Math.floor(1.3*CHIPRATE);
   const block=Math.max(0,Math.min(7,Math.round(Math.log2(freq/16.35)))), kc=Math.min(31,block*4+1);
-  const ops=p.ops.map(o=>makeOp(o,freq,kc));
+  const midi=Math.round(69+12*Math.log2(freq/440)), pc=((midi%12)+12)%12;
+  const sweepFreq=p.psweep ? freq/Math.pow(2,pc/12) : freq;             // SWEEP: pitch class -> octave C
+  const ops=p.ops.map(o=>makeOp(o,sweepFreq,kc));
   const fbsh=p.fb?(9-p.fb):0, vg=Math.max(0.1,p.vol/15);
   const buf=new Float32Array(n); let cnt=0, sub=0;
-  const swDep=(p.psweep>>4)*4, swRate=p.psweep&15; let swOff=swDep;   // pitch sweep: depth (semis) decays by rate/tick
+  const baseFn=p.psweep ? FNUM[0] : FNUM[pc];
+  const swDep=(p.psweep>>4)*4, swRate=p.psweep&15; let swOff=swDep;   // internal unit = 16 F-number steps
   const TICK=(CHIPRATE/60)|0;                                          // one engine tick ~ one 60 Hz frame
   for(let s=0;s<n;s++){
     if(p.psweep && (s%TICK)===0){                                     // each tick: bend the pitch, then decay
-      const pm=Math.pow(2, swOff/12); for(const o of ops) o.inc=o.baseInc*pm;
+      const pm=Math.min(2047,baseFn+swOff*16)/baseFn; for(const o of ops) o.inc=o.baseInc*pm;
       if(swOff>0) swOff=Math.max(0, swOff-swRate);
     }
     if(s===koff){ for(const o of ops) setState(o,REL); }    // key-off
@@ -423,7 +429,7 @@ async function loadPatchInto(d, f, slot){
   if(isNat){ for(let i=0;i<64;i++) bank[off(slot,i)]=d[8+i]; return true; }   // .gmi: verbatim record (incl. name)
   if(d.length===42 || d.length===43){                            // TFI (42) / VGI (43)
     const opbase = d.length===43?3:2;                            // VGI byte 2 = pan/ams/fms (skipped)
-    setB(slot,0,0); setB(slot,1,d[0]&7); setB(slot,2,d[1]&7);     // FM type, algo, feedback
+    setB(slot,0,0); setB(slot,1,d[0]&7); setB(slot,2,d[1]&7); setB(slot,63,0); // FM type, algo, feedback; GROUP off
     for(let i=0;i<4;i++){ const o=opbase+i*10, b=8+SLOTOF[i]*10;  // ops: MUL DT TL RS AR DR SR RR SL SSG
       bank[off(slot,b)]=d[o]&15;   bank[off(slot,b+1)]=d[o+1]&7;  bank[off(slot,b+2)]=d[o+2]&127; bank[off(slot,b+3)]=d[o+3]&3;
       bank[off(slot,b+4)]=d[o+4]&31; bank[off(slot,b+5)]=0;       bank[off(slot,b+6)]=d[o+5]&31;  bank[off(slot,b+7)]=d[o+6]&31;

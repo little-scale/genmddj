@@ -299,6 +299,363 @@ CONT_ARM = """    move.w  g_ticks, d0
 .caskip:
 """
 
+# Deterministic LIVE->LIVE handover: track 0 carries, track 1 is deliberately
+# stale, target slots 30/31 are referenced, and slot 29 is the expected borrow.
+CONT_LIVE_HANDOVER = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, proj_mode
+    move.b  #0, ch_state+c_track
+    move.b  #0, ch_state+c_instr
+    move.b  #0, ch_state+c_chain
+    move.b  #0, ch_state+c_songpos
+    move.b  #15, ch_state+c_row
+    move.l  #phrases, ch_state+c_phrase
+    move.b  #6, instrum+i_algo
+    move.b  #$30, phrases
+    move.b  #0, phrases+1
+    move.w  #1, cont_mask
+    bsr     cont_snapshot_all
+    move.b  #$31, phrases
+    move.b  #31, phrases+1
+    move.b  #$32, phrases+4
+    move.b  #30, phrases+5
+    move.b  #0, song
+    move.b  #1, song+NCH
+    move.b  #0, chains
+    move.b  #$FF, chains+2
+    move.b  #1, chains+CHAIN_SIZE
+    move.b  #$FF, chains+CHAIN_SIZE+2
+    move.b  #5, instrum+(29*INSTR_SIZE)+i_algo
+    move.b  #3, instrum+(30*INSTR_SIZE)+i_algo
+    move.b  #4, instrum+(31*INSTR_SIZE)+i_algo
+    move.b  #1, ch_state+CHSIZE+c_track
+    move.b  #1, ch_state+CHSIZE+c_chain
+    move.b  #1, live_on+1
+    move.b  #7, live_q+1
+    move.b  #2, live_when+1
+    bsr     cont_plant_all
+    move.b  ch_state+c_instr, $00FFD800
+    move.b  instrum+(29*INSTR_SIZE)+i_algo, $00FFD801
+    move.b  instrum+(30*INSTR_SIZE)+i_algo, $00FFD802
+    move.b  instrum+(31*INSTR_SIZE)+i_algo, $00FFD803
+    move.b  live_on+1, $00FFD804
+    move.b  live_when+1, $00FFD805
+    move.b  ch_state+CHSIZE+c_chain, $00FFD806
+    move.b  live_on, $00FFD807
+    lea     ch_state, a6
+    bsr     advance_ch
+    move.b  ch_state+c_chain, $00FFD808
+    move.b  carry_slot, $00FFD809
+    move.b  live_when, $00FFD80A
+    move.b  ch_state+c_instr, $00FFD80B
+    clr.b   $00FFD80C
+    cmpi.l  #carry_buf, ch_state+c_phrase
+    bne.s   .tlh_ptr
+    move.b  #$FF, $00FFD80C
+.tlh_ptr:
+    moveq   #0, d1
+    moveq   #0, d2                         ; same row number as stale old c_songpos
+    bsr     live_queue_track               ; must replace the bridge, not queue a stop
+    move.b  live_when, $00FFD80D
+    move.b  #15, ch_state+c_row
+    lea     ch_state, a6
+    bsr     advance_ch
+    move.b  ch_state+c_chain, $00FFD80E
+    move.b  ch_state+c_cstep, $00FFD80F
+    move.b  live_when, $00FFD810
+    move.b  carry_slot, $00FFD811
+    move.b  instrum+(29*INSTR_SIZE)+i_algo, $00FFD812
+    clr.b   $00FFD813
+    cmpi.l  #phrases, ch_state+c_phrase
+    bne.s   .tlh_target_ptr
+    move.b  #$FF, $00FFD813
+.tlh_target_ptr:
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# Empty target: a carried private phrase keeps looping until the performer
+# explicitly launches a populated SONG cell; an empty target never stops it.
+CONT_EMPTY_TARGET = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, proj_mode
+    move.b  #0, ch_state+c_track
+    move.b  #0, ch_state+c_instr
+    move.b  #0, ch_state+c_chain
+    move.b  #0, ch_state+c_songpos
+    move.b  #15, ch_state+c_row
+    move.l  #phrases, ch_state+c_phrase
+    move.b  #6, instrum+i_algo
+    move.b  #$30, phrases
+    move.b  #0, phrases+1
+    move.w  #1, cont_mask
+    bsr     cont_snapshot_all
+    move.b  #$FF, phrases
+    move.b  #$FF, phrases+1
+    move.b  #4, instrum+(31*INSTR_SIZE)+i_algo
+    bsr     cont_plant_all
+    lea     ch_state, a6
+    bsr     advance_ch
+    move.b  ch_state+c_chain, $00FFD800
+    move.b  ch_state+c_row, $00FFD801
+    move.b  carry_slot, $00FFD802
+    move.b  live_on, $00FFD803
+    move.b  instrum+(31*INSTR_SIZE)+i_algo, $00FFD804
+    clr.b   $00FFD805
+    cmpi.l  #carry_buf, ch_state+c_phrase
+    bne.s   .tet_ptr
+    move.b  #$FF, $00FFD805
+.tet_ptr:
+    move.b  carry_instr+i_algo, $00FFD806
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# A target that references every slot must reject the bridge cleanly instead
+# of overwriting any target instrument.
+CONT_NO_FREE_SLOT = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, proj_mode
+    move.b  #0, ch_state+c_track
+    move.b  #0, ch_state+c_instr
+    move.b  #0, ch_state+c_chain
+    move.b  #15, ch_state+c_row
+    move.l  #phrases, ch_state+c_phrase
+    move.b  #6, instrum+i_algo
+    move.b  #$30, phrases
+    move.b  #0, phrases+1
+    move.w  #1, cont_mask
+    bsr     cont_snapshot_all
+    lea     phrases+1, a0
+    moveq   #0, d0
+.tnf_fill:
+    move.b  d0, (a0)
+    addq.l  #4, a0
+    addq.b  #1, d0
+    cmpi.b  #NINSTR, d0
+    blo.s   .tnf_fill
+    move.b  #4, instrum+(31*INSTR_SIZE)+i_algo
+    bsr     cont_plant_all
+    move.b  ch_state+c_chain, $00FFD800
+    move.b  carry_slot, $00FFD801
+    move.b  live_on, $00FFD802
+    move.b  instrum+(31*INSTR_SIZE)+i_algo, $00FFD803
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# A bridge phrase may change instrument on any row. Preserve those references as
+# distinct borrowed target slots, then restore the displaced target records together
+# when the last bridge retires.
+CONT_MULTI_INSTR = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, proj_mode
+    move.b  #0, ch_state+c_track
+    move.b  #2, ch_state+c_instr
+    move.b  #0, ch_state+c_chain
+    move.b  #15, ch_state+c_row
+    move.b  #1, ch_state+c_type
+    move.l  #phrases, ch_state+c_phrase
+    move.b  #6, instrum+(2*INSTR_SIZE)+i_algo
+    move.b  #7, instrum+(3*INSTR_SIZE)+i_algo
+    move.b  #$30, phrases
+    move.b  #2, phrases+1
+    move.b  #$31, phrases+4
+    move.b  #3, phrases+5
+    move.w  #1, cont_mask
+    bsr     cont_snapshot_all
+    move.b  #$32, phrases
+    move.b  #31, phrases+1
+    move.b  #$33, phrases+4
+    move.b  #30, phrases+5
+    move.b  #4, instrum+(29*INSTR_SIZE)+i_algo
+    move.b  #5, instrum+(28*INSTR_SIZE)+i_algo
+    bsr     cont_plant_all
+    move.b  carry_buf+1, $00FFD501
+    move.b  carry_buf+5, $00FFD502
+    move.b  ch_state+c_instr, $00FFD503
+    move.b  instrum+(29*INSTR_SIZE)+i_algo, $00FFD504
+    move.b  instrum+(28*INSTR_SIZE)+i_algo, $00FFD505
+    move.b  ch_state+c_chain, $00FFD506
+    move.b  cont_active, $00FFD507
+    lea     ch_state, a6
+    bsr     cont_restore_track
+    move.b  instrum+(29*INSTR_SIZE)+i_algo, $00FFD508
+    move.b  instrum+(28*INSTR_SIZE)+i_algo, $00FFD509
+    move.b  cont_active, $00FFD50A
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# During an overlap, source globals remain authoritative, source software LFOs
+# run only on bridge channels, and target echo is dormant. The target state returns
+# atomically when the final bridge retires.
+CONT_GLOBAL_ISOLATION = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, proj_mode
+    move.b  #0, ch_state+c_track
+    move.b  #0, ch_state+c_instr
+    move.b  #0, ch_state+c_chain
+    move.b  #15, ch_state+c_row
+    move.b  #1, ch_state+c_type
+    move.l  #phrases, ch_state+c_phrase
+    move.b  #$30, phrases
+    move.b  #0, phrases+1
+    move.b  #1, lfo_cfg+LF_FLAGS
+    move.b  #0, lfo_cfg+LF_CHAN
+    move.b  #13, lfo_cfg+LF_PARM
+    move.b  #16, lfo_cfg+LF_RATE
+    move.b  #3, lfo_cfg+LF_DEPTH
+    move.b  #4, lfo_cfg+LF_POFF
+    move.b  #1, lfo_cfg+LF_SIZE+LF_FLAGS
+    move.b  #1, lfo_cfg+LF_SIZE+LF_CHAN
+    move.b  #13, lfo_cfg+LF_SIZE+LF_PARM
+    move.b  #32, lfo_cfg+LF_SIZE+LF_RATE
+    move.b  #3, lfo_cfg+LF_SIZE+LF_DEPTH
+    move.b  #4, lfo_cfg+LF_SIZE+LF_POFF
+    move.w  #$1000, lfo_phase
+    move.w  #$2000, lfo_phase+2
+    move.b  #7, g_lfo
+    move.b  #$FD, proj_tsp
+    move.b  #5, scale_key
+    move.b  #2, scale_type
+    move.w  #1, cont_mask
+    bsr     cont_snapshot_all
+    move.b  #$31, phrases
+    move.b  #31, phrases+1
+    move.b  #1, SAVE_BASE+GLOB_LFO_OFS+LF_FLAGS
+    move.b  #1, SAVE_BASE+GLOB_LFO_OFS+LF_CHAN
+    move.b  #12, SAVE_BASE+GLOB_LFO_OFS+LF_PARM
+    move.b  #$55, SAVE_BASE+GLOB_LFO_OFS+LF_RATE
+    move.b  #$66, SAVE_BASE+GLOB_LFO_OFS+LF_DEPTH
+    move.b  #$77, SAVE_BASE+GLOB_LFO_OFS+LF_POFF
+    move.b  #4, SAVE_BASE+0
+    move.b  #2, SAVE_BASE+3
+    move.b  #8, SAVE_BASE+10
+    move.b  #3, SAVE_BASE+11
+    move.b  #2, echo_mode
+    move.b  #5, echo_head
+    move.b  #$7A, echo_ring
+    bsr     cont_plant_all
+    move.b  cont_active, $00FFD520
+    move.b  g_lfo, $00FFD521
+    move.b  proj_tsp, $00FFD522
+    move.b  scale_key, $00FFD523
+    move.b  scale_type, $00FFD524
+    move.b  echo_head, $00FFD525
+    move.b  echo_ring, $00FFD526
+    move.b  lfo_cfg+LF_CHAN, $00FFD527
+    move.w  lfo_phase, $00FFD528
+    move.w  lfo_phase+2, $00FFD52A
+    move.b  #1, ch_state+CHSIZE+c_track
+    move.b  #1, ch_state+CHSIZE+c_type
+    move.b  #31, ch_state+CHSIZE+c_instr
+    move.b  #0, ch_state+CHSIZE+c_chain
+    lea     $00FFD580, a5
+    moveq   #0, d5
+    bsr     fmlfo_tick
+    move.w  lfo_phase, $00FFD52C
+    move.w  lfo_phase+2, $00FFD52E
+    lea     ch_state+CHSIZE, a6
+    bsr     is_echo_target
+    move.b  d0, $00FFD530
+    lea     ch_state, a6
+    bsr     cont_restore_track
+    move.b  cont_active, $00FFD531
+    move.b  g_lfo, $00FFD532
+    move.b  proj_tsp, $00FFD533
+    move.b  scale_key, $00FFD534
+    move.b  scale_type, $00FFD535
+    move.b  lfo_cfg+LF_CHAN, $00FFD536
+    move.b  lfo_cfg+LF_PARM, $00FFD537
+    move.b  lfo_cfg+LF_RATE, $00FFD538
+    move.w  lfo_phase, $00FFD53A
+    lea     ch_state+CHSIZE, a6
+    bsr     is_echo_target
+    move.b  d0, $00FFD53C
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# Reproduce a real UI sequence: audition a chain, stop, enter LIVE, then launch
+# row 0 of a two-row contiguous block. The stale chain-solo mode must not make
+# LIVE loop chain 0 forever.
+LIVE_CONTIGUOUS = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #0, song
+    move.b  #1, song+NCH
+    move.b  #0, chains
+    move.b  #$FF, chains+2
+    move.b  #1, chains+CHAIN_SIZE
+    move.b  #$FF, chains+CHAIN_SIZE+2
+    clr.b   playing
+    clr.b   proj_mode
+    move.b  #SCR_CHAIN, cur_screen
+    clr.b   cur_chan
+    clr.b   cur_chain
+    clr.b   cur_row
+    bsr     play_context
+    bsr     play_context
+    move.b  #1, proj_mode
+    move.b  #SCR_SONG, cur_screen
+    clr.b   cur_col
+    clr.b   cur_row
+    clr.b   song_page
+    bsr     live_launch_track
+    move.b  play_mode, $00FFD800
+    lea     ch_state, a6
+    bsr     advance_ch
+    move.b  #15, c_row(a6)
+    bsr     advance_ch
+    move.b  c_songpos(a6), $00FFD801
+    move.b  c_chain(a6), $00FFD802
+    move.b  c_cstep(a6), $00FFD803
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# A completely full 16-step chain has no $FF terminator. Arrangement playback
+# must treat the 15->0 step wrap as the chain end; chain-solo must still loop it.
+LIVE_FULL_CHAIN = """    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #0, song
+    move.b  #1, song+NCH
+    lea     chains, a0
+    moveq   #15, d0
+.lfc_fill:
+    move.b  #0, (a0)+
+    clr.b   (a0)+
+    dbra    d0, .lfc_fill
+    move.b  #1, chains+CHAIN_SIZE
+    move.b  #$FF, chains+CHAIN_SIZE+2
+    move.b  #1, proj_mode
+    clr.b   play_mode
+    moveq   #0, d1
+    moveq   #0, d2
+    bsr     live_setup_chan
+    lea     ch_state, a6
+    move.b  #15, c_cstep(a6)
+    move.b  #15, c_row(a6)
+    bsr     advance_ch
+    move.b  c_songpos(a6), $00FFD810
+    move.b  c_chain(a6), $00FFD811
+    move.b  c_cstep(a6), $00FFD812
+    move.b  #1, play_mode
+    move.b  #0, c_songpos(a6)
+    move.b  #0, c_chain(a6)
+    move.b  #15, c_cstep(a6)
+    move.b  #15, c_row(a6)
+    bsr     advance_ch
+    move.b  c_songpos(a6), $00FFD813
+    move.b  c_chain(a6), $00FFD814
+    move.b  c_cstep(a6), $00FFD815
+    clr.b   proj_mode
+    clr.b   play_mode
+    move.b  #0, c_songpos(a6)
+    move.b  #0, c_chain(a6)
+    move.b  #15, c_cstep(a6)
+    move.b  #15, c_row(a6)
+    bsr     advance_ch
+    move.b  c_songpos(a6), $00FFD816
+    move.b  c_chain(a6), $00FFD817
+    move.b  c_cstep(a6), $00FFD818
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
 SAVE_ROUNDTRIP = """    tst.b   $00FFD500
     bne.s   .tsrdone
     move.b  #1, $00FFD500
@@ -525,6 +882,47 @@ LOAD_BAD_RLE = """    tst.b   $00FFD500
     move.b  files_error, $00FFD503
     movem.l (sp)+, d0-d7/a0-a6
 .tlrdone:
+"""
+
+CONT_BAD_RELOAD = """    tst.b   $00FFD500
+    bne     .tcbrdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #$2A, song
+    bsr     dir_save
+    move.l  #DIR_BASE+14, d0
+    bsr     sram_at
+    eori.b  #1, (a1)                       ; make target slot 0 fail its checksum
+    move.b  #0, $A130F1
+    move.b  #1, proj_mode
+    move.b  #0, ch_state+c_track
+    move.b  #0, ch_state+c_instr
+    move.b  #0, ch_state+c_chain
+    move.b  #15, ch_state+c_row
+    move.b  #1, ch_state+c_type
+    move.l  #phrases, ch_state+c_phrase
+    move.b  #6, instrum+i_algo
+    move.b  #$30, phrases
+    move.b  #0, phrases+1
+    move.w  #1, cont_mask
+    bsr     cont_snapshot_all
+    move.b  #$31, phrases
+    move.b  #31, phrases+1
+    move.b  #4, instrum+(30*INSTR_SIZE)+i_algo
+    bsr     cont_plant_all                 ; active bridge borrows target slot 30
+    moveq   #0, d0
+    bsr     cont_do_load                   ; validation must fail before a new snapshot is taken
+    move.b  ch_state+c_chain, $00FFD100
+    move.b  carry_slot, $00FFD101
+    move.b  cont_active, $00FFD102
+    move.b  ch_state+c_instr, $00FFD103
+    move.b  instrum+(30*INSTR_SIZE)+i_algo, $00FFD104
+    move.b  carry_instr+i_algo, $00FFD105
+    move.b  carry_buf+1, $00FFD106
+    move.b  load_ok, $00FFD107
+    move.b  files_error, $00FFD108
+    movem.l (sp)+, d0-d7/a0-a6
+.tcbrdone:
 """
 
 SAVE_FREEZE = """    tst.b   $00FFD500
@@ -1149,6 +1547,11 @@ FILES_CONFIRM_CANCEL = """    tst.b   $00FFD500
 .tfccdone:
 """
 
+FILES_TITLE = """    move.b  #SCR_FILES, cur_screen
+    move.l  #$54455354, song_title          ; TEST
+    move.l  #$534F4E47, song_title+4        ; SONG
+"""
+
 FM_SIMULTANEOUS = """    tst.b   $00FFD500
     bne     .tfsdone
     move.b  #1, $00FFD500
@@ -1424,6 +1827,209 @@ FM_SSG_EG = """    tst.b   $00FFD820
 .tssgdone:
 """
 
+# FM/PERC SWEEP is a raw YM2612 F-number slide, not a semitone-table offset.
+# A non-zero SWEEP ignores pitch class, targeting C in the note/operator's octave.
+# $42 starts 16 internal units high (= 256 F-number steps) and decays by
+# two units/frame (= 32 F-number steps). $30 verifies the zero-rate hold case.
+FM_FNUM_SWEEP = """    tst.b   $00FFD860
+    bne     .tfswdone
+    move.b  #1, $00FFD860
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    clr.b   scale_key
+    clr.b   scale_type
+    lea     instrum, a0
+    clr.b   (i_type,a0)
+    move.b  #$42, (i_psweep,a0)
+    lea     ch_state, a6
+    clr.b   c_instr(a6)
+    clr.b   c_track(a6)
+    move.b  #1, c_type(a6)
+    clr.b   c_ympart(a6)
+    clr.b   c_ymchreg(a6)
+    move.b  #59, c_note(a6)                 ; B4: SWEEP must ignore pitch class and target C4 ($2284)
+    clr.b   c_ttsp(a6)
+    bsr     init_psweep                     ; $42 -> 16 units -> +256 F-number
+    move.b  c_psweep(a6), $00FFD861
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD862             ; expected high $23
+    move.b  ym_data+5, $00FFD863             ; expected low $84 ($284 + $100 = $384)
+    bsr     decay_psweep                     ; rate 2 -> 14 units -> +224 F-number
+    move.b  c_psweep(a6), $00FFD864
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD865             ; expected high $23
+    move.b  ym_data+5, $00FFD866             ; expected low $64 ($284 + $0E0 = $364)
+
+    move.b  #$30, (i_psweep,a0)              ; depth 3, rate 0: fixed +192 F-number
+    bsr     init_psweep
+    move.b  c_psweep(a6), $00FFD867
+    bsr     decay_psweep
+    move.b  c_psweep(a6), $00FFD868
+
+    move.b  #$1F, (i_psweep,a0)              ; faster than depth: must still emit the exact target once
+    bsr     init_psweep
+    bsr     decay_psweep
+    move.b  c_psweep(a6), $00FFD872           ; $80 = final target write pending
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD873             ; target C high $22
+    move.b  ym_data+5, $00FFD874             ; target C low $84
+    move.b  c_psweep(a6), $00FFD875           ; final write consumed -> inactive
+
+    move.b  #5, (i_type,a0)                  ; PERC/F3: sweep every CH3 operator equally
+    move.b  #1, (i_pbase,a0)
+    clr.b   (i_pmode,a0)
+    clr.b   instrum+INSTR_SIZE+i_type
+    move.w  #$2298, instrum+i_op
+    move.w  #$2298, instrum+i_op+FM_NPARM
+    move.w  #$2298, instrum+i_op+(2*FM_NPARM)
+    move.w  #$2298, instrum+i_op+(3*FM_NPARM)
+    move.w  #$2298, perc_live               ; deliberately different F-numbers and octave blocks
+    move.w  #$1ABC, perc_live+2
+    move.w  #$32FF, perc_live+4
+    move.w  #$0AB0, perc_live+6
+    move.b  #2, c_track(a6)
+    move.b  #16, c_psweep(a6)                ; each op -> its block's C F-number + $100
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     perc_freq_send
+    move.b  ym_data+5, $00FFD869             ; first operator high $23
+    move.b  ym_data+8, $00FFD86A             ; first operator low $98
+    move.b  ym_data+14, $00FFD86B
+    move.b  ym_data+17, $00FFD86C
+    move.b  ym_data+23, $00FFD86D
+    move.b  ym_data+26, $00FFD86E
+    move.b  ym_data+32, $00FFD86F
+    move.b  ym_data+35, $00FFD870
+    move.b  d5, $00FFD871                    ; four MUL/frequency groups + B0/B4 = 14 triples
+
+    clr.b   (i_type,a0)                      ; ordinary FM again
+    clr.b   (i_psweep,a0)                    ; $00: normal B4 pitch must remain intact
+    clr.b   c_track(a6)
+    clr.b   c_psweep(a6)
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD876             ; B4 = $24BF
+    move.b  ym_data+5, $00FFD877
+    move.b  #$0F, (i_psweep,a0)              ; non-zero with zero depth: immediate octave-C target
+    bsr     init_psweep
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD878             ; C4 = $2284
+    move.b  ym_data+5, $00FFD879
+    move.b  c_psweep(a6), $00FFD87A           ; no residual offset was armed
+    movem.l (sp)+, d0-d7/a0-a6
+.tfswdone:
+"""
+
+# B is deliberately overloaded by effective instrument type: FM/PERC use the packed XY
+# as a per-note FSWP override, WAVE retains bank select, and incompatible placements ignore it.
+FM_FSWP_COMMAND = """    tst.b   $00FFD87F
+    bne     .tfbc_done
+    move.b  #1, $00FFD87F
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    clr.b   (i_type,a0)                    ; instrument 0 = FM, stored FSWP $42
+    move.b  #$42, (i_psweep,a0)
+    move.b  #2, (INSTR_SIZE+i_type,a0)     ; instrument 1 = WAVE
+    move.b  #5, (2*INSTR_SIZE+i_type,a0)   ; instrument 2 = PERC
+    lea     ch_state, a6
+    clr.b   c_track(a6)
+    clr.b   c_instr(a6)
+    move.b  #1, c_type(a6)
+    move.b  #59, c_note(a6)                ; B4: active FSWP must target the octave's C
+    clr.w   c_fswpovr
+    clr.b   b_set
+    move.b  #$FF, c_wbank+5
+    lea     phrases, a1
+    move.b  #59, (a1)
+    clr.b   1(a1)                          ; row instrument 0 = FM
+    move.b  #2, 2(a1)                      ; B command
+    move.b  #$13, 3(a1)                    ; depth 1, rate 3
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  c_fswpcfg, $00FFD880
+    move.b  c_fswpovr, $00FFD881
+    move.b  c_fswpovr+1, $00FFD882
+    move.b  b_set, $00FFD883
+    move.b  c_psweep(a6), $00FFD884         ; depth 1 -> four internal units
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD885            ; C4 + 64 F-num = $22C4
+    move.b  ym_data+5, $00FFD886
+    bsr     decay_psweep
+    move.b  c_psweep(a6), $00FFD887         ; 4 - rate 3 = one unit
+
+    lea     phrases, a1
+    moveq   #0, d1
+    clr.b   3(a1)                          ; B00 disables FSWP for this note
+    clr.b   b_set
+    bsr     exec_cmd
+    move.b  c_fswpcfg, $00FFD888
+    move.b  c_fswpovr, $00FFD889
+    move.b  c_fswpovr+1, $00FFD88A
+    move.b  b_set, $00FFD88B
+    move.b  c_psweep(a6), $00FFD88C         ; $80 requests one normal-pitch update
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fm_freq_send
+    move.b  ym_data+2, $00FFD88D            ; normal B4 = $24BF
+    move.b  ym_data+5, $00FFD88E
+    move.b  c_psweep(a6), $00FFD88F         ; marker consumed
+
+    clr.b   b_set                           ; next ordinary note restores stored instrument FSWP
+    bsr     fswp_note_reset
+    bsr     get_fswp_cfg
+    move.b  d0, $00FFD890                   ; stored $42 visible again
+    move.b  c_fswpovr, $00FFD891
+    move.b  c_fswpovr+1, $00FFD892
+
+    move.b  #5, c_track(a6)                ; WAVE on F6: B still selects its bank
+    move.b  #1, c_instr(a6)
+    lea     phrases, a1
+    moveq   #0, d1
+    move.b  #1, 1(a1)
+    move.b  #$0A, 3(a1)
+    clr.b   b_set
+    bsr     exec_cmd
+    move.b  c_wbank+5, $00FFD893
+    move.b  b_set, $00FFD894
+    move.b  c_fswpovr+1, $00FFD895
+
+    move.b  #2, c_track(a6)                ; PERC is valid only on F3
+    move.b  #2, c_instr(a6)
+    lea     phrases, a1
+    moveq   #0, d1
+    move.b  #2, 1(a1)
+    move.b  #$24, 3(a1)
+    clr.b   b_set
+    bsr     exec_cmd
+    move.b  c_fswpcfg+2, $00FFD896
+    move.b  c_fswpovr+1, $00FFD897
+    move.b  b_set, $00FFD898
+
+    clr.w   c_fswpovr                      ; the same PERC instrument on F1 must be rejected
+    clr.b   b_set
+    clr.b   c_track(a6)
+    lea     phrases, a1
+    moveq   #0, d1
+    move.b  #$35, 3(a1)
+    bsr     exec_cmd
+    move.b  c_fswpovr+1, $00FFD899
+    move.b  b_set, $00FFD89A
+    movem.l (sp)+, d0-d7/a0-a6
+.tfbc_done:
+"""
+
 FM_PREWARM = """    tst.b   $00FFD500
     bne     .tfpdone
     move.b  #1, $00FFD500
@@ -1638,6 +2244,214 @@ GROUP_OWNERSHIP = """    tst.b   $00FFD500
 .tgodone:
 """
 
+FM_GROUP_OWNERSHIP = """    tst.b   $00FFD500
+    bne     .tfgdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    clr.b   (i_type,a0)                    ; instrument 0 = genuine FM, GROUP=CHORD
+    move.b  #1, (i_fgroup,a0)
+    move.b  #15, (i_hld,a0)
+    move.b  #15, (i_vol,a0)
+    move.b  #$FF, (i_tbl,a0)
+    move.b  #$47, fmgrp_chord              ; root + major third + fifth
+    lea     ch_state, a6                   ; F1 root
+    clr.b   c_instr(a6)
+    move.b  #48, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD8A0
+    move.b  fmgrp_owner+2, $00FFD8A1
+    move.b  ch_state+CHSIZE+c_note, $00FFD8A2
+    move.b  ch_state+(2*CHSIZE)+c_note, $00FFD8A3
+    move.b  ch_state+CHSIZE+c_instr, $00FFD8A4
+    move.b  ch_state+(2*CHSIZE)+c_instr, $00FFD8A5
+
+    lea     ch_state+CHSIZE, a6            ; explicit F2 note takes only F2 back
+    clr.b   c_instr(a6)
+    move.b  #60, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD8A6
+    move.b  fmgrp_owner+2, $00FFD8A7
+    lea     ch_state, a6                   ; next root note reclaims both
+    move.b  #50, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD8A8
+    move.b  fmgrp_owner+2, $00FFD8A9
+    move.b  ch_state+CHSIZE+c_note, $00FFD8AA
+    move.b  ch_state+(2*CHSIZE)+c_note, $00FFD8AB
+
+    lea     $00FFD8E0, a1                  ; grouped C00 releases/key-offs both followers
+    move.b  #$FF, (a1)
+    clr.b   1(a1)
+    move.b  #3, 2(a1)
+    clr.b   3(a1)
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  fmgrp_chord, $00FFD8AC
+    move.b  fmgrp_owner+1, $00FFD8AD
+    move.b  fmgrp_owner+2, $00FFD8AE
+    move.b  ch_state+CHSIZE+c_keyon, $00FFD8AF
+    move.b  ch_state+(2*CHSIZE)+c_keyon, $00FFD8B0
+
+    move.b  #$37, 3(a1)                    ; non-zero C reclaims an already sounding root
+    bsr     exec_cmd
+    move.b  fmgrp_owner+1, $00FFD8B1
+    move.b  fmgrp_owner+2, $00FFD8B2
+    move.b  ch_state+CHSIZE+c_note, $00FFD8B3
+    move.b  ch_state+(2*CHSIZE)+c_note, $00FFD8B4
+    move.b  #$70, 3(a1)                    ; zero low nibble mutes/releases only follower 2
+    bsr     exec_cmd
+    move.b  fmgrp_owner+1, $00FFD8B5
+    move.b  fmgrp_owner+2, $00FFD8B6
+    move.b  ch_state+CHSIZE+c_note, $00FFD8B7
+    move.b  ch_state+(2*CHSIZE)+c_keyon, $00FFD8B8
+
+    lea     ch_state+(4*CHSIZE), a6        ; F5 cannot lead: C remains its ordinary arpeggio
+    clr.b   c_instr(a6)
+    move.b  #48, c_note(a6)
+    move.b  #$47, 3(a1)
+    bsr     exec_cmd
+    move.b  c_chord+4, $00FFD8B9
+    move.b  fmgrp_owner+5, $00FFD8BA
+
+    lea     ch_state, a6                   ; cold grouped trigger: all three complete patches fit one tick
+    move.b  #$47, fmgrp_chord
+    move.b  #48, c_note(a6)
+    bsr     note_trigger
+    move.b  #$FF, pshadow
+    move.b  #$FF, pshadow+1
+    move.b  #$FF, pshadow+2
+    clr.b   patch_done
+    clr.b   fm_keypend
+    lea     ym_data, a5
+    moveq   #0, d5
+    lea     ch_state, a6
+    bsr     compose_fm
+    lea     ch_state+CHSIZE, a6
+    bsr     compose_fm
+    lea     ch_state+(2*CHSIZE), a6
+    bsr     compose_fm
+    bsr     flush_fm_keyons
+    move.b  patch_done, $00FFD8BB
+    move.b  ch_state+c_trig, $00FFD8BC
+    move.b  ch_state+CHSIZE+c_trig, $00FFD8BD
+    move.b  ch_state+(2*CHSIZE)+c_trig, $00FFD8BE
+    move.b  d5, $00FFD8BF
+
+    move.b  #SCR_INSTR, cur_screen         ; visual grid: HLD -> GROUP -> FSWP -> TSP
+    clr.b   cur_instr
+    move.b  #2, cur_row
+    clr.b   cur_col
+    moveq   #8, d2                         ; HLD + Right -> GROUP
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8C0
+    move.b  cur_col, $00FFD8C1
+    moveq   #2, d2                         ; GROUP + Down -> FSWP
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8C2
+    move.b  cur_col, $00FFD8C3
+    moveq   #2, d2                         ; FSWP + Down -> TSP
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8C4
+    move.b  cur_col, $00FFD8C5
+    moveq   #1, d2                         ; TSP + Up -> FSWP
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8C6
+    move.b  cur_col, $00FFD8C7
+    moveq   #1, d2                         ; FSWP + Up -> GROUP
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8C8
+    move.b  cur_col, $00FFD8C9
+    moveq   #4, d2                         ; GROUP + Left -> HLD
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8CA
+    move.b  cur_col, $00FFD8CB
+    move.b  #1, cur_row                    ; ROM LOAD + Down -> GROUP
+    move.b  #5, cur_col
+    moveq   #2, d2
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8CC
+    move.b  cur_col, $00FFD8CD
+    moveq   #1, d2                         ; GROUP + Up -> ROM LOAD
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8CE
+    move.b  cur_col, $00FFD8CF
+    move.b  #3, cur_row                    ; VOL + Right -> FSWP
+    clr.b   cur_col
+    moveq   #8, d2
+    bsr     move_cursor
+    move.b  cur_row, $00FFD8D0
+    move.b  cur_col, $00FFD8D1
+
+    lea     instrum, a0                    ; UNISON needs no C chord: same note, symmetric raw-FNUM spread
+    move.b  #FMGRP_UNISON, (i_fgroup,a0)
+    clr.b   fmgrp_chord
+    lea     ch_state, a6
+    move.b  #48, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD900
+    move.b  fmgrp_owner+2, $00FFD901
+    move.b  ch_state+CHSIZE+c_note, $00FFD902
+    move.b  ch_state+(2*CHSIZE)+c_note, $00FFD903
+    move.b  fmgrp_fine+1, $00FFD904
+    move.b  fmgrp_fine+2, $00FFD905
+    lea     $00FFD8E0, a1                  ; fixed modes keep Cxy as a synchronized ordinary arp
+    move.b  #$FF, (a1)
+    clr.b   1(a1)
+    move.b  #3, 2(a1)
+    move.b  #$37, 3(a1)
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  c_chord, $00FFD906
+    move.b  c_chord+1, $00FFD907
+    move.b  c_chord+2, $00FFD908
+    lea     ch_state+CHSIZE, a6            ; an explicit follower note drops its detune and ownership
+    move.b  #1, c_instr(a6)                ; instrument 1 is ordinary FM with GROUP=OFF
+    move.b  #60, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD909
+    move.b  fmgrp_fine+1, $00FFD90A
+    move.b  fmgrp_owner+2, $00FFD90B
+    move.b  fmgrp_fine+2, $00FFD90C
+
+    lea     instrum, a0                    ; OCTAVE places the two followers above and below
+    move.b  #FMGRP_OCTAVE, (i_fgroup,a0)
+    lea     ch_state, a6
+    move.b  #48, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD90D
+    move.b  fmgrp_owner+2, $00FFD90E
+    move.b  ch_state+CHSIZE+c_note, $00FFD90F
+    move.b  ch_state+(2*CHSIZE)+c_note, $00FFD910
+    move.b  fmgrp_fine+1, $00FFD911
+    move.b  fmgrp_fine+2, $00FFD912
+
+    move.b  #5, (i_fgroup,a0)              ; sanitizer rejects anything beyond the defined enum
+    bsr     sanitize_fm_ssg_record
+    move.b  (i_fgroup,a0), $00FFD913
+    move.b  #FMGRP_POWER, (i_fgroup,a0)     ; but preserves POWER as a valid saved mode
+    bsr     sanitize_fm_ssg_record
+    move.b  (i_fgroup,a0), $00FFD914
+
+    lea     instrum, a0                    ; POWER places followers at fifth and octave above
+    move.b  #FMGRP_POWER, (i_fgroup,a0)
+    lea     ch_state, a6
+    move.b  #48, c_note(a6)
+    bsr     note_trigger
+    move.b  fmgrp_owner+1, $00FFD915
+    move.b  fmgrp_owner+2, $00FFD916
+    move.b  ch_state+CHSIZE+c_note, $00FFD917
+    move.b  ch_state+(2*CHSIZE)+c_note, $00FFD918
+    move.b  fmgrp_fine+1, $00FFD919
+    move.b  fmgrp_fine+2, $00FFD91A
+
+    move.b  #12, cur_row                   ; leave GROUP selected for the rendered-frame visual check
+    move.b  #1, cur_col
+    movem.l (sp)+, d0-d7/a0-a6
+.tfgdone:
+"""
+
 # arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
 CONT_GLIDE_ARM = """    move.w  g_ticks, d0
     cmpi.w  #5, d0
@@ -1806,20 +2620,96 @@ def t_cont_bridge():
     return 'T1 bridged (c_vol=%d, reads its private phrase)' % t6vol
 
 def t_cont_quantize():
-    """CONT: an armed swap HOLDS until the carried voice's phrase downbeat, then fires
-    (beat-quantized), with the restarted song and carried bridge on the same row."""
+    """CONT: an armed swap holds until the carried voice's phrase downbeat, fires
+    beat-quantized, then leaves only its private phrase playing in LIVE mode."""
     rom = build_rom('cont_quantize', boot_inject=CONT_LOAD_SONG, frame_inject=CONT_ARM)
     held = run_rom(rom, 60)
     assert held[0xD763] == 1, 'CONT fired before a downbeat (cont_pending cleared early)'
     fired = run_rom(rom, 220)
     assert fired[0xD763] == 0, 'CONT never fired (still armed at frame 220)'
-    assert fired[0xE104] == 0xFE, 'fired but did not plant the bridge (c_chain=$%02X)' % fired[0xE104]
-    # SONG mode: the non-carried F1 (track 0) is RESTARTED on the new song, not silenced
-    assert fired[0xE014] != 0xFF, 'non-carried F1 silenced in SONG mode (should restart, c_chain=$%02X)' % fired[0xE014]
-    assert fired[0xE007] == fired[0xE0F7], \
-        'new F1 row %d is out of phase with carried T1 row %d' % (fired[0xE007], fired[0xE0F7])
-    assert fired[0xE0F4] > 0, 'carried T1 did not recover its audible row state (c_vol=%d)' % fired[0xE0F4]
-    return 'armed, fired on a downbeat; new F1 + carried T1 resume on the same audible row'
+    assert fired[0xE3E9] == 1, 'CONT did not force the loaded project into LIVE mode (%d)' % fired[0xE3E9]
+    assert fired[0xE104] == 0xFE, 'carried T1 left its private bridge without a manual launch'
+    assert fired[0xD76E] != 0xFF, 'carried T1 released its borrowed slot before a manual launch'
+    assert fired[0xE014] == 0xFF, 'non-carried F1 auto-started from the target song (c_chain=$%02X)' % fired[0xE014]
+    assert fired[0xE0F4] > 0, 'carried T1 bridge is silent (c_vol=%d)' % fired[0xE0F4]
+    return 'armed, fired on a downbeat, forced LIVE, and retained only the carried bridge'
+
+def t_cont_live_handover():
+    """LIVE target clears stale tracks, borrows only an unused slot, and a queued
+    same-row relaunch retires the bridge only after it has looped unqueued."""
+    ram = run_rom(build_rom('cont_live_handover', boot_inject=CONT_LIVE_HANDOVER), 30)
+    got = list(ram[0xD800:0xD808])
+    assert got == [29, 6, 3, 4, 0, 0, 0xFF, 1], 'LIVE plant/stale-state results %r' % got
+    assert list(ram[0xD808:0xD80D]) == [0xFE, 0, 0, 29, 0xFF], \
+        'unqueued bridge did not keep looping privately: %r' % list(ram[0xD808:0xD80D])
+    assert ram[0xD80D] == 2, 'same-row replacement was not armed for bridge end (%d)' % ram[0xD80D]
+    got = list(ram[0xD80E:0xD814])
+    assert got == [0, 0, 0, 0xFF, 5, 0xFF], 'manual LIVE bridge handoff results %r' % got
+    return 'old phrase looped; same-row target launch restored slot 29 and replaced the bridge'
+
+def t_cont_empty_target():
+    """An empty target cannot implicitly stop a carried private phrase."""
+    ram = run_rom(build_rom('cont_empty_target', boot_inject=CONT_EMPTY_TARGET), 30)
+    got = list(ram[0xD800:0xD807])
+    assert got == [0xFE, 0, 0, 1, 6, 0xFF, 4], 'empty-target bridge results %r' % got
+    return 'empty target left the source phrase and patch bridged; target patch remains backed up'
+
+def t_cont_no_free_slot():
+    """A fully referenced target bank drops the bridge without corrupting a slot."""
+    ram = run_rom(build_rom('cont_no_free_slot', boot_inject=CONT_NO_FREE_SLOT), 30)
+    got = list(ram[0xD800:0xD804])
+    assert got == [0xFF, 0xFF, 0, 4], 'full-bank fallback results %r' % got
+    return 'all 32 referenced slots protected; bridge declined and target bank preserved'
+
+def t_cont_multi_instr():
+    """Every IN change in a bridge phrase keeps its own source patch."""
+    ram = run_rom(build_rom('cont_multi_instr', boot_inject=CONT_MULTI_INSTR), 30)
+    planted = list(ram[0xD501:0xD508])
+    assert planted == [29, 28, 29, 6, 7, 0xFE, 1], \
+        'multi-instrument bridge flattened/remapped incorrectly: %r' % planted
+    restored = list(ram[0xD508:0xD50B])
+    assert restored == [4, 5, 0], 'target patch bank was not restored atomically: %r' % restored
+    return 'two row-level source patches stayed distinct; both target slots restored on retirement'
+
+def t_cont_global_isolation():
+    """Source modulation is bridge-only during overlap; target globals return afterward."""
+    ram = run_rom(build_rom('cont_global_isolation', boot_inject=CONT_GLOBAL_ISOLATION), 30)
+    active = list(ram[0xD520:0xD528])
+    assert active == [1, 7, 0xFD, 5, 2, 0, 0, 0], \
+        'source globals/echo isolation during overlap is wrong: %r' % active
+    phase0 = int.from_bytes(ram[0xD528:0xD52A], 'big')
+    phase1 = int.from_bytes(ram[0xD52A:0xD52C], 'big')
+    ran0 = int.from_bytes(ram[0xD52C:0xD52E], 'big')
+    ran1 = int.from_bytes(ram[0xD52E:0xD530], 'big')
+    assert (phase0, phase1, ran0, ran1) == (0x1000, 0x2000, 0x1020, 0x2000), \
+        'software LFOs crossed the bridge/target boundary: %r' % \
+        ((phase0, phase1, ran0, ran1),)
+    assert ram[0xD530] == 0, 'target echo still owned a channel during overlap'
+    restored = list(ram[0xD531:0xD539])
+    assert restored == [0, 2, 4, 8, 3, 1, 12, 0x55], \
+        'target globals/LFO configuration did not return: %r' % restored
+    assert int.from_bytes(ram[0xD53A:0xD53C], 'big') == 0, \
+        'target LFO runtime phase was not reset on activation'
+    assert ram[0xD53C] == 1, 'target echo did not reactivate after final bridge retirement'
+    return 'source LFO/transpose/scale isolated; target LFO/echo restored at final retirement'
+
+def t_live_contiguous():
+    """A prior chain audition cannot trap a LIVE track on the first chain."""
+    ram = run_rom(build_rom('live_contiguous', boot_inject=LIVE_CONTIGUOUS), 30)
+    got = list(ram[0xD800:0xD804])
+    assert got == [0, 1, 1, 0], 'LIVE contiguous block retained solo mode/stuck on row 0: %r' % got
+    return 'chain audition cleared; LIVE advanced row 0/chain 0 -> row 1/chain 1'
+
+def t_live_full_chain():
+    """A full 16-step chain advances the arrangement but loops in chain-solo."""
+    ram = run_rom(build_rom('live_full_chain', boot_inject=LIVE_FULL_CHAIN), 30)
+    arranged = list(ram[0xD810:0xD813])
+    solo = list(ram[0xD813:0xD816])
+    song = list(ram[0xD816:0xD819])
+    assert arranged == [1, 1, 0], 'full LIVE chain wrapped internally instead of advancing: %r' % arranged
+    assert solo == [0, 0, 0], 'full chain did not retain chain-solo looping: %r' % solo
+    assert song == [1, 1, 0], 'full SONG chain wrapped internally instead of advancing: %r' % song
+    return 'full chain advances row 0->1 in LIVE/SONG and still loops in chain-solo'
 
 def t_save_roundtrip():
     """SAVE commits a verified directory entry and LOAD restores the exact saved snapshot."""
@@ -1879,6 +2769,14 @@ def t_load_bad_rle():
     assert ram[0xD502] == 0, 'malformed RLE incorrectly reported success'
     assert ram[0xD503] == 1, 'malformed RLE status %d != CHECKSUM BAD' % ram[0xD503]
     return 'truncated RLE rejected before commit; current song retained'
+
+def t_cont_bad_reload():
+    """A rejected second CONT hop cannot overwrite an already-active bridge backup."""
+    ram = run_rom(build_rom('cont_bad_reload', boot_inject=CONT_BAD_RELOAD), 90)
+    got = list(ram[0xD100:0xD109])
+    assert got == [0xFE, 0, 1, 30, 6, 4, 30, 0, 1], \
+        'failed reload altered the active transition: %r' % got
+    return 'bad target rejected before snapshot; active phrase, source patch, and target backup retained'
 
 def t_save_freeze():
     """engine_tick performs no mutation while save/load has frozen the saved-data domain."""
@@ -2005,6 +2903,23 @@ def t_files_confirm_cancel():
     assert state == [5, 0, 2, 1], 'FILES initial/remembered cursor state %r' % state
     return 'timeout/nav/close cancel SURE?; first open is CANCEL; later opens remember the action'
 
+def t_files_title():
+    """FILES renders the currently loaded eight-character song title in its first row."""
+    rom = build_rom('files_title', boot_inject=FILES_TITLE)
+    ram = run_rom(rom, 150)
+    assert ram[0xE20B] == 12, 'test did not remain on FILES (screen %d)' % ram[0xE20B]
+    assert bytes(ram[0xD3B0:0xD3B8]) == b'TESTSONG', \
+        'working song title changed unexpectedly (%r)' % bytes(ram[0xD3B0:0xD3B8])
+    ppm = open(rom + '.ppm', 'rb').read()
+    body = ppm.split(b'\n', 3)[3]
+    lit = 0
+    for y in range(8, 16):                  # tile row 1
+        for x in range(14*8, 22*8):         # cols 14..21, the eight title cells
+            px = body[(y*320+x)*3:(y*320+x+1)*3]
+            lit += any(c > 32 for c in px)
+    assert lit > 40, 'FILES title area is blank (%d lit pixels)' % lit
+    return 'FILES row 1 rendered TESTSONG (%d lit pixels)' % lit
+
 def t_fm_simultaneous():
     """Warm patch shadows survive transport reset; cold F1/F2 prepare in one SCB with adjacent keys."""
     ram = run_rom(build_rom('fm_simultaneous', boot_inject=FM_SIMULTANEOUS), 35)
@@ -2044,18 +2959,39 @@ def t_fm_ssg_eg():
     restored = list(ram[0xD852:0xD85F])
     assert restored == [4, 0, 0x90, 8, 0, 0x94, 0x0A, 0, 0x98, 0x0F, 0, 0x9C, 0], \
         'FM S override restoration stream %r' % restored
-    return 'stored SG + editor; S mask routing; type guards; reserved rejection; next-note restoration'
+    return 'stored SSG + editor; S mask routing; type guards; reserved rejection; next-note restoration'
+
+def t_fm_fnum_sweep():
+    """FM/PERC SWEEP targets octave C, uses raw F-number, and preserves packed XY timing."""
+    ram = run_rom(build_rom('fm_fnum_sweep', boot_inject=FM_FNUM_SWEEP), 35)
+    got = list(ram[0xD861:0xD87B])
+    expect = [16, 0x23, 0x84, 14, 0x23, 0x64, 12, 12,
+              0x23, 0x84, 0x1B, 0x84, 0x33, 0x84, 0x0B, 0x84, 14,
+              0x80, 0x22, 0x84, 0, 0x24, 0xBF, 0x22, 0x84, 0]
+    assert got == expect, 'raw F-number sweep results %r' % got
+    return 'pitch class ignored; $42 descends; $30 holds; $1F lands; PERC keeps blocks; $00 stays pitched'
+
+def t_fm_fswp_command():
+    """Bxy overrides FSWP only for compatible FM/PERC instruments and preserves WAVE B."""
+    ram = run_rom(build_rom('fm_fswp_command', boot_inject=FM_FSWP_COMMAND), 35)
+    got = list(ram[0xD880:0xD89B])
+    expect = [0x13, 0, 1, 1, 4, 0x22, 0xC4, 1,
+              0, 0, 1, 1, 0x80, 0x24, 0xBF, 0,
+              0x42, 0, 0, 0x0A, 0, 0,
+              0x24, 4, 1, 0, 0]
+    assert got == expect, 'Bxy FSWP/type-routing results %r' % got
+    return 'FM override/disable/restore; WAVE bank retained; PERC F3-only guard'
 
 def t_fm_prewarm():
-    """Stopped-load prediction scans first chains, warms two FM patches per pass, and cancels on start."""
+    """Stopped-load prediction scans first chains, warms three FM patches per pass, and cancels on start."""
     ram = run_rom(build_rom('fm_prewarm', boot_inject=FM_PREWARM), 35)
     assert list(ram[0xD800:0xD807]) == [0x3F, 0, 1, 2, 3, 4, 5], \
         'FM prewarm plan %r' % list(ram[0xD800:0xD807])
-    assert list(ram[0xD807:0xD811]) == [0x3C, 60, 0, 1, 0x30, 60, 0, 60, 4, 5], \
+    assert list(ram[0xD807:0xD811]) == [0x38, 90, 0, 1, 0, 90, 0, 0, 4, 5], \
         'FM prewarm pacing/shadows %r' % list(ram[0xD807:0xD811])
     assert ram[0xD811] == 0x3B, 'FM audition did not consume track F3 prediction ($%02X)' % ram[0xD811]
     assert ram[0xD812] == 0, 'playback start did not cancel pending prewarm ($%02X)' % ram[0xD812]
-    return 'first-chain prediction; two patches/frame; FM audition consumes its channel; playback cancels rest'
+    return 'first-chain prediction; three patches/frame; FM audition consumes its channel; playback cancels rest'
 
 def t_cut_primes_insert():
     """Single-cell cuts prime the corresponding next-insert memory before clearing."""
@@ -2080,6 +3016,39 @@ def t_group_ownership():
     assert commands == [3, 0x80, 0, 3, 2], 'GROUP C00/reclaim/same-row priority %r' % commands
     return 'per-slave release; C00 release; later T1 reclaim; same-row slave priority'
 
+def t_fm_group_ownership():
+    """FM GROUP fans Cxy into the next two physical voices with PSG-style ownership."""
+    ram = run_rom(build_rom('fm_group_ownership', boot_inject=FM_GROUP_OWNERSHIP), 40)
+    assert list(ram[0xD8A0:0xD8A6]) == [1, 1, 52, 55, 0, 0], \
+        'FM GROUP initial cascade %r' % list(ram[0xD8A0:0xD8A6])
+    assert list(ram[0xD8A6:0xD8AC]) == [0, 1, 1, 1, 54, 57], \
+        'FM GROUP follower release/reclaim %r' % list(ram[0xD8A6:0xD8AC])
+    assert list(ram[0xD8AC:0xD8B1]) == [0, 0, 0, 0, 0], \
+        'FM GROUP C00 release %r' % list(ram[0xD8AC:0xD8B1])
+    assert list(ram[0xD8B1:0xD8B9]) == [1, 1, 53, 57, 1, 0, 57, 0], \
+        'FM GROUP C37/C70 behavior %r' % list(ram[0xD8B1:0xD8B9])
+    assert list(ram[0xD8B9:0xD8BB]) == [0x47, 0], \
+        'FM GROUP F5 type/range guard %r' % list(ram[0xD8B9:0xD8BB])
+    burst = list(ram[0xD8BB:0xD8C0])
+    assert burst[0:4] == [3, 0, 0, 0], 'FM GROUP cold patch burst deferred a voice %r' % burst
+    assert burst[4] <= 139, 'FM GROUP burst exceeded per-frame YM drain budget (%d)' % burst[4]
+    nav = list(ram[0xD8C0:0xD8D2])
+    assert nav == [12, 1, 12, 0, 5, 0, 12, 0, 12, 1, 2, 0, 12, 1, 1, 5, 12, 0], \
+        'FM GROUP visual navigation wrong %r' % nav
+    assert list(ram[0xD900:0xD906]) == [1, 1, 48, 48, 0xFE, 2], \
+        'FM GROUP UNISON note/detune spread wrong %r' % list(ram[0xD900:0xD906])
+    assert list(ram[0xD906:0xD909]) == [0x37, 0x37, 0x37], \
+        'FM GROUP fixed-mode C arp was not copied %r' % list(ram[0xD906:0xD909])
+    assert list(ram[0xD909:0xD90D]) == [0, 0, 1, 2], \
+        'FM GROUP explicit UNISON follower release wrong %r' % list(ram[0xD909:0xD90D])
+    assert list(ram[0xD90D:0xD913]) == [1, 1, 60, 36, 0, 0], \
+        'FM GROUP OCTAVE voicing wrong %r' % list(ram[0xD90D:0xD913])
+    assert list(ram[0xD913:0xD915]) == [0, 4], \
+        'FM GROUP mode sanitizer wrong %r' % list(ram[0xD913:0xD915])
+    assert list(ram[0xD915:0xD91B]) == [1, 1, 55, 60, 0, 0], \
+        'FM GROUP POWER voicing wrong %r' % list(ram[0xD915:0xD91B])
+    return 'CHORD ownership; UNISON +/-2; OCTAVE +/-12; POWER +7/+12; C sync; vertical GROUP navigation'
+
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
     back to the real groove (genmddj is groove-as-tempo, so tempo IS the scratch groove)."""
@@ -2102,7 +3071,8 @@ def t_boot_smoke():
     assert lit > 50, 'screen looks blank (%d lit probes)' % lit
     cur_screen = ram[0xE20B]
     assert cur_screen == 2, 'boot screen %d != SONG' % cur_screen
-    return 'boot renders SONG (%d lit probes)' % lit
+    assert ram[0xD762] == 4, 'CONT SLID boot default %d != 4' % ram[0xD762]
+    return 'boot renders SONG (%d lit probes); CONT SLID defaults to 4 bars' % lit
 
 TESTS = [
     ('boot_smoke',   t_boot_smoke),
@@ -2112,6 +3082,7 @@ TESTS = [
     ('save_freeze', t_save_freeze),
     ('load_bad_checksum', t_load_bad_checksum),
     ('load_bad_rle', t_load_bad_rle),
+    ('cont_bad_reload', t_cont_bad_reload),
     ('cursor_block', t_cursor_block),
     ('start_from_song_cursor', t_start_from_song_cursor),
     ('phrase_iteration', t_phrase_iteration),
@@ -2123,11 +3094,15 @@ TESTS = [
     ('cyclic_alloc', t_cyclic_alloc),
     ('files_confirm', t_files_confirm),
     ('files_confirm_cancel', t_files_confirm_cancel),
+    ('files_title', t_files_title),
     ('fm_ssg_eg', t_fm_ssg_eg),
+    ('fm_fnum_sweep', t_fm_fnum_sweep),
+    ('fm_fswp_command', t_fm_fswp_command),
     ('fm_simultaneous', t_fm_simultaneous),
     ('fm_prewarm', t_fm_prewarm),
     ('cut_primes_insert', t_cut_primes_insert),
     ('group_ownership', t_group_ownership),
+    ('fm_group_ownership', t_fm_group_ownership),
     ('dac_rate',     t_dac_rate),
     ('kit_endstop',  t_kit_endstop),
     ('kit_retrigger', t_kit_retrigger),
@@ -2136,7 +3111,14 @@ TESTS = [
     ('scb_delivery', t_scb_delivery),
     ('cont_bridge',  t_cont_bridge),
     ('cont_quantize', t_cont_quantize),
+    ('cont_live_handover', t_cont_live_handover),
+    ('cont_empty_target', t_cont_empty_target),
+    ('cont_no_free_slot', t_cont_no_free_slot),
+    ('cont_multi_instr', t_cont_multi_instr),
+    ('cont_global_isolation', t_cont_global_isolation),
     ('cont_glide',   t_cont_glide),
+    ('live_contiguous', t_live_contiguous),
+    ('live_full_chain', t_live_full_chain),
 ]
 
 def main():

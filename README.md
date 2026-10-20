@@ -148,6 +148,10 @@ progress. Working today:
 - **GROUP** — a TONE instrument on T1 drives T2/T3 for detuned unisons, fifths, power
   chords, octaves and chords from a single line. A new note on either slave voice takes that
   channel back independently; `C00` releases both voices from CHORD mode.
+- **FM GROUP** — an FM instrument on F1-F4 can cascade its patch into the next two FM
+  channels as a `Cxy` chord, a subtly detuned three-voice unison, an octave-above/below
+  stack, or a root/fifth/octave power chord. Explicit follower notes take their channel back,
+  and `C00` releases CHORD followers.
 - **Region-aware** — separate **VIDEO** (50/60 Hz → tempo + display) and **CLOCK** (NTSC/PAL
   crystal → pitch) options, so PAL, NTSC and modded (PAL-60) consoles all play in tune and in time.
 - **Save / load** (verified on a real cart), DE-9 hardware **sync** (OUT / PULSE / IN / IN24;

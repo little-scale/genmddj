@@ -219,7 +219,7 @@ different lengths create polymeters. From SONG, **Start** and **C+B** begin on t
 row, then return to that block's top when they loop (§2). Start from another editor screen begins
 every column at row 0.
 (In **LIVE** mode the SONG grid is a clip
-launcher — §9.)
+launcher — §10.)
 
 ### Quick duplicates and cloning
 
@@ -362,6 +362,35 @@ editor. Navigate with the plain D-pad; **B-hold + D-pad** edits the field under 
   commands and the AMS/FMS depths only do anything when it's non-zero.
 - **AMS / FMS** — this voice's LFO amplitude / frequency sensitivity.
 - **PAN** — L / R / LR (real per-channel FM stereo; the `O` command sets it per note).
+- **FSWP** `XY` — a downward raw **YM2612 F-number sweep** for kick drops and other
+  pitch transients. With FSWP enabled, the played note selects the **octave only**: the
+  sweep always ends on C, the lowest tuned F-number in that octave. It begins `X × 64`
+  F-number steps above that target and falls by `Y × 16` steps every video frame. For
+  example, `42` begins 256 F-number steps above the octave's C and returns at 32 steps per
+  frame. `00` is off and preserves normal note pitch; `X0` keeps a fixed offset, while `0Y`
+  goes directly to the octave's C. This makes the kick contour consistent when phrases use
+  different notes merely to select registers. On a PERC instrument, every active CH3
+  operator keeps its own octave block but uses the same C target and SWP contour. The
+  envelope has the same number of frames on PAL and NTSC hardware, so it lasts slightly
+  longer in real time on PAL.
+- **GROUP** — on **F1-F4**, the next two physical FM channels can follow using the same
+  instrument patch. **CHORD** takes their independent semitone offsets from `Cxy`: `x` is
+  the next channel and `y` the channel after that, so `C47` makes a major triad. A zero
+  nibble leaves that follower silent and `C00` releases both. **UNISON** plays the root on
+  all three channels with the two followers spread by −2 / +2 raw F-number units (roughly
+  a few cents either side). **OCTAVE** places the followers one octave above and one octave
+  below the root. **POWER** places the followers a perfect fifth and an octave above the root
+  (+7 / +12 semitones). In UNISON, OCTAVE and POWER, `Cxy` remains the ordinary arpeggio
+  and is copied to the owned followers so the stack moves together. **OFF** disables the cascade.
+  F5/F6 cannot lead because two later FM channels do not exist.
+
+FM GROUP ownership follows the same last-note-wins rule as PSG GROUP. A grouped root note
+claims each active follower; an explicit note on a follower takes only that physical channel
+back, including when both notes share a row. A later grouped root note reclaims it. GROUP uses
+the root instrument's stored patch, HLD, FSWP and aligned macro-table start on each follower;
+other live per-channel commands remain local to the channel where they are written. If that
+explicit follower note itself uses a GROUP-enabled instrument on F1-F4, it becomes a new root
+and can claim its own next two channels; the most recent root continues to win per channel.
 
 **The 4-operator grid** — one row per operator, in YM2612 register order (**OP1, OP3, OP2,
 OP4** — that's the chip's true slot order, so each row reads as the operator it drives):
@@ -373,13 +402,13 @@ OP4** — that's the chip's true slot order, so each row reads as the operator i
 - **D1R / D2R** — first decay / second (sustain) decay rate.
 - **SL / RR** — sustain level / release rate.
 - **AM** — enable this operator's amplitude modulation from the LFO.
-- **SG** — the operator's hardware **SSG-EG** envelope. `--` is off; `8`–`F` select the
+- **SSG** — the operator's hardware **SSG-EG** envelope. `--` is off; `8`–`F` select the
   eight YM2612 shapes. The bottom hint names the selected behaviour, and an enabled
   operator is labelled `OPn:X` beneath its envelope diagram (for example `OP3:A`). Use
   **AR `1F`** for predictable SSG-EG behaviour. On a carrier it produces audible amplitude
   motion; on a modulator it usually produces repeating timbral or brightness motion.
 
-| SG | Behaviour |
+| SSG | Behaviour |
 |---:|---|
 | `8` | Loop |
 | `9` | Play once |
@@ -472,7 +501,7 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 
 | Cmd | Name | What it does | Voices |
 |---|---|---|---|
-| `C` | Chord / arp | Loop through note, +x, +y semitones each tick (`C00` off); on a **T1 GROUP=CHORD** instrument it instead sets the T2/T3 chord (§5) | FM + PSG |
+| `C` | Chord / arp | Loop through note, +x, +y semitones each tick (`C00` off); on **T1 TONE GROUP=CHORD** it sets T2/T3, and on an **F1-F4 FM GROUP=CHORD** instrument it sets the next two FM voices (§5/§6) | FM + PSG |
 | `F` | Finetune | Signed micro-detune (period / F-number units) | PSG + FM |
 | `P` | Pitch bend | Continuous bend, signed rate per tick; persists until `P00` | PSG + FM |
 | `L` | Slide | Glide (portamento) to this note at a given rate | PSG + FM |
@@ -505,8 +534,16 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 | Cmd | Name | What it does | Voices |
 |---|---|---|---|
 | `N` | Noise | x = mode (0 white / 1 periodic), y = rate 0–3 | NOISE |
-| `B` | Wave bank | Select wave 0–F for the channel | WAVE |
+| `B` | FSWP / wave bank | FM/PERC: override FSWP with packed `xy`; WAVE: select wave `y` | FM / PERC / WAVE |
 | `S` | SSG-EG / sample rate | FM: `x` selects operators and `y` sets SSG-EG; KIT: DAC walk rate 0–3 | FM / KIT |
+
+On a genuine **FM or PERC instrument**, `Bxy` overrides the instrument's stored FSWP for
+that note, using the same packed control: `x` is the initial F-number offset and `y` is the
+return rate. `B00` explicitly disables FSWP for the note. The override persists through
+empty rows, but the next note without `B` restores the instrument setting. A `B` on an empty
+PHRASE row or in a TABLE restarts the currently sounding sweep immediately. PERC accepts the
+command only on its F3 hardware channel. On a WAVE instrument, `B` retains its existing wave-
+bank meaning; incompatible instrument/channel combinations ignore it.
 
 On a genuine **FM instrument**, `Sxy` is a per-note SSG-EG override. The high nibble is a
 logical operator mask: bit `1` = OP1, `2` = OP2, `4` = OP3 and `8` = OP4, so `F` selects
@@ -515,7 +552,7 @@ for the eight hardware shapes shown in the INSTR editor. For example, `S58` sele
 OP3 and gives both shape `8`; `SF0` temporarily turns SSG-EG off for every operator.
 
 The override affects only that FM channel and does not edit the instrument. A following
-note without `S` restores the instrument's stored `SG` settings. An `S` on an empty phrase
+note without `S` restores the instrument's stored `SSG` settings. An `S` on an empty phrase
 row or in a TABLE can reshape the currently sounding FM note. A zero operator mask or the
 reserved shape values `1`–`7` are ignored. On a **KIT instrument on F6**, `S00`–`S03` retain
 their existing sample-rate meaning. `S` is ignored for WAVE, TONE, NOISE and PERC instruments,
@@ -601,12 +638,46 @@ reads **LIVE**). Each track loops its chain independently, and you trigger chang
 A launched track shows its own playhead and loops the top of its contiguous chain group on
 an empty cell. Switch back to **MODE: SONG** for normal start-to-finish playback.
 
+### Continuous song handover (CONT)
+
+CONT lets selected tracks from the playing song continue while a different saved song is
+loaded. It is a live-performance bridge rather than an automatic arrangement change: the old
+material keeps playing, and you decide when each target-song clip takes over.
+
+1. While the source song is playing, go to SONG and place the cursor in each track you want
+   to carry. **Hold A and tap C** to toggle its CONT flag. A `*` beside the track name means
+   it is armed.
+2. If required, set **PROJECT → SLID** to the tempo-transition length: `0` is immediate and
+   `1`–`16` is the number of bars. SLID defaults to `4`, is a performance setting rather than
+   saved song data, and is ignored while genmddj is following an external clock.
+3. Open FILES, select the target song, choose **LOAD**, and complete the normal two-tap
+   confirmation. The load is queued and fires when the lowest-numbered armed track next reaches
+   phrase row `0`; FILES reports the queued transition.
+4. After the swap, genmddj is in LIVE mode. Each carried track is marked `>` and loops a private
+   copy of the source phrase it was playing. Target-song tracks do **not** start automatically.
+5. Return to SONG and use **C + B** on a populated target cell to bring that track in. On a
+   carried track, the target clip replaces the old phrase at the next phrase boundary. Use
+   **C + B** on an empty cell to request a quantized stop.
+
+The source song's global software-LFO/YM-LFO state, transpose and scale remain in force while
+any old phrase is still bridged; the target song's values take over after the last bridge retires.
+Target echo is held inactive during the overlap for the same reason. Pressing Start to stop the
+transport retires every bridge and restores any target instruments temporarily displaced by it.
+
+CONT preserves all FM/TONE/NOISE/KIT/PERC instruments referenced by each carried phrase,
+including PERC's FM base patches. It never overwrites an instrument slot used by the target song.
+If the target has no safe temporary slots, the affected bridge is declined cleanly. WAVE
+instruments cannot currently be carried because the shared wave bank belongs to the newly loaded
+song. CONT carries the current 16-row phrase, not the source chain progression; active TABLE state
+is not carried across the load.
+
 ---
 
 ## 11. Saving & loading — the FILES screen
 
 Songs live in the cartridge's battery-backed save RAM (or your emulator's `.sav` file).
-Reach FILES with **C-hold + Down** from SONG. Playback stops while you're here.
+Reach FILES with **C-hold + Down** from SONG. The header shows the currently loaded song name,
+independently of the save slot highlighted in the list.
 
 FILES shows a **packed list** of your saved songs (16 per page, `Pn/m`), each with its
 8-character name and stored size in KB, then a trailing **`(EMPTY)`** slot whenever there's
@@ -633,7 +704,8 @@ Every action below requires **two B taps** within the confirmation window; the f
   empty slot, creates a new file). *Saving only happens when you press SAVE* — edits aren't
   auto-saved, so save often.
 - **LOAD** — load the selected song. On the **empty** slot, blanks the working song for a
-  fresh start.
+  fresh start. A normal load stops playback. If playback is running and one or more SONG tracks
+  have CONT flags, loading a saved slot instead queues the live handover described in §10.
 - **CLEAR** — delete the slot and close the gap (remaining songs slide down).
 - **PURGE PHRASE / PURGE CHAIN** — blank phrases / chains **not reachable** from the SONG, so they
   drop out of the next save. Acts on the **working** song (save afterwards to bank it). The

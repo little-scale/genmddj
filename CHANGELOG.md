@@ -2,6 +2,74 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## Unreleased
+
+## v0.25 — 2026-10-21
+
+### Added
+- The FILES header now shows the currently loaded song name, so the working song remains
+  identifiable while browsing or preparing a live LOAD.
+- FM instruments now have an **OFF / CHORD / UNISON / OCTAVE / POWER GROUP** field stored in the
+  formerly reserved final byte of their existing 64-byte record. On F1-F4, CHORD uses `Cxy`
+  to play the same patch on the next two physical FM channels at +x / +y semitones; a zero
+  nibble leaves that follower silent and `C00` releases both. UNISON spreads those followers
+  by −2 / +2 raw F-number units, OCTAVE places them one octave above and below, and POWER
+  adds a perfect fifth and octave (+7 / +12); ordinary `Cxy` arpeggios move the whole fixed
+  stack together. Explicit notes on a follower take that
+  channel back until the next grouped root note, matching the established PSG GROUP ownership
+  model. F5/F6 cannot lead a three-voice group.
+  The editor presents GROUP directly above FSWP, with matching vertical cursor navigation and
+  mutually exclusive selection highlighting.
+- Phrase/TABLE command **`Bxy`** now provides a type-safe, per-note FSWP override for FM and
+  PERC instruments, using the same packed depth/rate format as the instrument field. `B00`
+  disables the sweep for that note, a later note without `B` restores the stored setting, and
+  rest/TABLE commands can restart a sounding sweep. WAVE instruments retain their established
+  `B` wave-bank command; incompatible instrument/channel combinations ignore it.
+
+### Changed
+- The bounded FM patch scheduler now admits three complete cold patches per tick, allowing an FM
+  GROUP root and both followers to start together while remaining within the Z80 mailbox's measured
+  per-frame drain budget. Denser unrelated cold-note rows continue to serialize after that limit.
+- The FM operator-grid column heading is now **SSG** instead of **SG**, using the available
+  right-edge space to make its SSG-EG purpose clearer.
+- CONT song loads now always enter **LIVE** mode and carry only the source tracks marked with
+  `*`. The target song's tracks remain stopped until they are launched by the performer; launching
+  a populated target clip replaces that track's bridge at its next phrase boundary, while an empty
+  target cell leaves the old phrase playing until an explicit stop is requested.
+- CONT's performance-only **SLID** setting now defaults to four bars. It moves from the source
+  groove tempo toward the target groove tempo once per bar; `0` changes immediately, and the glide
+  is disabled while genmddj is following an external clock.
+- The FM and PERC sweep field is now labelled **FSWP** (F-number sweep) in the instrument
+  editor, distinguishing it from the PSG instrument's separate `SWP` control.
+- FM and PERC **FSWP** now slides the YM2612's raw F-number smoothly instead of stepping
+  through semitones. Any non-zero FSWP uses the played note only to select an octave and
+  returns to that octave's C F-number, giving kick instruments a repeatable landing pitch;
+  `00` retains normal pitched-note behaviour. The packed `XY` control and envelope duration
+  remain compatible: `X` sets depth in 64-F-number steps and `Y` sets the return rate in
+  16-F-number steps per video frame. PERC keeps each CH3 operator's octave while applying
+  the same C-relative contour to all four.
+
+### Fixed
+- CONT now validates a target save before disturbing the playing song. A corrupt or malformed
+  target leaves the source song and any active handover intact.
+- Carried CONT phrases preserve every distinct instrument they reference, including the currently
+  sounding patch and PERC base-patch dependencies. Temporary patches use only target-bank slots
+  that are not referenced by the target song, and the displaced target patches are restored when
+  the last bridge ends or transport stops. If no safe slots are available, or the source patch is
+  WAVE-based, that bridge is declined instead of overwriting target data.
+- CONT overlap now keeps the source song's software-LFO state, YM global LFO, transpose and scale
+  active for carried voices, suspends target echo during the overlap, and restores the target song's
+  global state when the final bridge retires.
+- LIVE launches clear stale CHAIN/PHRASE solo state, advance through complete 16-step chains, and
+  continue down each track's contiguous SONG block. Same-row target launches can replace a bridge,
+  and loading an empty target cell no longer stops it accidentally.
+- FM and PERC FSWP now emits its final zero-offset frequency update, so fast sweeps return
+  to the intended note instead of stopping on their last non-zero offset.
+
+### Tools
+- The browser instrument patcher can view and edit the new FM GROUP field. Native `.gmi` data
+  preserves it, while TFI/VGI imports and type changes initialize it safely.
+
 ## v0.24 — 2026-10-10
 
 ### Added

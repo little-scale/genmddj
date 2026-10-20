@@ -9,7 +9,8 @@
 #
 # Sections map to the field layout in src/main.asm:
 #   [COMMON] rows 0-1 for every type   : INST selector, TYPE
-#   [FM]     voice_lbl (rows 2+)        : HLD VOL PAN TSP TBL TBS ALGO FB AMS FMS SWEEP
+#   [FM]     voice_lbl (rows 2+)        : HLD VOL PAN TSP TBL TBS ALGO FB AMS FMS FSWP
+#            GROUP above FSWP (same logical row, second cursor cell; handled directly by src/main.asm)
 #   [FM.OP]  op grid columns (screen)   : MUL DT TL RS AR D1 D2 RR SL AM SG
 #   [TONE]   psg_off (rows 2+)          : VOL ATK HLD DCY TSP SWP VIB TRM TBL TBS MODE RATE
 #   [NOISE]  psg_off (rows 2+)          : same set as TONE
@@ -35,7 +36,7 @@ OP1 SELF-FEEDBACK, 0-7
 ################################### 
 AMP MOD SENS, 0-3, GLOBAL LFO
 PITCH MOD SENS, 0-7, GLOBAL LFO
-PITCH SWEEP, DEPTH | RATE
+OCTAVE-C F-NUM SWEEP, DEPTH | RATE
 
 [FM.OP]
 MULTIPLE OF FUNDAMENTAL: 0-F
@@ -95,4 +96,13 @@ TRANSPOSE, IN SEMITONES
 
 [PERC]
 CH3 4-OP MODE, LOAD BASE PATCH
-PER-OPERATOR FREQUENCY
+FIXED FREQ OR PITCHED NOTES
+NOTE LENGTH, LOWER IS SHORTER
+F-NUM SWEEP, DEPTH | RATE
+TABLE TO RUN, -- FOR OFF OR 00-EF
+TABLE SPEED, 0 FOR NOTE OR TICKS
+ALGORITHM FROM THE BASE PATCH
+OP1 FREQUENCY
+OP3 FREQUENCY
+OP2 FREQUENCY
+OP4 FREQUENCY

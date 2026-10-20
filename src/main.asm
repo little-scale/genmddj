@@ -28,7 +28,7 @@ NCH        equ 10                  ; F1-F6 (FM) + T1-T3 (square) + NO (noise)
 CHSIZE     equ 40                  ; even (keeps the long c_phrase word-aligned)
 ch_state   equ $00FFE000           ; NCH * CHSIZE = 400 bytes ($FFE000-$FFE190)
 c_note     equ 0
-c_psweep   equ 1                    ; FM pitch sweep: current downward offset in semitones (decays to 0)
+c_psweep   equ 1                    ; FM sweep: low 7 bits = 16-F-num units; bit7 = final target write pending
 c_period   equ 2                    ; word
 c_vol      equ 4
 c_estate   equ 5
@@ -88,6 +88,10 @@ ctap_active equ $00FFD362          ; C paste gesture: C is currently held
 ctap_dirty equ $00FFD363           ; another control/select action contaminated this C tap
 ctap_frame equ $00FFD364           ; g_ticks at the last clean C tap (word)
 ctap_addr  equ $00FFD366           ; field address of the last clean C tap (long)
+fmgrp_owner equ $00FFD36A          ; FM GROUP: per-FM-voice owner token (0=free, 1..4=F1..F4 root)
+fmgrp_chord equ $00FFD370          ; FM GROUP: Cxy offsets latched independently for roots F1..F4
+fmgrp_busy  equ $00FFD374          ; FM GROUP: synthetic follower trigger guard (prevents recursive groups)
+fmgrp_fine  equ $00FFD375          ; FM GROUP: signed raw-F-number detune per FM voice (UNISON followers)
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -134,15 +138,14 @@ DBLTAP_FRAMES equ 24               ; max frames between B-taps to count as a dou
 pshadow    equ $00FFE3B4           ; per-channel (c_track 0-9) last FM instrument patched ($FF=none)
 patch_done equ $00FFE3BE           ; count of FM operator patches emitted this tick (budget MAXPATCH/tick)
 fm_keypend equ $00FFE3BF           ; bits 0-5: FM key-ons prepared this tick; appended together at SCB tail
-MAXPATCH   equ 2                   ; max full operator patches per tick. Dense multi-channel repatch rows
-                                   ;   serialise across this many ticks (was hard 1/tick). Ceiling ~3-4:
+MAXPATCH   equ 3                   ; max full operator patches per tick. FM GROUP needs root + two followers
+                                   ;   to become audible on one tick; denser rows serialise after three. Ceiling ~3-4:
                                    ;   each patch is 30 triples and the whole SCB must flush inside one
                                    ;   frame (~139-triple drain budget with the su_fin busy guard).
-PATCH_CAP  equ 48                  ; max ym_count before emitting a 30-write patch. A cold two-note row
-                                   ;   reaches d5=41 before F2's patch; 48 admits it, MAXPATCH blocks F3.
-YM_CAP     equ 64                  ; max ym_count before a note's freq/key (per-tick work budget; raised
-                                   ;   with PATCH_CAP so 2 patches + keys don't spuriously defer same-instr
-                                   ;   key-ons. Buffer at $1000 holds 256; 64 triples flush in ~6.8 ms)
+PATCH_CAP  equ 78                  ; start a 30-write patch only while the resulting grouped burst stays
+                                   ;   comfortably below the measured ~139-triple/frame Z80 drain budget
+YM_CAP     equ 112                 ; room for three patches + frequency/key writes in one frame; the mailbox
+                                   ;   holds 256 triples, while 112 remains inside the per-frame drain budget
 lq_b0      equ $00FFE190           ; Q command: per-channel (c_track 0-9) live $B0 value (FB<<3|ALGO)
 lq_dirty   equ $00FFE19A           ; Q command: per-channel flag -> emit lq_b0 for this channel
 lx_vol     equ $00FFE1A4           ; X command: per-channel live carrier volume 0-15
@@ -234,7 +237,7 @@ song_edit_ctr equ $00FFD75D        ; frames remaining for the status readout
 song_edit_pending equ $00FFD75E    ; foreground request: 0 none, 1 close gap, 2 insert clipboard
 proj_tmpo  equ $00FFE3E7           ; PROJECT: tempo (BPM)
 proj_tsp   equ $00FFE3E8           ; PROJECT: master transpose (signed)
-proj_mode  equ $00FFE3E9           ; PROJECT: play mode 0=SONG 1=CHAIN 2=PHRASE
+proj_mode  equ $00FFE3E9           ; PROJECT mode: 0=SONG, 1=LIVE
 proj_slot  equ $00FFE3EA           ; PROJECT: save slot 1..8
 cur_wave   equ $00FFE3EC           ; WAVE screen: which wave (0-15)
 cur_wstep  equ $00FFE3ED           ; WAVE screen: step cursor (0-31)
@@ -336,6 +339,7 @@ NCHAINS    equ 128                  ; chains pool count (bumped 96->128; 1-byte 
 ;     survives a live load. Sentinels are off-grid so the arranger can never produce them. ---
 CONT_BRIDGE equ $FE                 ; c_chain sentinel = "this voice is a CONT bridge" (>= NCHAINS; != $FF inactive)
 NCARRY      equ NCH                 ; max simultaneous carries = every track (cont_mask flags each track on/off)
+CARRY_NINSTR equ 19                 ; distinct source instruments retained across all active bridge phrases
 NGROOVES    equ 16                  ; real grooves 0..15; groove_sel==16 selects cont_scratch_grv (the glide)
 cont_mask        equ $00FFD760      ; word: bit t set = track t carries across the next load
 cont_slid        equ $00FFD762      ; byte: tempo-glide length in bars (0=instant, 1..16)
@@ -350,10 +354,22 @@ glide_from       equ $00FFD773      ; byte: old song average frames-per-row
 glide_to         equ $00FFD774      ; byte: new song average frames-per-row
 glide_acc        equ $00FFD776      ; word: Bresenham accumulator for the per-bar rung step
 cont_scratch_grv equ $00FFD778      ; 16 bytes: the scratch groove rewritten per bar during the glide
-carry_buf        equ $00FFD790                    ; NCARRY*PHRASE_SIZE: snapshotted phrases (survives the load)
-carry_instr      equ carry_buf + NCARRY*PHRASE_SIZE ; NCARRY*64: snapshotted instrument records (auto-scales with NCARRY)
-carry_row        equ carry_instr + NCARRY*64       ; NCARRY bytes: snapshotted c_row (within-phrase phase, for beat-match)
-CONT_RAM_END     equ carry_row + NCARRY            ; guard (INSTR_SIZE=64 literal): stay below perc_live
+cont_used        equ $00FFD788      ; long: target-song instrument slots that CONT must not borrow
+carry_buf        equ $00FFD790                         ; NCARRY*PHRASE_SIZE: snapshotted phrases
+carry_instr      equ carry_buf + NCARRY*PHRASE_SIZE   ; CARRY_NINSTR source records, then target backups while bridged
+carry_borrow     equ carry_instr + CARRY_NINSTR*64    ; borrowed target slot per retained source instrument
+carry_row        equ carry_borrow + CARRY_NINSTR      ; NCARRY bytes: snapshotted within-phrase row
+carry_curinst    equ carry_row + NCARRY               ; NCARRY bytes: source c_instr at the boundary
+carry_map        equ carry_curinst + NCARRY           ; 32 bytes: source instrument -> carry pool index / $FF
+carry_icount     equ carry_map + 32                    ; number of retained source instrument records
+carry_lfo_cfg    equ carry_icount + 1                  ; source software-LFO configuration (16*6 bytes)
+carry_lfo_phase  equ carry_lfo_cfg + 96                ; source software-LFO phases (16 words)
+carry_g_lfo      equ carry_lfo_phase + 32              ; source YM2612 global LFO setting
+carry_proj_tsp   equ carry_g_lfo + 1                   ; source master transpose
+carry_scale_key  equ carry_proj_tsp + 1                ; source scale root
+carry_scale_type equ carry_scale_key + 1               ; source scale type
+cont_active      equ carry_scale_type + 1              ; number of currently planted CONT bridges
+CONT_RAM_END     equ (cont_active+2)&$FFFFFFFE         ; align following player_mask word; keep below perc_live
     ifgt CONT_RAM_END-$00FFDFE0
         fail "CONT RAM overruns into perc_live ($FFDFE0) -- shrink NCARRY or relocate"
     endc
@@ -363,7 +379,10 @@ c_ssgmask    equ player_mask+2               ; FM S command: active logical-oper
 c_ssgmode    equ c_ssgmask+NCH               ; FM S command: live SSG-EG shape (0 or 8-F)
 c_ssgdirty   equ c_ssgmode+NCH               ; FM S command: operators whose $9x registers need updating
 s_set        equ c_ssgdirty+NCH               ; FM S command occurred on this phrase row (keep override on note-on)
-PLAYER_RAM_END equ s_set+1
+c_fswpcfg    equ s_set+1                      ; B command: per-channel packed FSWP override value
+c_fswpovr    equ (c_fswpcfg+NCH+1)&$FFFFFFFE  ; aligned word: bit per track whose current note uses the B override
+b_set        equ c_fswpovr+2                  ; valid FM/PERC B command occurred on this phrase row
+PLAYER_RAM_END equ b_set+1
     ifgt PLAYER_RAM_END-$00FFDFE0
         fail "player/command state overruns into perc_live ($FFDFE0)"
     endc
@@ -428,13 +447,20 @@ i_hld      equ 6                    ; gate time: note-off after HLD*2 ticks; $F 
 i_vol      equ 7                    ; instrument volume 0-15 (attenuates carriers); $F = full
 i_op       equ 8                    ; 4 ops x 10: MUL DT TL RS AR AM/SSG D1 D2 RR SL
 FM_NPARM   equ 10                   ; stored bytes/operator (SSG is packed into AM bits 7-4)
-FM_NCOL    equ 11                   ; displayed fields/operator: the 10 above + SG
+FM_NCOL    equ 11                   ; displayed fields/operator: the 10 above + SSG
 ; --- PERC type (CH3 special mode): reuses the record -- base instr ref + per-op freq/mul/dt ---
 i_pbase    equ 1                    ; PERC: base instrument # (borrows algo/fb/TL/envelopes; reuses i_algo)
 p_fnum     equ 0                    ; PERC op: F-number word (block<<11 | 11-bit F-number)
 p_mul      equ 2                    ; PERC op: frequency multiplier 0-15
 p_dt       equ 3                    ; PERC op: detune 0-7
 i_pmode    equ 63                   ; PERC: 0 = fixed-frequency, 1 = pitched (note+C-driven chord)
+i_fgroup   equ 63                   ; FM GROUP mode (type-specific union with PERC MODE)
+FMGRP_OFF     equ 0
+FMGRP_CHORD   equ 1
+FMGRP_UNISON  equ 2
+FMGRP_OCTAVE  equ 3
+FMGRP_POWER   equ 4
+FMGRP_DETUNE  equ 2                 ; UNISON follower spread in raw YM F-number units (-2 / +2)
 ; PSG (TONE/NOISE) fields overlay the FM-op bytes (an instrument is FM or PSG, never both)
 ip_vol     equ 8                    ; PSG peak/hold volume 0-F
 ip_atk     equ 9                    ; attack: ticks per volume step up (0 = instant)
@@ -489,8 +515,8 @@ i_kit      equ 50                   ; KIT instrument: which sample kit (0..7)
 i_gain     equ 51                   ; KIT attenuation: 0=full, 1=/2, 2=/4, 3=/8, 4=/16, 5=mute
 i_rate     equ 52                   ; KIT rate: 0=1x 1=2x 2=4x 3=0.5x (0 = default)
 i_tsp      equ 53                   ; FM per-instrument transpose, signed semitones (channel item)
-i_psweep   equ 62                   ; FM pitch sweep: hi nibble = depth (x4 semis, downward), lo nibble = rate/tick
-i_name     equ 54                   ; 8-char name (patcher metadata; engine ignores 54-63)
+i_psweep   equ 62                   ; FM pitch sweep: hi nibble = depth (x64 F-num), lo nibble = rate (x16 F-num/tick)
+i_name     equ 54                   ; 8-char name (patcher metadata; engine ignores 54-61)
 NITYPE     equ 6
 NPHRASE_ED equ NPHRASES-1           ; highest phrase the A+Up/Down flip reaches (full pool, 0..191)
 NCHAIN_ED  equ NCHAINS-1            ; highest chain the A+Up/Down flip reaches (0..127)
@@ -650,6 +676,11 @@ Start:
     move.b  #0, ctap_active
     move.b  #0, ctap_dirty
     move.l  #0, ctap_addr
+    lea     fmgrp_owner, a0                ; FM GROUP starts with no owners, chords or detune offsets
+    moveq   #16, d0                        ; 6 owners + 4 chords + busy guard + 6 fine offsets = 17 bytes
+.clr_fmgrp:
+    clr.b   (a0)+
+    dbra    d0, .clr_fmgrp
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
     move.b  #0, song_edit_msg             ; no provisional SONG edit warning at boot
@@ -677,7 +708,8 @@ Start:
     move.b  #0, rom_slot                 ; INSTR ROM factory slot
     move.b  #0, playing                  ; boot stopped
     move.w  #0, cont_mask                 ; CONT boots OFF (a per-set performance choice, not persisted)
-    move.b  #0, cont_slid
+    move.b  #4, cont_slid                  ; default CONT tempo glide: four bars (performance-only, not saved)
+    move.b  #0, cont_active                ; no source bridges exist at cold start
     move.b  #0, scale_key                 ; SCALE defaults to C CHROMATIC (no snap); loaded songs override via globals
     move.b  #0, scale_type
     move.b  #0, cont_pending
@@ -879,8 +911,11 @@ VBlankInt:
     lea     str_md_live, a1
 .nm_show:
     bsr     print_at
-    cmpi.b  #SCR_SONG, cur_screen          ; SONG: show the current song name (past the page + track-name slots)
+    cmpi.b  #SCR_SONG, cur_screen          ; SONG/FILES: keep the loaded song identity visible
+    beq.s   .nm_title                       ; in the same first-row position on both screens
+    cmpi.b  #SCR_FILES, cur_screen
     bne.s   .nm_nosg
+.nm_title:
     move.l  #$409C0003, (a0)               ; row 1, col 14
     lea     song_title, a1
     moveq   #8-1, d1
@@ -2122,6 +2157,44 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     move.b  #0, cur_col
     rts
 .vg_grid:
+    cmpi.b  #NVOICE+1, cur_row             ; FSWP/GROUP share logical row 12; GROUP is drawn above FSWP
+    bne     .vg_normal
+    tst.b   cur_col
+    bne.s   .vg_group
+    btst    #0, d2                          ; FSWP + Up -> GROUP
+    beq.s   .vg_fswp_down
+    move.b  #1, cur_col
+    rts
+.vg_fswp_down:
+    btst    #1, d2                          ; FSWP + Down -> TSP
+    beq.s   .vg_fswp_left
+    move.b  #5, cur_row
+    clr.b   cur_col
+    rts
+.vg_fswp_left:
+    btst    #2, d2                          ; FSWP + Left -> VOL
+    beq     .vg_x                           ; Right edge stays on FSWP
+    move.b  #3, cur_row
+    clr.b   cur_col
+    rts
+.vg_group:
+    btst    #0, d2                          ; GROUP + Up -> ROM LOAD
+    beq.s   .vg_group_down
+    move.b  #1, cur_row
+    move.b  #5, cur_col
+    rts
+.vg_group_down:
+    btst    #1, d2                          ; GROUP + Down -> FSWP
+    beq.s   .vg_group_left
+    clr.b   cur_col
+    rts
+.vg_group_left:
+    btst    #2, d2                          ; GROUP + Left -> HLD
+    beq     .vg_x                           ; Right edge stays on GROUP
+    move.b  #2, cur_row
+    clr.b   cur_col
+    rts
+.vg_normal:
     move.b  cur_row, d0                      ; source row (for the bank-column choice)
     moveq   #0, d1
     move.b  cur_row, d1
@@ -2158,6 +2231,13 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
     move.b  #5, cur_col
     rts
 .vg_c0:
+    cmpi.b  #NVOICE+1, cur_row              ; HLD + Right lands on GROUP; other routes land on FSWP
+    bne.s   .vg_c00
+    cmpi.b  #2, d0
+    bne.s   .vg_c00
+    move.b  #1, cur_col
+    rts
+.vg_c00:
     move.b  #0, cur_col
 .vg_x:
     rts
@@ -2176,9 +2256,9 @@ move_cursor:                              ; d-pad moves the cursor; edges WRAP (
 .mb_dld:
     move.b  #5, cur_col
     rts
-.mb_drom:                                    ; ROM half (cols 4-5) down -> SWEEP (cr12)
+.mb_drom:                                    ; ROM half (cols 4-5) down -> GROUP, above FSWP
     move.b  #12, cur_row
-    move.b  #0, cur_col
+    move.b  #1, cur_col
     rts
 .mb_up:
     btst    #0, d2                           ; Up
@@ -2459,6 +2539,11 @@ col_max:                                  ; -> d1 = highest column index for cur
     moveq   #5, d1
     rts
 .fmvrt:
+    cmpi.b  #NVOICE+1, cur_row            ; FSWP row also carries the FM-only GROUP cell at col 1
+    bne.s   .fmvrt0
+    moveq   #1, d1
+    rts
+.fmvrt0:
     moveq   #0, d1                        ; other voice rows: single column
     rts
 .fmop:
@@ -3210,6 +3295,15 @@ edit_fm:
     beq.s   .typeedit                      ; row 1 = instrument TYPE
     cmpi.b  #NVOICE+2, cur_row
     bhs     .opedit
+    cmpi.b  #NVOICE+1, cur_row            ; FSWP shares its cursor row with GROUP at column 1
+    bne.s   .ef_voice
+    cmpi.b  #1, cur_col
+    bne.s   .ef_voice
+    lea     (i_fgroup,a3), a1
+    moveq   #FMGRP_POWER, d3              ; OFF / CHORD / UNISON / OCTAVE / POWER
+    moveq   #1, d4
+    bra     .adj
+.ef_voice:
     moveq   #0, d0                         ; voice param (rows 2..NVOICE+1)
     move.b  cur_row, d0
     subq.b  #2, d0
@@ -3291,7 +3385,7 @@ edit_fm:
     mulu.w  #FM_NPARM, d0
     moveq   #0, d1
     move.b  cur_col, d1
-    cmpi.b  #FM_NPARM, d1                  ; final display col is SG, packed into AM's high nibble
+    cmpi.b  #FM_NPARM, d1                  ; final display col is SSG, packed into AM's high nibble
     beq.s   .opssg
     lea     fm_disp, a2                    ; display col -> storage param (AM last)
     move.b  (a2,d1.w), d1
@@ -3440,6 +3534,7 @@ edit_psg:
     bne.s   .ep_nfm
     tst.b   d5
     beq.s   .ep_nfm
+    clr.b   (i_fgroup,a3)                  ; byte 63 belongs to PERC MODE / old reserved data in other types
     lea     (i_op+5,a3), a1
     moveq   #3, d1
 .ep_fmssg:
@@ -5565,11 +5660,11 @@ render_perc:                              ; a0 = VDP_CTRL; PERC (CH3 special): b
     move.b  (i_hld,a3), d3
     move.b  d2, d4
     bsr     draw_hex1
-    moveq   #9, d3                          ; SWP label (row 9, col 1)
+    moveq   #9, d3                          ; FSWP label (row 9, col 1)
     moveq   #1, d4
     lea     str_pswp, a1
     bsr     print_at
-    moveq   #9, d0                          ; SWP value (row 9, col 6), hl cursor row 5
+    moveq   #9, d0                          ; FSWP value (row 9, col 6), hl cursor row 5
     moveq   #6, d1
     bsr     bvpos
     moveq   #5, d0
@@ -5764,7 +5859,7 @@ str_pmode:     dc.b "MODE",0
 str_pfix:      dc.b "FIXED",0
 str_ppit:      dc.b "PITCH",0
 str_phld:      dc.b "HLD",0
-str_pswp:      dc.b "SWP",0
+str_pswp:      dc.b "FSWP",0
 str_ptbl:      dc.b "TBL",0
 str_ptbs:      dc.b "TBS",0
 str_palg:      dc.b "ALGO",0
@@ -7053,6 +7148,11 @@ render_fm:                                ; a0 = VDP_CTRL
     subq.b  #2, d1
     cmp.b   d6, d1
     bne.s   .vnh
+    cmpi.w  #NVOICE-1, d6                  ; FSWP shares its logical row with GROUP
+    bne.s   .vhl
+    tst.b   cur_col                        ; col 0 = FSWP; col 1 = GROUP
+    bne.s   .vnh
+.vhl:
     moveq   #$60, d4
 .vnh:
     lea     voice_fmt, a1                  ; fmt 0 = hex1; 1 = hex2; 4 = TBL ("--" when $FF)
@@ -7080,6 +7180,29 @@ render_fm:                                ; a0 = VDP_CTRL
     addq.w  #1, d6
     cmpi.w  #NVOICE, d6
     bne     .vrow
+    moveq   #6, d3                          ; FM GROUP sits above FSWP in the right-hand voice column
+    moveq   #14, d4
+    lea     str_clu, a1
+    bsr     print_at
+    moveq   #0, d1
+    move.b  (i_fgroup,a3), d1
+    cmpi.b  #FMGRP_POWER, d1               ; malformed/legacy values display safely as OFF
+    bls.s   .rfg_value
+    moveq   #FMGRP_OFF, d1
+.rfg_value:
+    lsl.w   #2, d1
+    lea     fmgroup_lbl, a1
+    movea.l (a1,d1.w), a1
+    moveq   #0, d2
+    cmpi.b  #NVOICE+1, cur_row
+    bne.s   .rfg_draw
+    cmpi.b  #1, cur_col
+    bne.s   .rfg_draw
+    moveq   #$60, d2
+.rfg_draw:
+    moveq   #6, d3
+    moveq   #21, d4
+    bsr     print_hl
     bsr     render_bank                     ; ROM/SRAM tier-transfer cells (right of the voice params)
     moveq   #FM_OHDR, d3                    ; operator grid header (LFO moved to PROJECT screen)
     moveq   #1, d4
@@ -7121,7 +7244,7 @@ render_fm:                                ; a0 = VDP_CTRL
     swap    d0
     ori.l   #$40000003, d0
     move.l  d0, (a0)
-    cmpi.w  #FM_NPARM, d5                  ; SG is packed in the AM byte, not an 11th stored byte
+    cmpi.w  #FM_NPARM, d5                  ; SSG is packed in the AM byte, not an 11th stored byte
     beq.s   .pssg
     lea     fm_disp, a1                    ; display col d5 -> storage param d7 (AM shown last)
     moveq   #0, d7
@@ -7151,7 +7274,7 @@ render_fm:                                ; a0 = VDP_CTRL
     bne.s   .nhl
     moveq   #$60, d4
 .nhl:
-    cmpi.b  #FM_NPARM, d7                  ; SG -> two-character cell: -- or hex + blank
+    cmpi.b  #FM_NPARM, d7                  ; SSG -> two-character cell: -- or hex + blank
     bne.s   .nhsg
     tst.b   d3
     bne.s   .sgon
@@ -7894,7 +8017,7 @@ fm_prewarm_plan:                          ; stopped normal load: predict each FM
     movem.l (sp)+, d0-d7/a0-a4
     rts
 
-fm_prewarm_service:                       ; stopped path: append at most two predicted patches to this SCB
+fm_prewarm_service:                       ; stopped path: append up to MAXPATCH predicted patches to this SCB
     tst.b   playing
     bne.s   .fps_cancel                    ; playback owns the channels; never warm underneath sounding voices
     moveq   #0, d7                          ; FM track 0..5
@@ -7995,6 +8118,7 @@ toggle_play:
     bra.s   .tp
 .tp_stop:
     bsr     silence_all                   ; STOP: silence any ringing FM / PSG / wave voice
+    bsr     cont_restore_all              ; put back target patches borrowed by any active CONT bridges
 .tp:
     rts
 
@@ -8019,7 +8143,8 @@ play_context:                             ; C+B: toggle audition of the current 
     beq.s   .pc_start
     move.b  #0, playing
     bsr     clear_live_patch              ; drop A/V overrides on stop
-    bra     silence_all                   ; ...and cut any ringing FM / PSG / wave voice
+    bsr     silence_all                   ; ...and cut any ringing FM / PSG / wave voice
+    bra     cont_restore_all              ; restore target patches borrowed by CONT bridges
 .pc_start:
     move.b  cur_screen, d0
     cmpi.b  #SCR_SONG, d0
@@ -8097,9 +8222,12 @@ live_queue_track:                         ; d1 = track, d2 = songpos; launch / r
     mulu.w  #CHSIZE, d0
     lea     ch_state, a6
     adda.w  d0, a6
+    cmpi.b  #CONT_BRIDGE, c_chain(a6)     ; a bridge's c_songpos belongs to the old song
+    beq.s   .lqt_relaunch                 ; any populated target cell explicitly replaces it
     move.b  c_songpos(a6), d0
     cmp.b   d2, d0
     beq.s   .lqt_stop                      ; cell == the currently-playing row -> stop
+.lqt_relaunch:
     lea     live_q, a0                       ; else: relaunch when the current chain ends
     move.b  d2, (a0,d1.w)
     lea     live_when, a0
@@ -8158,6 +8286,7 @@ live_launch_row:                          ; LIVE Start: launch every populated t
     rts
 
 live_setup_chan:                          ; d1 = track, d2 = songpos; arm that channel to play from there
+    clr.b   play_mode                     ; LIVE always traverses the arranged contiguous block, never a stale solo
     moveq   #0, d0
     move.b  d1, d0
     mulu.w  #CHSIZE, d0
@@ -8189,6 +8318,11 @@ live_setup_chan:                          ; d1 = track, d2 = songpos; arm that c
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
     clr.b   fm_pre_mask                    ; an immediate start cancels unfinished speculative warming
+    lea     fmgrp_owner, a0                ; FM GROUP ownership/chords/detune are transient transport state
+    moveq   #16, d0                        ; 6 owners + 4 chords + busy guard + 6 fine offsets
+.epr_fg:
+    clr.b   (a0)+
+    dbra    d0, .epr_fg
     lea     c_wbank, a0                   ; B command: clear per-channel wave-bank overrides ($FF = use iw_wave)
     moveq   #NCH-1, d0
 .epr_wb:
@@ -8210,6 +8344,13 @@ engine_play_reset:
     clr.b   (a0)+
     dbra    d0, .epr_ssg
     clr.b   s_set
+    lea     c_fswpcfg, a0                 ; FM/PERC B command: no per-note FSWP overrides at play-start
+    moveq   #NCH-1, d0
+.epr_fswp:
+    clr.b   (a0)+
+    dbra    d0, .epr_fswp
+    clr.w   c_fswpovr
+    clr.b   b_set
     lea     c_eatk, a0                   ; E command: clear per-channel attack/decay overrides ($FF = use instrument)
     moveq   #(NCH*2)-1, d0
 .epr_e:
@@ -8384,6 +8525,11 @@ fmlfo_tick:
     mulu.w  #CHSIZE, d1
     lea     ch_state, a3
     adda.w  d1, a3
+    tst.b   cont_active                     ; during a CONT overlap the runtime bank is the source bank;
+    beq.s   .flt_type                       ; do not let it touch target clips launched alongside bridges
+    cmpi.b  #CONT_BRIDGE, c_chain(a3)
+    bne     .fltn
+.flt_type:
     cmpi.b  #1, c_type(a3)                  ; only FM channels carry these registers
     bne     .fltn
     move.b  (LF_FLAGS,a2), d0               ; resync mode: 0 note / 1 phrase / 2 free / 3 chain
@@ -8571,6 +8717,8 @@ FMLFO_NPARM equ 35
 ; patch/key path. (Tick = frame for now; becomes the groove tick when grooves land.)
 is_echo_target:                           ; a6 = channel -> d0 = 1 if it's an echo target for echo_mode
     moveq   #0, d0
+    tst.b   cont_active                    ; target echo is suspended until every source bridge retires
+    bne.s   .iet_no
     tst.b   echo_mode
     beq.s   .iet_no
     moveq   #0, d1
@@ -8598,6 +8746,8 @@ is_echo_target:                           ; a6 = channel -> d0 = 1 if it's an ec
     rts
 
 echo_tick:
+    tst.b   cont_active                    ; never route target-song echo through source bridge state
+    bne     .et_ret
     tst.b   echo_mode
     beq     .et_ret
     moveq   #0, d2                          ; input base track: F1 (0) for modes 1/2, T1 (6) for 3/4
@@ -9457,34 +9607,68 @@ wave_silence:
     rts
 
 ; gate countdown: $FF = held; else decrement, and request key-off when it hits 0
-; ---- FM pitch sweep (per-instrument downward swoop -- the "FM kick" pitch envelope) ----
-init_psweep:                              ; a6 = channel; on a trigger, offset = depth (i_psweep hi nibble x4 semis)
-    movem.l d0/a0, -(sp)
+; ---- FM pitch sweep (per-instrument downward F-number swoop -- the "FM kick" envelope) ----
+; c_psweep is kept in 16-F-number units.  The packed instrument byte retains the old
+; envelope duration: high nibble X starts at X*4 units (= X*64 F-num), low nibble Y
+; removes Y units/frame (= Y*16 F-num/frame).  For any non-zero SWEEP setting the note
+; selects only the YM octave block; the within-block target is that region's C F-number.
+; This gives a repeatable kick-drum contour instead of following the note's pitch class.
+get_fswp_cfg:                             ; a6 = channel -> d0.b active packed XY (B override or instrument)
+    movem.l d1/a0, -(sp)
+    moveq   #0, d1
+    move.b  c_track(a6), d1
+    move.w  c_fswpovr, d0
+    btst    d1, d0
+    beq.s   .gfc_inst
+    lea     c_fswpcfg, a0
+    move.b  (a0,d1.w), d0
+    bra.s   .gfc_done
+.gfc_inst:
     moveq   #0, d0
     move.b  c_instr(a6), d0
     mulu.w  #INSTR_SIZE, d0
     lea     instrum, a0
     move.b  (i_psweep,a0,d0.w), d0
+.gfc_done:
+    movem.l (sp)+, d1/a0
+    rts
+
+fswp_note_reset:                          ; a6 = channel; a plain new note restores its instrument FSWP
+    tst.b   b_set
+    bne.s   .fnr_done                      ; this row's valid Bxy owns the new note
+    movem.l d0-d1, -(sp)
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    move.w  c_fswpovr, d1
+    bclr    d0, d1
+    move.w  d1, c_fswpovr
+    movem.l (sp)+, d0-d1
+.fnr_done:
+    rts
+
+init_psweep:                              ; a6 = channel; trigger offset = depth nibble * 4 units
+    movem.l d0/a0, -(sp)
+    bsr     get_fswp_cfg
     beq.s   .ip_z
     lsr.b   #4, d0                          ; depth (hi nibble) 0-15
-    lsl.b   #2, d0                          ; x4 -> 0..60 semitones
+    lsl.b   #2, d0                          ; x4 -> 0..60 units (0..960 F-number)
 .ip_z:
     move.b  d0, c_psweep(a6)
     movem.l (sp)+, d0/a0
     rts
-decay_psweep:                             ; a6 = channel; each tick, decay toward 0 by the rate (lo nibble)
+decay_psweep:                             ; a6 = channel; each tick, decay by rate units (1 unit = 16 F-num)
     movem.l d0-d1/a0, -(sp)
     move.b  c_psweep(a6), d0
     beq.s   .dp_done                        ; 0 = inactive (also non-FM channels -- they never set it)
-    moveq   #0, d1
-    move.b  c_instr(a6), d1
-    mulu.w  #INSTR_SIZE, d1
-    lea     instrum, a0
-    move.b  (i_psweep,a0,d1.w), d1
-    andi.b  #$0F, d1                        ; rate (semitones/tick)
+    btst    #7, d0
+    bne.s   .dp_done                        ; zero-offset target write is pending; compose must consume it
+    bsr     get_fswp_cfg
+    move.b  d0, d1
+    andi.b  #$0F, d1                        ; rate (16-F-number units/tick)
+    move.b  c_psweep(a6), d0                ; reload the current offset clobbered by get_fswp_cfg
     sub.b   d1, d0
-    bcc.s   .dp_s
-    moveq   #0, d0
+    bhi.s   .dp_s                           ; positive remainder: continue the sweep
+    move.w  #$0080, d0                      ; zero/underflow: force one final exact-target frequency write
 .dp_s:
     move.b  d0, c_psweep(a6)
 .dp_done:
@@ -9636,7 +9820,7 @@ advance_ch:                               ; a6 = channel
     move.b  c_row(a6), d0
     addq.b  #1, d0
     cmpi.b  #16, d0
-    blo.s   .gotrow
+    blo     .gotrow
     cmpi.b  #CONT_BRIDGE, c_chain(a6)     ; CONT bridge: loop its own private phrase (keep c_phrase)
     beq.s   .cont_bridgeloop
     cmpi.b  #2, play_mode                 ; phrase-solo: loop the phrase
@@ -9648,17 +9832,50 @@ advance_ch:                               ; a6 = channel
     adda.w  d0, a1
     move.l  a1, c_phrase(a6)
     moveq   #0, d0
-    bra.s   .gotrow
+    bra     .gotrow
 .nextchain:
     bsr     advance_chain                 ; phrase ended -> next chain step
     cmpi.b  #$FF, c_chain(a6)             ; became inactive?
     beq     nt_done
     moveq   #0, d0
-    bra.s   .gotrow                       ; pooled phrase row 0: count this new play for I/J
+    bra     .gotrow                       ; pooled phrase row 0: count this new play for I/J
 .cont_bridgeloop:
-    moveq   #0, d0                          ; CONT bridge wrap: row 0, keep c_phrase; skip the play-count
-    move.b  d0, c_row(a6)                   ; (c_phrase points at the private carry buffer, not the pool)
-    bra.s   .nophs
+    moveq   #0, d1                          ; a queued replacement/stop resolves at this phrase edge
+    move.b  c_track(a6), d1
+    lea     live_when, a1
+    move.b  (a1,d1.w), d2
+    cmpi.b  #2, d2
+    beq.s   .cont_live_join
+    cmpi.b  #3, d2
+    beq.s   .cont_live_stop
+    moveq   #0, d0                          ; no queue: loop the private carry phrase
+    move.b  d0, c_row(a6)
+    bra     .nophs                          ; don't count a private buffer as a pooled phrase
+.cont_live_join:
+    bsr     cont_restore_track              ; target bank is whole again before the replacement starts
+    lea     live_q, a1
+    moveq   #0, d2
+    move.b  (a1,d1.w), d2                  ; queued target song row
+    bsr     live_setup_chan                 ; d1=track, d2=row; c_cstep=$FF so advance loads step 0
+    lea     live_when, a1
+    clr.b   (a1,d1.w)
+    bsr     advance_chain
+    moveq   #0, d0
+    bra     .gotrow
+.cont_live_stop:
+    bsr     cont_restore_track
+    lea     live_when, a1
+    clr.b   (a1,d1.w)
+    lea     live_on, a1
+    clr.b   (a1,d1.w)
+    lea     live_q, a1
+    clr.b   (a1,d1.w)
+    move.b  #$FF, c_chain(a6)
+    move.b  #$FF, c_kshadow(a6)
+    clr.b   c_keyon(a6)
+    clr.b   c_estate(a6)
+    clr.b   c_vol(a6)
+    rts
 .gotrow:
     move.b  d0, c_row(a6)
     tst.b   d0                              ; row 0 = a new phrase began on this track
@@ -9699,6 +9916,7 @@ advance_ch:                               ; a6 = channel
     move.b  #0, a_set                      ; A command: clear this row's table-switch flag
     move.b  #0, l_set                      ; L command: clear this row's slide flag
     move.b  #0, s_set                      ; FM S command: clear this row's SSG-EG-override flag
+    move.b  #0, b_set                      ; FM/PERC B command: clear this row's FSWP-override flag
     move.b  #0, perc_cset                  ; PERC: clear this row's operator-mask-set flag
     cmpi.b  #$FF, (a1,d1.w)               ; R persists across empty rows: only a NEW NOTE here stops it
     beq.s   .rt_keep                       ;   (decay-to-silence in the fire is the other stop). rest -> keep
@@ -9724,7 +9942,7 @@ advance_ch:                               ; a6 = channel
     beq     .cmd_w
     cmpi.b  #26, d2                        ; Z xx = random note-gate (play with probability xx/256)
     beq     .cmd_z
-    bsr     exec_cmd                       ; Q/X/O/U/F/C/P/R/Y/K voice commands (or none) -- shared
+    bsr     exec_cmd                       ; Q/X/O/U/F/C/P/R/Y/K/B voice commands (or none) -- shared
     bra     .cmddone                       ; then resolve this row's note
 .cmd_i:
     moveq   #0, d2
@@ -9917,6 +10135,7 @@ advance_ch:                               ; a6 = channel
     lea     c_ssgdirty, a0
     or.b    d1, (a0,d0.w)                 ; emit each affected instrument $9x value before key-on
 .crs:
+    bsr     fswp_note_reset                ; no valid Bxy on this note -> restore instrument FSWP
     tst.b   x_set                          ; no X this row -> PSG output level back to full
     bne.s   .crx
     lea     lx_pvol, a0
@@ -9955,7 +10174,7 @@ advance_ch:                               ; a6 = channel
     move.b  #$FF, c_tbl(a6)              ; KIT/WAVE: no macro table
 .notbset:
     tst.b   d_set                        ; D command: a delayed note-on -> skip; hold_tick fires it later
-    beq.s   note_trigger
+    beq     note_trigger
     rts
 ; scale_snap: d0.b = note (0-95) in -> snapped-to-scale note out. Quantizes to the PROJECT
 ; SCALE (scale_key root + scale_type). CHROMATIC (type 0) is a passthrough. Clobbers d1/d2/a1.
@@ -10004,7 +10223,310 @@ snap_note:
     movem.l (sp)+, d1-d2/a1
     rts
 
+; ---- FM GROUP ownership ----------------------------------------------------
+; An FM instrument with GROUP enabled may lead only from F1-F4. CHORD latches Cxy per
+; possible root; UNISON/OCTAVE/POWER use fixed voicings and share ordinary C arps.
+; Ownership mirrors PSG GROUP: an explicit follower note takes that voice back;
+; the next root strike reclaims it. owner[] stores root+1 so cleared RAM means free.
+fm_group_release:                         ; a6 = root channel; release/key-off its two owned followers
+    movem.l d0-d4/a0-a1, -(sp)
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    cmpi.b  #4, d3
+    bhs.s   .fgr_done
+    move.w  d3, d4
+    addq.w  #1, d4                         ; owner token = root track + 1
+    move.w  d3, d0
+    addq.w  #1, d0                         ; first follower track
+    moveq   #1, d2                         ; two followers
+.fgr_loop:
+    lea     fmgrp_owner, a0
+    cmp.b   (a0,d0.w), d4
+    bne.s   .fgr_next
+    clr.b   (a0,d0.w)
+    lea     fmgrp_fine, a0
+    clr.b   (a0,d0.w)
+    move.w  d0, d1
+    mulu.w  #CHSIZE, d1
+    lea     ch_state, a1
+    adda.w  d1, a1
+    clr.b   c_keyon(a1)
+    clr.b   c_trig(a1)                    ; cancel a grouped patch/key that had not yet fitted this tick
+    move.b  #$FF, c_hold(a1)
+.fgr_next:
+    addq.w  #1, d0
+    dbra    d2, .fgr_loop
+.fgr_done:
+    movem.l (sp)+, d0-d4/a0-a1
+    rts
+
+fm_group_note_begin:                      ; a6 = channel receiving a real (not synthetic) note
+    movem.l d0-d1/a0, -(sp)
+    tst.b   fmgrp_busy
+    bne.s   .fgnb_done
+    moveq   #0, d0
+    move.b  c_track(a6), d0
+    cmpi.b  #6, d0
+    bhs.s   .fgnb_done
+    lea     fmgrp_owner, a0                ; any explicit F1-F6 note takes this physical voice back
+    clr.b   (a0,d0.w)
+    lea     fmgrp_fine, a0                 ; and drops any UNISON detune inherited from a root
+    clr.b   (a0,d0.w)
+    cmpi.b  #4, d0                         ; only F1-F4 can have two followers
+    bhs.s   .fgnb_done
+    moveq   #0, d1
+    move.b  c_instr(a6), d1
+    cmpi.b  #NINSTR, d1
+    bhs.s   .fgnb_release
+    mulu.w  #INSTR_SIZE, d1
+    lea     instrum, a0
+    adda.w  d1, a0
+    tst.b   (i_type,a0)                    ; genuine FM only (never KIT/WAVE/PERC)
+    bne.s   .fgnb_release
+    move.b  (i_fgroup,a0), d1
+    beq.s   .fgnb_release
+    cmpi.b  #FMGRP_CHORD, d1
+    bne.s   .fgnb_done                     ; fixed UNISON/OCTAVE/POWER modes need no latched C chord
+    lea     fmgrp_chord, a0
+    tst.b   (a0,d0.w)                      ; no latched C chord = no ownership
+    bne.s   .fgnb_done
+.fgnb_release:
+    bsr     fm_group_release
+.fgnb_done:
+    movem.l (sp)+, d0-d1/a0
+    rts
+
+fm_group_claim_voice:                    ; a6=root; d0=track, d1=signed semitones, d2=owner,
+                                         ; d3=signed F-num fine, d4=active, d5=GROUP mode
+    movem.l d0-d7/a0-a4/a6, -(sp)
+    movea.l a6, a3                         ; preserve the root pointer while a6 becomes the follower
+    move.w  d3, d7                         ; preserve signed UNISON fine while d3 builds the channel address
+    lea     fmgrp_owner, a0
+    tst.b   d4
+    bne.s   .fgcv_claim
+    cmp.b   (a0,d0.w), d2                  ; a zero nibble only releases this root's ownership
+    bne     .fgcv_done
+    clr.b   (a0,d0.w)
+    lea     fmgrp_fine, a0
+    clr.b   (a0,d0.w)
+    move.w  d0, d3
+    mulu.w  #CHSIZE, d3
+    lea     ch_state, a6
+    adda.w  d3, a6
+    clr.b   c_keyon(a6)
+    clr.b   c_trig(a6)
+    move.b  #$FF, c_hold(a6)
+    bra     .fgcv_done
+.fgcv_claim:
+    move.w  d0, d3
+    mulu.w  #CHSIZE, d3
+    lea     ch_state, a6
+    adda.w  d3, a6                         ; a6 = follower
+    bsr     fm_group_release               ; if this follower was itself a root, stop its old cascade
+    lea     fmgrp_owner, a0
+    move.b  d2, (a0,d0.w)                  ; claim after downstream cleanup
+    lea     fmgrp_fine, a0
+    move.b  d7, (a0,d0.w)                  ; UNISON uses -2/+2; other modes store zero
+    moveq   #0, d3
+    move.b  c_note(a3), d3
+    add.w   d1, d3
+    cmpi.w  #95, d3
+    bls.s   .fgcv_noteok
+    moveq   #95, d3
+.fgcv_noteok:
+    move.b  d3, c_note(a6)
+    move.b  c_instr(a3), c_instr(a6)       ; one FM patch fans out to all three physical voices
+    move.b  c_tbl(a3), c_tbl(a6)           ; keep macro-table phase aligned with the root strike
+    move.b  c_trow(a3), c_trow(a6)
+    move.b  c_tctr(a3), c_tctr(a6)
+    move.b  c_tcrow(a3), c_tcrow(a6)
+    move.b  c_ttsp(a3), c_ttsp(a6)
+    move.b  c_tvol(a3), c_tvol(a6)
+    clr.b   c_trig(a6)
+    clr.b   c_psweep(a6)
+    bset    #0, c_lfosync(a6)
+    moveq   #0, d4                          ; clear stale follower-only pitch/command state
+    move.b  c_track(a6), d4
+    lea     c_chord, a0
+    cmpi.b  #FMGRP_CHORD, d5
+    bne.s   .fgcv_copyarp
+    clr.b   (a0,d4.w)                      ; CHORD followers are fixed intervals, never another arp
+    lea     c_cphase, a0
+    clr.b   (a0,d4.w)
+    bra.s   .fgcv_arpdone
+.fgcv_copyarp:                             ; fixed modes carry the root's ordinary Cxy arpeggio in tandem
+    moveq   #0, d7
+    move.b  c_track(a3), d7
+    move.b  (a0,d7.w), d6
+    move.b  d6, (a0,d4.w)
+    lea     c_cphase, a0
+    move.b  (a0,d7.w), d6
+    move.b  d6, (a0,d4.w)
+.fgcv_arpdone:
+    lea     c_pfine, a0
+    clr.b   (a0,d4.w)
+    lea     c_bend, a0
+    clr.b   (a0,d4.w)
+    lea     c_lrate, a0
+    clr.b   (a0,d4.w)
+    move.w  d4, d5
+    add.w   d5, d5
+    lea     c_slide, a0
+    clr.w   (a0,d5.w)
+    lea     c_delay, a0
+    clr.b   (a0,d4.w)
+    lea     c_rtper, a0
+    clr.b   (a0,d4.w)
+    lea     c_rtdrop, a0
+    clr.b   (a0,d4.w)
+    lea     c_ssgmask, a0
+    clr.b   (a0,d4.w)
+    lea     c_ssgmode, a0
+    clr.b   (a0,d4.w)
+    lea     c_ssgdirty, a0
+    clr.b   (a0,d4.w)
+    lea     c_eatk, a0
+    move.b  #$FF, (a0,d4.w)
+    lea     c_edcy, a0
+    move.b  #$FF, (a0,d4.w)
+    move.w  c_fswpovr, d5
+    bclr    d4, d5                          ; grouped followers use the instrument's stored FSWP
+    move.w  d5, c_fswpovr
+    lea     pshadow, a0
+    move.b  #$FF, (a0,d4.w)                ; force the complete root patch onto this physical channel
+    move.w  d4, -(sp)                      ; note_trigger owns the scratch registers
+    bsr     note_trigger                   ; busy guard prevents this synthetic note from cascading again
+    move.w  (sp)+, d4
+    lea     lq_dirty, a0                   ; the forced full patch already carries default Q/X/O/U values
+    clr.b   (a0,d4.w)                      ; (root-row live commands deliberately remain root-only)
+    lea     lx_dirty, a0
+    clr.b   (a0,d4.w)
+    lea     lo_dirty, a0
+    clr.b   (a0,d4.w)
+    lea     lu_dirty, a0
+    clr.b   (a0,d4.w)
+.fgcv_done:
+    movem.l (sp)+, d0-d7/a0-a4/a6
+    rts
+
+fm_group_trigger:                         ; a6=root after its own FM trigger state is ready
+    movem.l d0-d7/a0-a4, -(sp)
+    tst.b   fmgrp_busy
+    bne     .fgt_done
+    moveq   #0, d6
+    move.b  c_track(a6), d6
+    cmpi.b  #4, d6
+    bhs     .fgt_done                      ; F5/F6 have no two-channel cascade available
+    moveq   #0, d0
+    move.b  c_note(a6), d0
+    cmpi.b  #96, d0
+    bhs     .fgt_release
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    cmpi.b  #NINSTR, d0
+    bhs     .fgt_release
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a0
+    adda.w  d0, a0
+    tst.b   (i_type,a0)
+    bne     .fgt_release
+    moveq   #0, d5
+    move.b  (i_fgroup,a0), d5
+    beq     .fgt_release
+    cmpi.b  #FMGRP_POWER, d5
+    bhi     .fgt_release
+    cmpi.b  #FMGRP_CHORD, d5
+    bne.s   .fgt_begin
+    lea     fmgrp_chord, a0
+    moveq   #0, d7
+    move.b  (a0,d6.w), d7
+    beq     .fgt_release                   ; CHORD alone needs Cxy; fixed modes do not
+.fgt_begin:
+    move.b  #1, fmgrp_busy
+    move.w  d6, d2
+    addq.w  #1, d2                         ; owner token
+    cmpi.b  #FMGRP_UNISON, d5
+    beq.s   .fgt_unison
+    cmpi.b  #FMGRP_OCTAVE, d5
+    beq.s   .fgt_octave
+    cmpi.b  #FMGRP_POWER, d5
+    beq     .fgt_power
+                                            ; CHORD: x/y are independently active semitone offsets
+    move.w  d6, d0
+    addq.w  #1, d0                         ; next channel
+    move.w  d7, d1
+    lsr.b   #4, d1
+    moveq   #0, d3
+    moveq   #0, d4
+    tst.b   d1
+    beq.s   .fgt_chord1
+    moveq   #1, d4
+.fgt_chord1:
+    bsr     fm_group_claim_voice
+    move.w  d6, d0
+    addq.w  #2, d0                         ; channel after next
+    move.w  d7, d1
+    andi.w  #$0F, d1
+    moveq   #0, d3
+    moveq   #0, d4
+    tst.b   d1
+    beq.s   .fgt_chord2
+    moveq   #1, d4
+.fgt_chord2:
+    bsr     fm_group_claim_voice
+    bra.s   .fgt_apply_done
+.fgt_unison:                               ; same note, gently spread below/above in raw F-number space
+    move.w  d6, d0
+    addq.w  #1, d0
+    moveq   #0, d1
+    moveq   #-FMGRP_DETUNE, d3
+    moveq   #1, d4
+    bsr     fm_group_claim_voice
+    move.w  d6, d0
+    addq.w  #2, d0
+    moveq   #0, d1
+    moveq   #FMGRP_DETUNE, d3
+    moveq   #1, d4
+    bsr     fm_group_claim_voice
+    bra.s   .fgt_apply_done
+.fgt_octave:                              ; one follower above and one below the root
+    move.w  d6, d0
+    addq.w  #1, d0
+    moveq   #12, d1
+    moveq   #0, d3
+    moveq   #1, d4
+    bsr     fm_group_claim_voice
+    move.w  d6, d0
+    addq.w  #2, d0
+    moveq   #-12, d1
+    moveq   #0, d3
+    moveq   #1, d4
+    bsr     fm_group_claim_voice
+    bra.s   .fgt_apply_done
+.fgt_power:                               ; classic power chord: root, fifth, octave
+    move.w  d6, d0
+    addq.w  #1, d0
+    moveq   #7, d1
+    moveq   #0, d3
+    moveq   #1, d4
+    bsr     fm_group_claim_voice
+    move.w  d6, d0
+    addq.w  #2, d0
+    moveq   #12, d1
+    moveq   #0, d3
+    moveq   #1, d4
+    bsr     fm_group_claim_voice
+.fgt_apply_done:
+    clr.b   fmgrp_busy
+    bra.s   .fgt_done
+.fgt_release:
+    bsr     fm_group_release
+.fgt_done:
+    movem.l (sp)+, d0-d7/a0-a4
+    rts
+
 note_trigger:                             ; trigger the note-on (a6 = channel); also entered from hold_tick after a delay
+    bsr     fm_group_note_begin            ; explicit FM notes release/reclaim GROUP ownership first
     ; GROUP uses explicit per-slave ownership rather than T1's latched instrument alone. A grouped
     ; T1 strike claims both slaves; an actual T2/T3 strike takes only that voice back. This state
     ; deliberately survives envelope decay/rests so an old slave note cannot appear mid-phrase.
@@ -10186,12 +10708,13 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     bne.s   .hldcnt
     move.b  #$FF, c_hold(a6)
 .fm_hdone:
+    bsr     fm_group_trigger               ; grouped roots arm their followers after their own gate is ready
     rts
 .hldcnt:
     add.b   d2, d2                       ; HLD*2 (+1 so HLD=0 still gates, and != $FF)
     addq.b  #1, d2
     move.b  d2, c_hold(a6)
-    rts
+    bra.s   .fm_hdone
 .noise:                                   ; noise: MODE/RATE from the instrument, AHD vol
     lea     instrum, a4
     moveq   #0, d2
@@ -10230,7 +10753,14 @@ advance_chain:                            ; a6 = channel
     moveq   #0, d1
     move.b  c_cstep(a6), d1
     addq.b  #1, d1
-    andi.b  #$0F, d1
+    cmpi.b  #16, d1                       ; a fully populated chain has no $FF terminator
+    blo.s   .ac_read
+    cmpi.b  #1, play_mode                 ; chain-solo deliberately wraps step 15 -> 0
+    beq.s   .ac_wrap
+    bra     advance_song                  ; arrangement playback advances to the next contiguous song row
+.ac_wrap:
+    moveq   #0, d1
+.ac_read:
     lea     chains, a2
     moveq   #0, d0
     move.b  c_chain(a6), d0
@@ -10336,6 +10866,14 @@ load_step:                                ; a6 = channel; d1 = chain step
 is_live_silent:                           ; a6 = channel -> d0 = 1 if LIVE mode and this track is un-launched
     cmpi.b  #4, opt_sync                  ; MIDI takeover: never LIVE-silence (MIDI owns the voices)
     beq.s   .ils_no
+    moveq   #0, d0                         ; an owned FM follower belongs to its grouped root, not live_on[]
+    move.b  c_track(a6), d0
+    cmpi.b  #6, d0
+    bhs.s   .ils_mode
+    lea     fmgrp_owner, a0
+    tst.b   (a0,d0.w)
+    bne.s   .ils_no
+.ils_mode:
     tst.b   proj_mode
     beq.s   .ils_no
     moveq   #0, d0
@@ -10350,7 +10888,7 @@ is_live_silent:                           ; a6 = channel -> d0 = 1 if LIVE mode 
     rts
 
 ; ============================================================
-; exec_cmd -- the shared voice-command executor: Q X O U K F C P R Y. a1 = row (cmd@+2,
+; exec_cmd -- the shared voice-command executor: Q X O U K F C P R Y B. a1 = row (cmd@+2,
 ; prm@+3), d1 = row offset, a6 = channel. Runs the command's effect and returns; the CALLER
 ; resolves the note (advance_ch falls into .cmddone) or not (table_cmd). The phrase-structural
 ; commands (H I J) and global ones (T W) are NOT here -- advance_ch keeps those inline. The
@@ -10499,6 +11037,75 @@ exec_cmd:
     move.b  d2, (a4,d3.w)
     bra     .cmddone
 .cmd_c:
+    moveq   #0, d3                          ; FM GROUP: F1-F4 may fan into the next two FM voices
+    move.b  c_track(a6), d3
+    cmpi.b  #4, d3
+    bhs     .cc_psg
+    cmpi.b  #1, c_type(a6)
+    bne     .cc_psg
+    moveq   #0, d2                          ; use the row instrument when present, else the sounding one
+    move.b  (1,a1,d1.w), d2
+    cmpi.b  #$FF, d2
+    bne.s   .cc_fmhavei
+    move.b  c_instr(a6), d2
+.cc_fmhavei:
+    cmpi.b  #NINSTR, d2
+    bhs     .cc_psg
+    mulu.w  #INSTR_SIZE, d2
+    lea     instrum, a4
+    adda.w  d2, a4
+    tst.b   (i_type,a4)                    ; GROUP is valid only for genuine FM instruments
+    bne     .cc_psg
+    cmpi.b  #FMGRP_CHORD, (i_fgroup,a4)
+    beq.s   .cc_fmchord
+    cmpi.b  #FMGRP_UNISON, (i_fgroup,a4)
+    blo     .cc_psg
+    cmpi.b  #FMGRP_POWER, (i_fgroup,a4)
+    bls.s   .cc_fmfixed
+    bra     .cc_psg
+.cc_fmchord:
+    move.b  #1, c_set
+    lea     c_chord, a4                    ; grouped C never becomes the root channel's ordinary arpeggio
+    clr.b   (a4,d3.w)
+    moveq   #0, d2
+    move.b  (3,a1,d1.w), d2
+    lea     fmgrp_chord, a4
+    move.b  d2, (a4,d3.w)                  ; latch across later notes, like PSG GROUP=CHORD
+    bne.s   .cc_fmapply
+    bsr     fm_group_release               ; C00 immediately releases and keys off owned followers
+    bra     .cmddone
+.cc_fmapply:
+    bsr     fm_group_trigger               ; update/reclaim an already-sounding root; the row note re-applies later
+    bra     .cmddone
+.cc_fmfixed:                               ; UNISON/OCTAVE/POWER: C is an ordinary arp shared by owned followers
+    move.b  #1, c_set
+    move.b  (3,a1,d1.w), d2
+    lea     c_chord, a4
+    move.b  d2, (a4,d3.w)
+    lea     c_cphase, a4
+    clr.b   (a4,d3.w)
+    move.w  d3, d0
+    addq.w  #1, d0                         ; owner token = root track + 1
+    move.w  d3, d1
+    addq.w  #1, d1
+    lea     fmgrp_owner, a4
+    cmp.b   (a4,d1.w), d0
+    bne.s   .cc_fmfixed2
+    lea     c_chord, a4
+    move.b  d2, (a4,d1.w)
+    lea     c_cphase, a4
+    clr.b   (a4,d1.w)
+.cc_fmfixed2:
+    addq.w  #1, d1
+    lea     fmgrp_owner, a4
+    cmp.b   (a4,d1.w), d0
+    bne     .cmddone
+    lea     c_chord, a4
+    move.b  d2, (a4,d1.w)
+    lea     c_cphase, a4
+    clr.b   (a4,d1.w)
+    bra     .cmddone
+.cc_psg:
     moveq   #0, d3                          ; GROUP CHORD: on T1 (track 6) with a CHORD instrument,
     move.b  c_track(a6), d3                 ;   C sets the T2/T3 offsets (latched), NOT a T1 arp
     cmpi.b  #6, d3
@@ -10627,10 +11234,57 @@ exec_cmd:
 .cn_per:
     move.w  d2, c_period(a6)              ; override the 3-bit SN76489 noise control
     bra     .cmddone
-.cmd_b:                                   ; B xy = wave bank: select wave 0-15 for the channel (the WAVE bake reads it)
+.cmd_b:                                   ; B is type-safe: FM/PERC FSWP override; WAVE bank select
+    cmpi.b  #1, c_type(a6)                 ; all three instrument types live on an FM hardware track
+    bne     .cmddone
+    moveq   #0, d0                         ; resolve the command's effective instrument
+    move.l  a1, d3
+    cmpi.l  #tbl_ram, d3                   ; TABLE rows have no IN column -> use current instrument
+    blo.s   .cb_phrase
+    cmpi.l  #tbl_ram+(NTABLE*TBL_ROWS*TROW), d3
+    blo.s   .cb_current
+.cb_phrase:
+    move.b  (1,a1,d1.w), d0
+    cmpi.b  #$FF, d0
+    bne.s   .cb_havei
+.cb_current:
+    move.b  c_instr(a6), d0
+.cb_havei:
+    cmpi.b  #NINSTR, d0                    ; malformed/empty references are inert
+    bhs     .cmddone
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    adda.w  d0, a4
+    move.b  (i_type,a4), d0
+    cmpi.b  #2, d0                         ; WAVE: retain historical bank select on F6 only
+    beq.s   .cb_wave
+    tst.b   d0                             ; genuine FM: Bxy is a per-note FSWP override
+    beq.s   .cb_fswp
+    cmpi.b  #5, d0                         ; PERC: same override, but only on its F3 host
+    bne     .cmddone
+    cmpi.b  #2, c_track(a6)
+    bne     .cmddone
+.cb_fswp:
     moveq   #0, d3
     move.b  c_track(a6), d3
-    move.b  (3,a1,d1.w), d2               ; param low nibble = wave# 0-15
+    move.b  (3,a1,d1.w), d2               ; packed XY exactly matches the instrument's FSWP field
+    lea     c_fswpcfg, a4
+    move.b  d2, (a4,d3.w)
+    move.w  c_fswpovr, d0
+    bset    d3, d0
+    move.w  d0, c_fswpovr
+    move.b  #1, b_set                      ; a note on this row keeps the override; next plain note drops it
+    bsr     init_psweep                    ; rest/TABLE B commands also restart the sounding sweep immediately
+    tst.b   c_psweep(a6)
+    bne     .cmddone
+    move.b  #$80, c_psweep(a6)             ; zero depth/B00: force one exact-target frequency update
+    bra     .cmddone
+.cb_wave:
+    cmpi.b  #5, c_track(a6)
+    bne     .cmddone
+    moveq   #0, d3
+    move.b  c_track(a6), d3
+    move.b  (3,a1,d1.w), d2               ; WAVE uses the low nibble as bank 0-F
     andi.b  #15, d2
     lea     c_wbank, a4
     move.b  d2, (a4,d3.w)
@@ -12054,12 +12708,19 @@ perc_freq_send:
     bclr    #3, perc_keys                   ; pitched, no table voice -> op4 silent
     move.b  #$FF, perc_note+3
 .pfs_emit:
-    movem.l d0-d3/a2-a4, -(sp)
+    movem.l d0-d4/a2-a4, -(sp)
     moveq   #0, d0
     move.b  c_instr(a6), d0
     mulu.w  #INSTR_SIZE, d0
     lea     instrum, a2
     adda.w  d0, a2
+    moveq   #0, d4                         ; non-zero = SWEEP target F-number (octave C)
+    bsr     get_fswp_cfg
+    tst.b   d0
+    beq.s   .pfs_floor_done                ; SWEEP 00: preserve each operator's full frequency
+    movea.l fnum_base, a4
+    move.w  (a4), d4                       ; lowest tuned F-number in the current region
+.pfs_floor_done:
     lea     (i_op,a2), a2                  ; a2 = op 0 params
     lea     perc_freg, a4                  ; per op: DT/MUL reg, freq-hi reg, freq-lo reg
     lea     perc_live, a3                  ; live (phrase-driven) operator frequencies
@@ -12074,6 +12735,26 @@ perc_freq_send:
     move.b  d0, (a5)+
     addq.w  #1, d5
     move.w  (a3), d1                        ; fnum word from perc_live (phrase-driven)
+    tst.w   d4                              ; SWEEP ignores pitch class but retains this operator's octave block
+    beq.s   .pfs_floor_applied
+    andi.w  #$F800, d1
+    or.w    d4, d1
+.pfs_floor_applied:
+    moveq   #0, d0                          ; apply the same raw F-number sweep to every active CH3 operator
+    move.b  c_psweep(a6), d0
+    andi.w  #$007F, d0                      ; bit7 is the zero-offset final-write marker, not pitch
+    lsl.w   #4, d0                          ; one sweep unit = 16 F-number steps
+    beq.s   .pfs_swept
+    move.w  d1, d2
+    andi.w  #$07FF, d2                      ; retain block separately; slide inside the current block
+    add.w   d0, d2
+    cmpi.w  #2047, d2
+    bls.s   .pfs_swok
+    move.w  #2047, d2
+.pfs_swok:
+    andi.w  #$F800, d1
+    or.w    d2, d1
+.pfs_swept:
     move.b  #0, (a5)+                       ; freq HIGH: block<<3 | F[10:8]
     move.b  (a4)+, (a5)+
     move.w  d1, d2
@@ -12125,7 +12806,11 @@ perc_freq_send:
     or.b    d1, d0
     move.b  d0, (a5)+
     addq.w  #1, d5
-    movem.l (sp)+, d0-d3/a2-a4
+    cmpi.b  #$80, c_psweep(a6)              ; the exact target was emitted to all four operators
+    bne.s   .pfs_done
+    clr.b   c_psweep(a6)
+.pfs_done:
+    movem.l (sp)+, d0-d4/a2-a4
     rts
 perc_freg:                                ; per record op (S1,S3,S2,S4): {DT/MUL reg, freq-hi, freq-lo}
     dc.b $32, $AD, $A9                     ; op0 S1  -- VERIFY operator<->register mapping on hardware
@@ -12140,9 +12825,6 @@ fm_freq_send:
     moveq   #0, d0
     move.b  c_note(a6), d0                  ; effective note = c_note + table TSP + chord arp offset
     move.b  c_ttsp(a6), d3                  ; macro-table transpose (signed; 0 when no table)
-    ext.w   d3
-    add.w   d3, d0
-    move.b  c_psweep(a6), d3                ; per-instrument pitch sweep (downward, decays to 0)
     ext.w   d3
     add.w   d3, d0
     moveq   #0, d3
@@ -12172,11 +12854,32 @@ fm_freq_send:
     moveq   #95, d0
 .ffs_chi:
     bsr     fm_freq                         ; d1=$A4, d2=$A0
-    moveq   #0, d3                          ; F/P fine + L slide + LFO TUNE -> add to the 11-bit fnum
+    bsr     get_fswp_cfg                    ; SWEEP 00 follows the complete played note as usual
+    tst.b   d0
+    beq.s   .ffs_floor_done
+    movea.l fnum_base, a4                  ; non-zero SWEEP: note chooses octave; target its lowest tuned F-number
+    move.w  (a4), d2                       ; region-correct C F-number (644 NTSC / 650 PAL)
+    andi.b  #$F8, d1                       ; retain block bits, replace within-block F-number high bits
+    move.w  d2, d3
+    lsr.w   #8, d3
+    andi.b  #7, d3
+    or.b    d3, d1
+    andi.w  #$00FF, d2
+.ffs_floor_done:
+    moveq   #0, d0                          ; SWEEP + F/P fine + L slide + LFO TUNE -> raw 11-bit fnum delta
+    move.b  c_psweep(a6), d0                ; sweep unit = 16 F-number steps; positive starts high
+    andi.w  #$007F, d0                      ; bit7 requests the final zero-offset write
+    lsl.w   #4, d0
+    moveq   #0, d3
     move.b  c_track(a6), d3
     lea     c_pfine, a4
-    move.b  (a4,d3.w), d0
-    ext.w   d0
+    move.b  (a4,d3.w), d4
+    ext.w   d4
+    add.w   d4, d0
+    lea     fmgrp_fine, a4                  ; fixed UNISON spread is independent of the F/P command state
+    move.b  (a4,d3.w), d4
+    ext.w   d4
+    add.w   d4, d0
     add.w   d3, d3                          ; track*2 -> c_slide/c_lfopitch (word arrays)
     lea     c_slide, a4
     add.w   (a4,d3.w), d0                   ; + L slide
@@ -12217,6 +12920,10 @@ fm_freq_send:
     move.b  d3, (a5)+
     move.b  d2, (a5)+
     addq.w  #1, d5
+    cmpi.b  #$80, c_psweep(a6)              ; final zero-offset write completed successfully
+    bne.s   .ffs_done
+    clr.b   c_psweep(a6)
+.ffs_done:
     rts
 
 ; d0 = note (0-95) -> d1 = $A4 value (block<<3 | fnum hi), d2 = $A0 value (fnum lo)
@@ -13097,6 +13804,15 @@ hint_bar_draw:
     adda.w  d0, a3
     cmpi.b  #NVOICE+2, cur_row
     bhs     .hb_op
+    tst.b   (i_type,a3)                    ; FM GROUP is the second cell on the shared FSWP row
+    bne.s   .hb_top
+    cmpi.b  #NVOICE+1, cur_row
+    bne.s   .hb_top
+    cmpi.b  #1, cur_col
+    bne.s   .hb_top
+    lea     str_hint_fmgroup, a1
+    bra     .hb_apply
+.hb_top:
     moveq   #0, d0                          ; top rows -> hint_type_ptr[i_type][cur_row]
     move.b  (i_type,a3), d0
     cmpi.b  #6, d0                          ; guard a stray type byte
@@ -13114,7 +13830,7 @@ hint_bar_draw:
     move.b  cur_col, d0
     cmpi.b  #HINT_OPS, d0
     bhs     .hb_none
-    cmpi.b  #FM_NPARM, d0                  ; SG hint names the currently selected shape
+    cmpi.b  #FM_NPARM, d0                  ; SSG hint names the currently selected shape
     beq.s   .hb_ssg
     lsl.w   #2, d0
     lea     hint_op, a1
@@ -14567,6 +15283,10 @@ sanitize_fm_ssg_record:                    ; a0 = one 64-byte record; non-FM uni
     movem.l d0-d2/a0, -(sp)
     tst.b   (i_type,a0)
     bne.s   .sfsr_done
+    cmpi.b  #FMGRP_POWER, (i_fgroup,a0)    ; old byte 63 was reserved: reject values outside the defined enum
+    bls.s   .sfsr_groupok
+    clr.b   (i_fgroup,a0)
+.sfsr_groupok:
     lea     (i_op+5,a0), a0                ; each operator's packed AM/SSG byte
     moveq   #3, d2
 .sfsr_op:
@@ -15156,27 +15876,42 @@ dir_load:                                  ; stage + validate first; commit only
     move.b  #1, save_busy                   ; keep engine mutations out of the eventual commit window
     clr.b   load_ok
     move.b  #FILE_ERR_NONE, files_error
+    bsr     dir_load_stage                  ; d4=valid stage, d7=raw flag
+    tst.b   d4
+    beq.s   .dl_done
+    bsr     dir_load_commit
+.dl_done:
+    clr.b   save_busy
+    movem.l (sp)+, d0-d7/a0-a3
+    rts
+
+; Read and fully validate a directory entry into rle_buf without touching the working song.
+; d0 = directory entry; returns d4=1 on success (d7=raw flag), else d4=0. dir_ent and
+; rle_buf remain live for dir_load_commit. CONT uses this split to take its source snapshot
+; only after the target is known-good, so a rejected second hop cannot destroy active bridges.
+dir_load_stage:
+    moveq   #0, d4
     bsr     dir_rd                          ; entry d0 -> dir_ent
     lea     dir_ent, a0
     cmpi.b  #$A5, (a0)
-    bne     .dl_done                        ; invalid entry -> nothing
+    bne     .dls_done                       ; invalid entry -> nothing
     moveq   #0, d7
     move.b  1(a0), d7                       ; raw flag must be exactly 0 or 1
     cmpi.b  #1, d7
-    bhi     .dl_bad
+    bhi     .dls_bad
     moveq   #0, d2
     move.w  2(a0), d2                       ; heap offset
     moveq   #0, d6
     move.w  4(a0), d6                       ; blob len
     tst.w   d6
-    beq     .dl_bad
+    beq     .dls_bad
     cmpi.w  #SAVE_DATA, d6
-    bhi     .dl_bad
+    bhi     .dls_bad
     tst.b   d7
-    beq.s   .dl_sizeok
+    beq.s   .dls_sizeok
     cmpi.w  #SAVE_DATA, d6                  ; raw blobs must be one exact snapshot
-    bne     .dl_bad
-.dl_sizeok:
+    bne     .dls_bad
+.dls_sizeok:
     move.l  d2, d0                          ; directory offsets must also remain within detected SRAM
     add.l   d6, d0
     addi.l  #HEAP_BASE, d0
@@ -15185,57 +15920,67 @@ dir_load:                                  ; stage + validate first; commit only
     lsl.l   #8, d1
     lsl.l   #2, d1
     cmp.l   d1, d0
-    bhi     .dl_bad
+    bhi     .dls_bad
     move.l  d2, d0                          ; read every blob type into staging, never SAVE_BASE
     addi.l  #HEAP_BASE, d0
     bsr     sram_at
-    beq     .dl_bad
+    beq     .dls_bad
     lea     rle_buf, a0
     move.l  d6, d1
     subq.l  #1, d1
-.dl_rl:
+.dls_rl:
     move.b  (a1), (a0)+
     adda.l  d5, a1
-    dbra    d1, .dl_rl
+    dbra    d1, .dls_rl
     move.b  #0, $A130F1
 
     tst.b   d7                             ; validate and checksum the staged, decompressed bytes
-    bne.s   .dl_rawcheck
+    bne.s   .dls_rawcheck
     lea     rle_buf, a0
     bsr     rle_validate
     tst.l   d0
-    beq     .dl_bad
-    bra.s   .dl_csum
-.dl_rawcheck:
+    beq     .dls_bad
+    bra.s   .dls_csum
+.dls_rawcheck:
     lea     rle_buf, a0
     move.w  #SAVE_DATA-1, d1
     bsr     buffer_checksum
-.dl_csum:
+.dls_csum:
     lea     dir_ent, a0
     cmp.w   14(a0), d2
-    bne     .dl_bad
+    bne     .dls_bad
+    moveq   #1, d4
+    rts
+.dls_bad:
+    move.b  #0, $A130F1                     ; safe even when validation failed before SRAM was mapped
+    move.b  #FILE_ERR_CSUM, files_error     ; preserve the current song/title and make the failure explicit
+    move.b  #1, need_clear
+.dls_done:
+    rts
 
+; Commit a previously validated stage. d7 is the raw flag returned by dir_load_stage.
+dir_load_commit:
     tst.b   d7                             ; validation passed: now and only now replace the working song
-    beq.s   .dl_unpack
+    beq.s   .dlc_unpack
     lea     rle_buf, a0
     lea     SAVE_BASE, a1
     move.w  #SAVE_DATA-1, d1
-.dl_rawcopy:
+.dlc_rawcopy:
     move.b  (a0)+, (a1)+
-    dbra    d1, .dl_rawcopy
-    bra.s   .dl_name
-.dl_unpack:
+    dbra    d1, .dlc_rawcopy
+    bra.s   .dlc_name
+.dlc_unpack:
     lea     rle_buf, a0
     lea     SAVE_BASE, a1
     move.l  #(SAVE_DATA/4), d0
     bsr     rle_unpack
-.dl_name:
+.dlc_name:
     lea     dir_ent+6, a1                   ; title changes only with a successful song commit
     lea     song_title, a2
     moveq   #7, d1
-.dl_cn:
+.dlc_cn:
     move.b  (a1)+, (a2)+
-    dbra    d1, .dl_cn
+    dbra    d1, .dlc_cn
     bsr     scatter_globals
     bsr     invalidate_patches              ; the loaded song replaced every instrument definition
     move.b  proj_groove, groove_sel
@@ -15245,13 +15990,6 @@ dir_load:                                  ; stage + validate first; commit only
     clr.b   song_dirty
     move.b  #1, load_ok
     move.b  #1, need_clear
-    bra.s   .dl_done
-.dl_bad:
-    move.b  #FILE_ERR_CSUM, files_error     ; preserve the current song/title and make the failure explicit
-    move.b  #1, need_clear
-.dl_done:
-    clr.b   save_busy
-    movem.l (sp)+, d0-d7/a0-a3
     rts
 
 dir_delete:                                ; d0 = entry index -> free it + compact the heap (recover the hole)
@@ -15827,6 +16565,9 @@ rom_load_instr:                            ; d0 = factory slot -> copy fm_factor
     lea     instrum+i_pan, a1             ; ROM preset load -> force stereo L+R (only ROM, not SRAM/RAM)
     adda.l  d1, a1                          ; d1 still = cur_instr*INSTR_SIZE
     move.b  #3, (a1)
+    lea     instrum, a0                    ; factory files may predate packed SSG / FM GROUP metadata
+    adda.l  d1, a0
+    bsr     sanitize_fm_ssg_record
 .rli_done:
     movem.l (sp)+, d0-d2/a0-a1
     rts
@@ -15950,11 +16691,12 @@ save_song:                                 ; save the work-RAM image to SRAM slo
 ; entry are the next increments.
 ; ============================================================================
 
-; Snapshot every masked, active track: assign a packed carry slot and copy its
-; current phrase -> carry_buf[slot] and instrument -> carry_instr[slot] (both
-; outside SAVE_BASE, so they survive the load). carry_slot[track] = slot / $FF.
+; Snapshot every masked, active track. The private phrase buffers and a shared pool of
+; every instrument they actually reference live outside SAVE_BASE, so a validated load
+; can replace the complete song image without changing the bridge on the next audio tick.
 cont_snapshot_all:
     movem.l d5-d7/a0-a1/a6, -(sp)
+    clr.b   cont_active                    ; a second CONT hop supersedes the previous target/backup set
     lea     carry_slot, a0                 ; carry_slot[] <- $FF (none)
     moveq   #NCH-1, d7
 .csa_clr:
@@ -15983,6 +16725,8 @@ cont_snapshot_all:
     addq.b  #1, d7
     cmpi.b  #NCH, d7
     blo.s   .csa_loop
+    bsr     cont_snapshot_instr_all        ; retain all unique IN refs + each channel's current patch
+    bsr     cont_snapshot_globals          ; source modulation remains authoritative during overlap
     movem.l (sp)+, d5-d7/a0-a1/a6
     rts
 
@@ -15996,30 +16740,374 @@ cont_snapshot_one:                         ; d5=slot, a6=channel. Clobbers d0-d1
 .cso_p:
     move.b  (a0)+, (a1)+
     dbra    d1, .cso_p
-    lea     instrum, a0                    ; source instrument = instrum[c_instr]
-    moveq   #0, d0
-    move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    adda.w  d0, a0
-    move.w  d5, d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     carry_instr, a1
-    adda.w  d0, a1                          ; dest = carry_instr[slot]
-    moveq   #INSTR_SIZE-1, d1
-.cso_i:
-    move.b  (a0)+, (a1)+
-    dbra    d1, .cso_i
     move.w  d5, d0                          ; save the within-phrase phase for a beat-matched replant
     lea     carry_row, a1
     move.b  c_row(a6), (a1,d0.w)
+    lea     carry_curinst, a1
+    move.b  c_instr(a6), (a1,d0.w)          ; current held note may precede the next IN-bearing row
     rts
 
-; Plant (run AFTER the load): each carried track becomes a bridge -- its snapshot
-; instrument goes to a reserved live slot (NINSTR-1-slot), c_phrase points at the
-; private phrase with its IN columns patched to that slot, and CONT_BRIDGE is set.
-; Non-carried tracks are silenced (v1 LIVE-style entry).
+; Add source instrument d0 to the shared carry pool if it is not there already. If the
+; bounded pool is full its map entry remains $FF; only tracks that need that entry will be
+; declined after the target load, so no target data is ever overwritten speculatively.
+cont_collect_instr:                        ; d0.b = source slot; preserves all registers
+    movem.l d0-d4/a0-a2, -(sp)
+    andi.w  #$00FF, d0
+    cmpi.w  #NINSTR, d0
+    bhs.s   .cci_done
+    lea     carry_map, a0
+    cmpi.b  #$FF, (a0,d0.w)
+    bne.s   .cci_done
+    moveq   #0, d1
+    move.b  carry_icount, d1
+    cmpi.w  #CARRY_NINSTR, d1
+    bhs.s   .cci_done
+    move.b  d1, (a0,d0.w)
+    move.w  d0, d2
+    mulu.w  #INSTR_SIZE, d2
+    lea     instrum, a1
+    adda.w  d2, a1
+    move.w  d1, d2
+    mulu.w  #INSTR_SIZE, d2
+    lea     carry_instr, a2
+    adda.w  d2, a2
+    moveq   #INSTR_SIZE-1, d3
+.cci_copy:
+    move.b  (a1)+, (a2)+
+    dbra    d3, .cci_copy
+    addq.b  #1, carry_icount
+.cci_done:
+    movem.l (sp)+, d0-d4/a0-a2
+    rts
+
+cont_snapshot_instr_all:
+    movem.l d0-d7/a0-a2, -(sp)
+    clr.b   carry_icount
+    lea     carry_map, a0
+    moveq   #NINSTR-1, d0
+.csia_map:
+    move.b  #$FF, (a0)+
+    dbra    d0, .csia_map
+    lea     carry_borrow, a0
+    moveq   #CARRY_NINSTR-1, d0
+.csia_borrow:
+    move.b  #$FF, (a0)+
+    dbra    d0, .csia_borrow
+    moveq   #0, d7                          ; track
+.csia_track:
+    lea     carry_slot, a0
+    moveq   #0, d6
+    move.b  (a0,d7.w), d6
+    cmpi.b  #$FF, d6
+    beq.s   .csia_next
+    lea     carry_curinst, a0               ; include the note that is already sounding at the boundary
+    moveq   #0, d0
+    move.b  (a0,d6.w), d0
+    bsr     cont_collect_instr
+    move.w  d6, d0
+    mulu.w  #PHRASE_SIZE, d0
+    lea     carry_buf+1, a1                 ; scan the copied phrase's 16 IN columns
+    adda.w  d0, a1
+    moveq   #16-1, d5
+.csia_phrase:
+    moveq   #0, d0
+    move.b  (a1), d0
+    bsr     cont_collect_instr
+    addq.l  #4, a1
+    dbra    d5, .csia_phrase
+.csia_next:
+    addq.b  #1, d7
+    cmpi.b  #NCH, d7
+    blo.s   .csia_track
+    moveq   #0, d7                          ; PERC records also depend on a separate FM base record
+.csia_dep:
+    cmp.b   carry_icount, d7                ; count may grow as dependencies are appended
+    bhs.s   .csia_done
+    move.w  d7, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     carry_instr, a0
+    adda.w  d0, a0
+    cmpi.b  #5, i_type(a0)
+    bne.s   .csia_depnext
+    moveq   #0, d0
+    move.b  i_pbase(a0), d0
+    bsr     cont_collect_instr
+.csia_depnext:
+    addq.b  #1, d7
+    bra.s   .csia_dep
+.csia_done:
+    movem.l (sp)+, d0-d7/a0-a2
+    rts
+
+cont_snapshot_globals:
+    movem.l d0/a0-a1, -(sp)
+    lea     lfo_cfg, a0
+    lea     carry_lfo_cfg, a1
+    moveq   #GLOB_LFO_LEN-1, d0
+.csg_cfg:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .csg_cfg
+    lea     lfo_phase, a0
+    lea     carry_lfo_phase, a1
+    moveq   #(NLFO*2)-1, d0
+.csg_phase:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .csg_phase
+    move.b  g_lfo, carry_g_lfo
+    move.b  proj_tsp, carry_proj_tsp
+    move.b  scale_key, carry_scale_key
+    move.b  scale_type, carry_scale_type
+    movem.l (sp)+, d0/a0-a1
+    rts
+
+; Build a conservative target-bank usage mask. Every instrument referenced by any target phrase,
+; plus every PERC base dependency, is protected from CONT's temporary carried-patch swap.
+cont_mark_used_instr:
+    movem.l d0-d1/d3/d7/a0, -(sp)
+    moveq   #0, d3
+    lea     phrases+1, a0                  ; IN byte in each four-byte phrase row
+    move.w  #(NPHRASES*16)-1, d7
+.cmu_phrase:
+    moveq   #0, d0
+    move.b  (a0), d0
+    cmpi.b  #NINSTR, d0
+    bhs.s   .cmu_pnext
+    bset    d0, d3
+.cmu_pnext:
+    addq.l  #4, a0
+    dbra    d7, .cmu_phrase
+    lea     instrum, a0
+    moveq   #NINSTR-1, d7
+.cmu_perc:
+    cmpi.b  #5, i_type(a0)
+    bne.s   .cmu_inext
+    moveq   #0, d0
+    move.b  i_pbase(a0), d0
+    cmpi.b  #NINSTR, d0
+    bhs.s   .cmu_inext
+    bset    d0, d3
+.cmu_inext:
+    lea     INSTR_SIZE(a0), a0
+    dbra    d7, .cmu_perc
+    move.l  d3, cont_used
+    movem.l (sp)+, d0-d1/d3/d7/a0
+    rts
+
+; Restore every target slot displaced by the shared carried-instrument pool. The source records
+; stay borrowed until the final bridge retires because several bridges may share one patch.
+cont_restore_instr_all:
+    movem.l d0-d4/a0-a2, -(sp)
+    moveq   #0, d4
+.cria_loop:
+    cmp.b   carry_icount, d4
+    bhs.s   .cria_done
+    lea     carry_borrow, a0
+    moveq   #0, d1
+    move.b  (a0,d4.w), d1
+    cmpi.b  #$FF, d1
+    beq.s   .cria_next
+    move.w  d4, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     carry_instr, a1
+    adda.w  d0, a1                          ; target backup
+    move.w  d1, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a2
+    adda.w  d0, a2
+    moveq   #INSTR_SIZE-1, d2
+.cria_copy:
+    move.b  (a1)+, (a2)+
+    dbra    d2, .cria_copy
+    move.b  #$FF, (a0,d4.w)
+.cria_next:
+    addq.b  #1, d4
+    bra.s   .cria_loop
+.cria_done:
+    movem.l (sp)+, d0-d4/a0-a2
+    rts
+
+cont_clear_echo_ring:
+    movem.l d0/a0, -(sp)
+    clr.b   echo_head
+    lea     echo_ring, a0
+    move.w  #256-1, d0
+.ccer_loop:
+    clr.b   (a0)+
+    dbra    d0, .ccer_loop
+    movem.l (sp)+, d0/a0
+    rts
+
+; While bridges exist the runtime modulation bank belongs to the source song. Once the last
+; bridge retires, recover the target configuration from its committed SAVE_BASE snapshot.
+cont_restore_source_globals:
+    movem.l d0/a0-a1, -(sp)
+    lea     carry_lfo_cfg, a0
+    lea     lfo_cfg, a1
+    moveq   #GLOB_LFO_LEN-1, d0
+.crsg_cfg:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .crsg_cfg
+    lea     carry_lfo_phase, a0
+    lea     lfo_phase, a1
+    moveq   #(NLFO*2)-1, d0
+.crsg_phase:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .crsg_phase
+    move.b  carry_g_lfo, g_lfo
+    move.b  carry_proj_tsp, proj_tsp
+    move.b  carry_scale_key, scale_key
+    move.b  carry_scale_type, scale_type
+    move.b  #1, g_lfo_dirty
+    movem.l (sp)+, d0/a0-a1
+    rts
+
+cont_restore_target_globals:
+    movem.l d0/a0-a1, -(sp)
+    lea     SAVE_BASE+GLOB_LFO_OFS, a0
+    lea     lfo_cfg, a1
+    moveq   #GLOB_LFO_LEN-1, d0
+.crtg_cfg:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .crtg_cfg
+    bsr     sanitize_lfo_cfg
+    bsr     reset_lfo_runtime
+    move.b  SAVE_BASE+3, g_lfo
+    move.b  SAVE_BASE+0, proj_tsp
+    move.b  SAVE_BASE+10, scale_key
+    move.b  SAVE_BASE+11, scale_type
+    move.b  #1, g_lfo_dirty
+    bsr     cont_clear_echo_ring            ; target echo always begins from a clean, target-indexed history
+    movem.l (sp)+, d0/a0-a1
+    rts
+
+; Retire one bridge. Target instrument slots and target modulation return atomically only
+; when the final bridge has gone, preventing a shared borrowed patch from disappearing early.
+cont_restore_track:                       ; a6=channel; preserves all registers
+    movem.l d0-d2/a0-a2, -(sp)
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    lea     carry_slot, a2
+    cmpi.b  #$FF, (a2,d2.w)
+    beq.s   .crt_done
+    move.b  #$FF, (a2,d2.w)
+    lea     pshadow, a0                    ; restored RAM differs from the chip's current patch
+    move.b  #$FF, (a0,d2.w)
+    tst.b   cont_active
+    beq.s   .crt_done
+    subq.b  #1, cont_active
+    bne.s   .crt_done
+    bsr     cont_restore_instr_all
+    bsr     cont_restore_target_globals
+.crt_done:
+    movem.l (sp)+, d0-d2/a0-a2
+    rts
+
+; A manual transport stop retires every bridge immediately and restores all borrowed target slots.
+cont_restore_all:
+    movem.l d0-d1/d7/a0/a6, -(sp)
+    moveq   #0, d7
+    lea     ch_state, a6
+.cra_loop:
+    cmpi.b  #CONT_BRIDGE, c_chain(a6)
+    bne.s   .cra_next
+    bsr     cont_restore_track
+    move.b  #$FF, c_chain(a6)
+    move.b  #$FF, c_kshadow(a6)
+    clr.b   c_keyon(a6)
+    clr.b   c_estate(a6)
+    clr.b   c_vol(a6)
+    lea     live_on, a0
+    clr.b   (a0,d7.w)
+    lea     live_q, a0
+    clr.b   (a0,d7.w)
+    lea     live_when, a0
+    clr.b   (a0,d7.w)
+.cra_next:
+    lea     CHSIZE(a6), a6
+    addq.b  #1, d7
+    cmpi.b  #NCH, d7
+    blo.s   .cra_loop
+    movem.l (sp)+, d0-d1/d7/a0/a6
+    rts
+
+; Plant after the target load. Allocate one protected target slot per distinct retained source
+; instrument, remap every private phrase IN reference, and leave every target chain stopped.
 cont_plant_all:
     movem.l d0-d7/a0-a1/a6, -(sp)
+    bsr     cont_mark_used_instr           ; loaded target bank/phrases are now resident
+    move.l  cont_used, d6
+    clr.b   cont_active
+    bsr     cont_clear_echo_ring            ; source instrument numbers must never survive in target echo history
+    lea     carry_borrow, a0
+    moveq   #CARRY_NINSTR-1, d0
+.cpa_bclr:
+    move.b  #$FF, (a0)+
+    dbra    d0, .cpa_bclr
+    moveq   #0, d7                          ; reserve target slots first; do not mutate the bank on failure
+.cpa_reserve:
+    cmp.b   carry_icount, d7
+    bhs.s   .cpa_deps
+    moveq   #NINSTR-1, d4
+.cpa_findslot:
+    btst    d4, d6
+    beq.s   .cpa_gotslot
+    dbra    d4, .cpa_findslot
+    bra     .cpa_decline_all               ; insufficient free slots: target bank remains untouched
+.cpa_gotslot:
+    bset    d4, d6
+    lea     carry_borrow, a0
+    move.b  d4, (a0,d7.w)
+    addq.b  #1, d7
+    bra.s   .cpa_reserve
+.cpa_deps:
+    moveq   #0, d7                          ; rewrite retained PERC base references to borrowed target slots
+.cpa_deploop:
+    cmp.b   carry_icount, d7
+    bhs.s   .cpa_swap_start
+    move.w  d7, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     carry_instr, a0
+    adda.w  d0, a0
+    cmpi.b  #5, i_type(a0)
+    bne.s   .cpa_depnext
+    moveq   #0, d0
+    move.b  i_pbase(a0), d0
+    lea     carry_map, a1
+    moveq   #0, d1
+    move.b  (a1,d0.w), d1
+    cmpi.b  #$FF, d1
+    beq     .cpa_decline_all                ; an incomplete PERC/base pair cannot be planted safely
+    lea     carry_borrow, a1
+    move.b  (a1,d1.w), i_pbase(a0)
+.cpa_depnext:
+    addq.b  #1, d7
+    bra.s   .cpa_deploop
+.cpa_swap_start:
+    moveq   #0, d7                          ; source records enter their reserved target slots;
+.cpa_swap_loop:                             ; carry_instr becomes the displaced target-record backup
+    cmp.b   carry_icount, d7
+    bhs.s   .cpa_tracks
+    move.w  d7, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     carry_instr, a0
+    adda.w  d0, a0
+    lea     carry_borrow, a1
+    moveq   #0, d4
+    move.b  (a1,d7.w), d4
+    move.w  d4, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    moveq   #INSTR_SIZE-1, d1
+.cpa_swap:
+    move.b  (a0), d2
+    move.b  (a1), d0
+    move.b  d0, (a0)+
+    move.b  d2, (a1)+
+    dbra    d1, .cpa_swap
+    addq.b  #1, d7
+    bra.s   .cpa_swap_loop
+.cpa_tracks:
     moveq   #0, d7                          ; track index
 .cpa_loop:
     move.w  d7, d0                          ; a6 = &ch_state[track]
@@ -16031,108 +17119,159 @@ cont_plant_all:
     move.b  (a0,d7.w), d5                  ; slot for this track ($FF = not carried)
     cmpi.b  #$FF, d5
     bne.s   .cpa_bridge
-    tst.b   proj_mode                     ; not carried: SONG (0) -> engine_play_reset already restarted
-    beq     .cpa_next                      ;   it on the new song; LIVE -> silence (performer brings it in)
+.cpa_notcarried:
+                                              ; handover is LIVE-only: performer brings target tracks in manually
     move.b  #$FF, c_chain(a6)
     move.b  #0, c_vol(a6)
     move.b  #0, c_estate(a6)
     move.b  #0, c_keyon(a6)
+    lea     live_on, a0                   ; old-song LIVE state must never survive onto an uncarried track
+    clr.b   (a0,d7.w)
+    lea     live_q, a0
+    clr.b   (a0,d7.w)
+    lea     live_when, a0
+    clr.b   (a0,d7.w)
     bra     .cpa_next
 .cpa_bridge:
-    moveq   #NINSTR-1, d4                  ; reserved slot = NINSTR-1-slot (top-down)
-    sub.b   d5, d4
-    move.w  d5, d0                          ; copy carry_instr[slot] -> instrum[reserved]
-    mulu.w  #INSTR_SIZE, d0
-    lea     carry_instr, a0
-    adda.w  d0, a0
-    move.w  d4, d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a1
-    adda.w  d0, a1
-    moveq   #INSTR_SIZE-1, d1
-.cpa_ci:
-    move.b  (a0)+, (a1)+
-    dbra    d1, .cpa_ci
     move.w  d5, d0                          ; c_phrase = &carry_buf[slot]
     mulu.w  #PHRASE_SIZE, d0
     lea     carry_buf, a0
     adda.w  d0, a0
+    lea     carry_curinst, a1               ; current held instrument must have survived the bounded pool
+    moveq   #0, d0
+    move.b  (a1,d5.w), d0
+    lea     carry_map, a1
+    moveq   #0, d4
+    move.b  (a1,d0.w), d4
+    cmpi.b  #$FF, d4
+    beq     .cpa_drop
+    lea     carry_borrow, a1
+    move.b  (a1,d4.w), d4                  ; d4 = remapped current instrument
+    move.w  d4, d0
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a6
+    cmpi.b  #2, (a6,d0.w)
+    beq     .cpa_drop_rechan                ; WAVE depends on per-song waveform RAM, which was replaced
+    lea     1(a0), a1                       ; validate every valid IN before changing any of them
+    moveq   #16-1, d1
+.cpa_validate:
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmpi.b  #NINSTR, d0
+    bhs.s   .cpa_vnext
+    lea     carry_map, a6
+    moveq   #0, d2
+    move.b  (a6,d0.w), d2
+    cmpi.b  #$FF, d2
+    beq     .cpa_drop_rechan
+    lea     carry_borrow, a6
+    move.b  (a6,d2.w), d2
+    mulu.w  #INSTR_SIZE, d2
+    lea     instrum, a6
+    cmpi.b  #2, (a6,d2.w)
+    beq     .cpa_drop_rechan                ; never combine a source WAVE patch with target waveform data
+.cpa_vnext:
+    addq.l  #4, a1
+    dbra    d1, .cpa_validate
+    move.w  d7, d0                          ; validation used a6 as scratch: recover channel pointer
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
     move.l  a0, c_phrase(a6)
-    lea     1(a0), a1                       ; patch the 16 IN columns -> reserved slot
+    lea     1(a0), a1
     moveq   #16-1, d1
 .cpa_in:
-    move.b  d4, (a1)
+    moveq   #0, d0
+    move.b  (a1), d0
+    cmpi.b  #NINSTR, d0
+    bhs.s   .cpa_innext
+    lea     carry_map, a6
+    moveq   #0, d2
+    move.b  (a6,d0.w), d2
+    lea     carry_borrow, a6
+    move.b  (a6,d2.w), (a1)
+.cpa_innext:
     addq.l  #4, a1
     dbra    d1, .cpa_in
+    move.w  d7, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
     move.b  #CONT_BRIDGE, c_chain(a6)     ; sentinels
     move.b  d4, c_instr(a6)
+    addq.b  #1, cont_active
+    lea     live_on, a0                   ; bridge is the only logically active voice on this LIVE track
+    move.b  #1, (a0,d7.w)
+    lea     live_q, a0
+    clr.b   (a0,d7.w)
+    lea     live_when, a0
+    clr.b   (a0,d7.w)
     move.b  #$FF, c_tbl(a6)                ; a bridge runs no macro table (table data is gone)
     move.w  d5, d0                          ; restore the snapshot phase (beat-match; plays out from here)
     lea     carry_row, a0
     move.b  (a0,d0.w), c_row(a6)
+    bra.s   .cpa_next
+.cpa_drop_rechan:
+    move.w  d7, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
+.cpa_drop:
+    lea     carry_slot, a1
+    move.b  #$FF, (a1,d7.w)
+    bra     .cpa_notcarried
 .cpa_next:
     addq.b  #1, d7
     cmpi.b  #NCH, d7
     blo     .cpa_loop
+    tst.b   cont_active
+    beq.s   .cpa_none
+    bsr     cont_restore_source_globals
+    move.w  #6*CHSIZE, d0                  ; no carried T1 -> stale GROUP ownership must not sound T2/T3
+    lea     ch_state, a0
+    adda.w  d0, a0
+    cmpi.b  #CONT_BRIDGE, c_chain(a0)
+    beq.s   .cpa_done
+    clr.b   clu_claim
+    clr.b   clu_mode
+    bra.s   .cpa_done
+.cpa_none:
+    bsr     cont_restore_instr_all          ; allocated pool was unusable: return every target slot now
+.cpa_done:
     movem.l (sp)+, d0-d7/a0-a1/a6
     rts
 
-; SONG-mode CONT resets every runtime voice before planting the carried snapshots. The load fires
-; after the old channels have already entered their boundary row, so a plain reset leaves the new
-; song at pre-row-0 while each bridge is restored at the already-entered row: one row out of phase.
-; Rewind only the bridges by one row, then advance every eligible channel through the normal path.
-; That rebuilds note/command/envelope trigger state and makes the new song + bridges enter the same
-; audio update. LIVE mode does not call engine_play_reset and therefore must not use this catch-up.
-cont_resume_song:
-    movem.l d0-d7/a0-a2/a6, -(sp)
-    bsr     groove_step                    ; match a normal reset's first row launch (slot 0 -> slot 1)
-    moveq   #NCH-1, d7
-    lea     ch_state, a6
-.crs_loop:
-    cmpi.b  #CONT_BRIDGE, c_chain(a6)
-    bne.s   .crs_advance
-    move.b  c_row(a6), d0                  ; replay the snapshotted current row after reset erased
-    subq.b  #1, d0                         ; its trigger/runtime state (0 rewinds to 15)
-    andi.b  #$0F, d0
-    move.b  d0, c_row(a6)
-.crs_advance:
-    bsr     is_echo_target                 ; keep the normal engine's channel-ownership rules
-    tst.b   d0
-    bne.s   .crs_next
-    bsr     advance_ch                     ; inactive/empty channels safely no-op inside advance_ch
-.crs_next:
-    lea     CHSIZE(a6), a6
-    dbra    d7, .crs_loop
-    clr.b   g_gctr                         ; the jointly entered row receives its full groove duration
-    move.b  #1, eng_adv                    ; playheads changed during the handover
-    movem.l (sp)+, d0-d7/a0-a2/a6
-    rts
+.cpa_decline_all:
+    lea     carry_slot, a0
+    moveq   #NCH-1, d0
+.cpa_decline_loop:
+    move.b  #$FF, (a0)+
+    dbra    d0, .cpa_decline_loop
+    clr.b   carry_icount                    ; no swaps occurred, so the normal track loop can mute safely
+    bra     .cpa_tracks
 
-; Driver: swap to save slot d0 (1-based) live -- snapshot, load, plant. The v1
-; test/prototype path; the beat-quantized fire + glide + SONG entry wrap this.
+; Driver: swap to save slot d0 (1-based) into a LIVE handover. Only the carried
+; private phrases sound after the load; target chains enter when the performer
+; explicitly triggers their SONG cells.
 cont_do_load:                              ; d0 = target directory entry index -> load it live
-    move.w  d0, -(sp)                      ; keep the target across the snapshot + groove read
+    move.b  #1, save_busy                  ; one atomic validate -> snapshot -> commit transaction
+    clr.b   load_ok
+    move.b  #FILE_ERR_NONE, files_error
+    bsr     dir_load_stage                 ; leave a known-good target staged before touching bridge backups
+    tst.b   d4
+    beq.s   .cdl_done                      ; bad target: current song and any active transition are untouched
     bsr     cont_snapshot_all
-    bsr     cont_groove_avg               ; capture the OLD tempo (avg frames/row) for the glide
+    bsr     cont_groove_avg                ; capture the OLD tempo (avg frames/row) for the glide
     move.b  d0, glide_from
-    move.w  (sp)+, d0
-    bsr     dir_load                       ; staged checksum validation is mandatory, including live transitions
-    tst.b   load_ok
-    beq.s   .cdl_fail                      ; bad target: keep the current song and do not plant stale bridges
-    tst.b   proj_mode                     ; SONG (0): restart the new song from its top (non-carried voices
-    bne.s   .cdl_live                      ;   play it beat-matched); LIVE: only the bridges sound
-    move.b  #0, play_from
-    bsr     engine_play_reset
-.cdl_live:
+    bsr     dir_load_commit
+    move.b  #1, proj_mode                  ; CONT always lands in LIVE: no target track auto-starts
+    clr.b   play_mode                      ; discard any saved/old chain or phrase audition mode
     bsr     cont_groove_avg               ; the NEW tempo
     move.b  d0, glide_to
     bsr     cont_plant_all
-    tst.b   proj_mode
-    bne.s   .cdl_glide                     ; LIVE retained runtime state; replaying would double-trigger its row
-    bsr     cont_resume_song               ; SONG: new + carried tracks enter their rows on the same tick
-.cdl_glide:
     bsr     cont_glide_start              ; ramp old->new over SLID bars (if they differ)
-.cdl_fail:
+.cdl_done:
+    clr.b   save_busy
     rts
 
 ; --- tempo glide: genmddj is groove-as-tempo, so glide a flat "scratch" groove (selected by
@@ -16905,6 +18044,7 @@ clear_song:                               ; blank project: phrases -> rests, cha
     move.b  #$FF, (a2)+
     dbra    d0, .cz_s
     bsr     copy_factory_bank             ; NEW: dump the ROM factory library into instrument memory (1->1)
+    bsr     sanitize_fm_ssg_pool          ; validate packed SSG and the formerly-reserved FM GROUP byte
     bsr     invalidate_patches              ; a new project replaced every definition behind the slot numbers
     lea     wave_factory, a1              ; NEW: seed the WAVE pool from the factory wave bank (GMDJWAV0)
     lea     wave_ram, a2
@@ -16923,12 +18063,13 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_help: dc.b "HOLD A TO VIEW HELP",0
-ver_str:    dc.b "V0.24",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+str_hint_fmgroup: dc.b "GROUP: CHORD UNISON OCTAVE POWER",0
+ver_str:    dc.b "V0.25",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
 str_hdr_in: dc.b "              ",0
-str_hdr_fm: dc.b "OP  ML DT TL RS AR D1 D2 RR SL AM SG",0
+str_hdr_fm: dc.b "OP  ML DT TL RS AR D1 D2 RR SL AM SSG",0
 str_scr_ph: dc.b "PHRASE",0
 str_scr_ch: dc.b "CHAIN ",0
 str_scr_sg: dc.b "SONG  ",0
@@ -17074,7 +18215,7 @@ str_fb:     dc.b "FB",0
 str_pan:    dc.b "PAN",0
 str_ams:    dc.b "AMS",0
 str_fms:    dc.b "FMS",0
-str_psw:    dc.b "SWEEP",0
+str_psw:    dc.b "FSWP",0
 str_hld:    dc.b "HLD",0
 str_vol:    dc.b "VOL",0
 str_lfo:    dc.b "LFO",0
@@ -17115,11 +18256,14 @@ str_cl_pow: dc.b "POWER   ",0
 str_cl_oc1: dc.b "OCTAVE1 ",0
 str_cl_oc2: dc.b "OCTAVE2 ",0
 str_cl_chd: dc.b "CHORD   ",0
+str_fmg_uni: dc.b "UNISON  ",0
+str_fmg_oct: dc.b "OCTAVE  ",0
     even
 type_lbl:   dc.l str_t_fm, str_t_kit, str_t_wav, str_t_ton, str_t_noi, str_t_perc
 mode_lbl:   dc.l str_random, str_period
 rate_lbl:   dc.l str_r512, str_r1k, str_r2k, str_pitch
 cluster_lbl: dc.l str_cl_off, str_cl_un1, str_cl_un2, str_cl_5th, str_cl_pow, str_cl_oc1, str_cl_oc2, str_cl_chd
+fmgroup_lbl: dc.l str_cl_off, str_cl_chd, str_fmg_uni, str_fmg_oct, str_cl_pow
 voice_lbl:  dc.l str_hld, str_vol, str_pan, str_tsp, str_tbl, str_tbs, str_algo, str_fb, str_ams, str_fms, str_psw  ; 11
 voice_off:  dc.b i_hld, i_vol, i_pan, i_tsp, i_tbl, i_tbs, i_algo, i_fb, i_ams, i_fms, i_psweep
 voice_max:  dc.b 15, 15, 3, 255, 31, 15, 7, 7, 3, 7, 255
@@ -17127,7 +18271,7 @@ voice_step: dc.b 4, 4, 1, 12, 16, 4, 4, 4, 1, 4, 16      ; HLD VOL PAN TSP TBL T
 voice_fmt:  dc.b 0, 0, 0, 1, 4, 0, 0, 0, 0, 0, 1         ; TSP=hex2 signed; TBL=4 (-- or hex2); SWEEP=hex2 (X=dep U/D, Y=rate L/R)
             even
 nav_instr:  ; INSTR upper-half grid: [Up,Down,Left,Right] target cur_row, per voice cur_row 2-12
-    dc.b 1,  3,  2,  2        ; cr2  HLD   (U=bank)
+    dc.b 1,  3,  2,  12       ; cr2  HLD   (U=bank, R=GROUP)
     dc.b 2,  4,  3,  12       ; cr3  VOL   (R=SWEEP)
     dc.b 3,  6,  4,  5        ; cr4  PAN   (D=TBL skip TSP, R=TSP)
     dc.b 12, 6,  4,  5        ; cr5  TSP   (U=SWEEP, D=TBL, L=PAN)
@@ -17137,7 +18281,7 @@ nav_instr:  ; INSTR upper-half grid: [Up,Down,Left,Right] target cur_row, per vo
     dc.b 8,  10, 9,  9        ; cr9  FB
     dc.b 9,  11, 10, 10       ; cr10 AMS
     dc.b 10, 13, 11, 11       ; cr11 FMS   (D=OP grid skip SWEEP)
-    dc.b 1,  5,  3,  12       ; cr12 SWEEP (U=bank/ROM LOAD, D=TSP, L=VOL)
+    dc.b 1,  5,  3,  12       ; cr12 FSWP/GROUP (special vertical navigation handled in move_cursor)
             even
     even
 ; PSG instrument field tables (TONE = first 10; NOISE = all 12)
