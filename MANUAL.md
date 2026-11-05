@@ -8,6 +8,13 @@ the D-pad and three buttons.
 Build the ROM with `make` → `build/genmddj.bin`, then run it on a flashcart (Mega
 EverDrive) or in an emulator. Nothing loads or plays until you ask.
 
+Every `make` also creates `build/genmddj-kitless.bin` for a constrained emulator or cartridge:
+an otherwise complete 128 KB version with no PCM sample pool. `make kitless` may be used when
+only that variant needs rebuilding.
+The instrument TYPE selector skips KIT, while FM, PSG, PERC and WAVE remain available. Saves
+use the same layout as the full ROM. A KIT record loaded from a full-ROM save is retained but
+silent and marked `KIT UNAVAILABLE`, so returning that save to the full ROM loses no KIT data.
+
 > genmddj is a port of **SMSGGDJ**, the author's Master System / Game Gear tracker, so
 > if you know that one most of this will feel familiar — the data model, the modifier-key
 > control scheme, tables, grooves and sync all carry over. What's new on the Mega Drive:
@@ -63,13 +70,13 @@ Think of it as:
 | **C** clean double-tap | **Paste** the clipboard here. Chords, navigation and block-cancel C taps are ignored |
 | **C** + **B** | **Play from here / solo** the current thing (§3). On FILES it opens the action menu |
 | **Start** | **Play / stop.** From SONG it starts on the exact cursor row; from other editor screens it starts at row 0. LIVE mode launches the cursor row |
+| **X** (six-button pad) | Toggle **mute** on the selected SONG track/current channel (`M` in the SONG header) |
+| **Y** (six-button pad) | Toggle that track in/out of the **solo set** (`S`; several tracks may be soloed) |
+| **Z** (six-button pad) | Clear every track mute and solo; **Mode** is currently unused |
 | **A** hold, then **Start** tap | **Experimental, SONG only:** close the current empty cell/selection and shift those tracks upward |
 | **C** hold, then **Start** tap | **Experimental, SONG only:** insert the copied SONG cell/block at the cursor channel and shift its destination tracks downward |
-| **A** hold ~3 s (alone) | Open / close the **HELP** screen — an on-console button reference, from any screen (§3) |
 
-You never have to time two simultaneous presses. (The one *deliberate* hold is the ~3-second
-lone-**A** for HELP — any other button or the D-pad cancels the count, so it never clashes
-with A's modifier gestures.)
+You never have to time two simultaneous presses.
 
 ### Block select (copy / cut a region)
 
@@ -143,7 +150,29 @@ There are two ways to start sound:
   - **PHRASE** — solos that phrase.
   - **INSTR** — replays the phrase/track you arrived from (handy after drilling in from a note).
 
+In **LIVE**, SONG retains its performance meaning: C+B launches or queues only the selected
+track's SONG clip while the other launched tracks continue. CHAIN, PHRASE and INSTR retain their
+editor meaning instead: C+B immediately replaces the running set with an isolated audition of
+that context. Press C+B again to stop it. A CHAIN audition loops only that chain; it does not
+traverse the surrounding SONG rows.
+
 Press **Start** again to stop.
+
+### Six-button track mixer
+
+With a Mega Drive six-button pad, **X / Y / Z** provide a performance mixer without changing
+the existing three-button gestures. **X** toggles an explicit mute on the selected track.
+**Y** toggles solo membership; when any solo exists, only soloed, non-muted tracks are heard,
+and multiple tracks can be in the solo set. **Z** clears both masks. Explicit mute wins if a
+track is both muted and soloed.
+
+This is an audio gate, not a transport operation: muted tracks continue through their phrases,
+chains, envelopes and commands. Unmuting therefore returns at the current musical position rather
+than restarting the clip. A currently playing one-shot KIT sample is cut and waits for its next
+hit; held FM, PSG and WAVE voices resume from their current state. Mixer state is performance-only,
+is not saved in SRAM, and survives ordinary song loads until **Z** clears it or the console reboots.
+On SONG, the header gap shows `M` for an explicit mute or `S` for a soloed track; a live CONT
+bridge marker `>` takes display priority.
 
 ### Auditioning notes as you write
 
@@ -187,11 +216,9 @@ instrument.
   (read-only here — rename on FILES).
 - **FILES** — save, load and manage songs on the cartridge (below SONG).
 - **OPTIONS** — this machine: video region, sync, palette, clone depth, audition, hints.
-- **HELP** — a read-only, paged **button reference** (above TABLE). **Open it from anywhere by
-  holding A for ~3 seconds** (or `C+↑` from TABLE); the D-pad turns pages (Left/Up = previous,
-  Right/Down = next, wrapping) with a **`N/M` page counter** under the title; hold A again to
-  return to where you were. On the first boot the SONG screen's top row reads
-  **`HOLD A TO VIEW HELP`** for a few seconds as a reminder.
+- **HELP** — a read-only, paged **button reference** above TABLE. From TABLE, use **`C+↑`**
+  to enter HELP and **`C+↓`** to return to TABLE. The plain D-pad turns pages (Left/Up =
+  previous, Right/Down = next, wrapping) with a **`N/M` page counter** under the title.
 
 ---
 
@@ -269,7 +296,12 @@ to a note in a PHRASE to play that note with that sound. The six types:
 - **WAVE** — a **wavetable** voice on the DAC (F6). Pick one of the 16 user waves you draw
   on the WAVE screen; pitched melodically.
 - **PERC** — YM2612 **CH3 special-mode percussion**: F3's four operators tuned
-  independently for metallic/inharmonic percussion. (Advanced; hardware-verified.)
+  independently for metallic/inharmonic percussion. Its frequency rows follow the chip's
+  operator-register order, **OP1 / OP3 / OP2 / OP4**, and each row drives that named operator.
+  **BASE** selects the FM instrument that supplies the algorithm, feedback, envelopes, levels,
+  pan and LFO sensitivities; PERC supplies the independent frequencies and per-operator MUL/DT,
+  plus its own HLD, table and FSWP. Live FM level, pan and modulation controls operate on that
+  base patch. PERC is valid on F3 only. (Advanced.)
 
 A new song's instruments come from the **factory bank**. You can edit any of the 32 song
 instruments freely; **LOAD** pulls a factory or user-bank instrument into a song slot, and

@@ -41,10 +41,15 @@ FM (F1 - F6), Kit (F6), Wave (F6), Tone (T1 - T3), Noise (No), Perc (F3)
   double-tap a SONG/CHAIN reference = mint/clone · tap on a note = audition it.
 - **A** (held) + D-pad = navigate within context: `A`+B = block-select · `A`+←/→ = switch channel · `A`+↑/↓ = page.
 - **C** (held) + D-pad = navigate to new context (change screen) · clean double-tap = paste.
-- **C + B** = play from the exact cursor position (solo this screen); in SONG, reaching the
-  end of that contiguous block loops back to its top.
+- **C + B** = play from the exact cursor position. In LIVE, SONG launches/queues that track's
+  clip, while CHAIN/PHRASE still provide an immediate isolated audition; otherwise the current
+  screen is soloed. SONG contiguous blocks loop from their top.
 - **Start** = play / stop the song; from SONG it begins at the exact cursor row and loops that
   contiguous block (in LIVE, it launches the cursor row).
+- **Six-button pad mixer** — **X** toggles mute on the selected track, **Y** toggles solo
+  membership (several tracks may be soloed), and **Z** clears every mute and solo. Muted
+  tracks keep sequencing silently, so they return in time. SONG headers show `M` / `S`.
+  **Mode** is unused; three-button pads retain every standard control.
 - **SONG structural editing (experimental)** — with transport stopped, hold **A**, then tap
   **Start** to close the current empty cell or selected empty block, shifting only those tracks
   upward. Hold **C**, then tap **Start** to insert a copied SONG cell/block at the cursor channel,
@@ -87,8 +92,17 @@ Requires [vasm](http://sun.hasenbraten.de/vasm/) (Motorola syntax — `vasmm68k_
 and Python 3.
 
 ```sh
-make            # -> build/genmddj.bin   (flash it, or run in any Mega Drive emulator)
+make            # -> build/genmddj.bin + build/genmddj-kitless.bin
+make kitless    # -> rebuild only the 128 KB KITLESS variant
 ```
+
+Every normal build also outputs a **KITLESS** ROM. It keeps the complete tracker, FM, PSG, WAVE, save format and all
+other behaviour, but omits the ROM sample pool and skips `KIT` in the instrument-type selector.
+It is a 128 KB ROM instead of 2 MB, intended for constrained emulator/cartridge environments.
+If a save created by the full ROM contains a KIT instrument, the KITLESS build preserves that
+record without playing or converting it and shows `KIT UNAVAILABLE`; reopening the save in the
+full ROM restores normal KIT use. The sample-kit ROM patcher intentionally does not apply to a
+KITLESS image.
 
 `make run` launches the ROM in [mednafen](https://mednafen.github.io/). `make shot`
 renders a headless screenshot via a small libretro harness — it expects the
@@ -135,8 +149,8 @@ progress. Working today:
 - The **68k → SCB → Z80** engine, with PSG + full 6-operator FM voices.
 - The complete screen set: **SONG / CHAIN / PHRASE / INSTR / FM / TABLE / WAVE /
   GROOVE / ECHO / PROJECT / OPTIONS / HELP**.
-- An on-console **HELP** screen — a paged button reference you open from anywhere by holding
-  **A for ~3 seconds** (the D-pad turns pages). Its text lives in an editable
+- An on-console **HELP** screen — a paged button reference above TABLE in the screen map
+  (`C+Up` from TABLE enters it, `C+Down` returns; the plain D-pad turns pages). Its text lives in an editable
   [`help.txt`](help.txt) that the build validates and bakes into the ROM (`tools/makehelp.py`),
   so a bad edit fails the build instead of clipping on hardware.
 - Grooves, the command set, copy / paste / clone.

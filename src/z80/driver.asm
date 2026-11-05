@@ -80,6 +80,7 @@ BANKS 1
 .DEFINE CT_PSG    $1F78     ; diag: total PSG bytes written (byte, wraps)
 .DEFINE CT_YM     $1F79     ; diag: total YM triples written (byte, wraps)
 .DEFINE CT_FEED   $1F7A     ; diag: total DAC bytes fed (word, wraps) -- the feed-rate probe
+.DEFINE CH3_LAST  $1F7C     ; mode bit actually applied to YM $27 (0 or $40)
 ; Timer A: rate = 53267/(1024-TA) Hz NTSC. 1024-TA=5 -> 10653 Hz ($24=$FE $25=$03).
 ; (Was 1024-TA=10 = 5327: the ceiling of the old polled feed; the tight loop paces higher.)
 .DEFINE TA_24     $FE
@@ -112,6 +113,7 @@ start:
     ld   (CT_PSG), a
     ld   (CT_YM), a
     ld   (CT_FEED), a
+    ld   (CH3_LAST), a       ; boot writes $27=$05 below, so applied mode is normal
     ld   b, a                   ; b = last SCB seq processed
     ld   c, a                   ; c = tight-loop mailbox rotation index
     ld   d, a                   ; d = last dac trigger
@@ -369,6 +371,32 @@ scb_arm:
 +:
     ld   (T27VAL), a
     ld   e, a                   ; refresh the cached copy (the tight loop clears from e)
+    ; T27VAL is only written by the Timer-A overflow path. In the relaxed loop that
+    ; path never runs, so merely updating e left the physical chip in its old CH3
+    ; mode. Apply a transition explicitly, without the $10 Timer-A reset bit:
+    ; $05 = normal, $45 = CH3 special. scb_arm can run between DAC feed passes, so
+    ; clearing a pending overflow here would drop a sample.
+    ld   a, e
+    and  $40
+    ld   hl, CH3_LAST
+    cp   (hl)
+    ret  z
+    ld   (hl), a
+    or   $05
+    ld   l, a                   ; hold the $27 data while loading the address port
+    ld   a, $27
+    ld   (YM_A0), a
+    nop
+    nop
+    ld   a, l
+    ld   (YM_D0), a
+    ; Match su_fin's post-data guard before re-parking $27. The added work remains
+    ; below one Timer-A sample period and happens only when the mode changes.
+    .REPT 16
+    nop
+    .ENDR
+    ld   a, $27
+    ld   (YM_A0), a
     ret
 
 ; ---- execute ONE pending SCB write. Returns NZ if it did work, Z when the list is empty.

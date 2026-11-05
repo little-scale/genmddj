@@ -274,6 +274,103 @@ KIT_NAV = """    tst.b   $00FFD500
 .tkndone:
 """
 
+# KITLESS build contract: the editor jumps over reserved type 1 in both directions,
+# while an old save which still contains type 1 can reach the page and DAC entry safely.
+KITLESS_BOOT = """    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_INSTR, cur_screen
+    clr.b   cur_instr
+    move.b  #1, cur_row
+    clr.b   cur_col
+    lea     instrum, a3
+    clr.b   (i_type,a3)
+    moveq   #8, d2
+    bsr     edit_psg
+    move.b  (i_type,a3), $00FFD501
+    moveq   #4, d2
+    bsr     edit_psg
+    move.b  (i_type,a3), $00FFD502
+    move.b  #1, (i_type,a3)
+    move.w  #$0100, Z80_BUSREQ
+.tklw:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tklw
+    move.b  Z80_RAM+$1FB0, $00FFD503
+    move.w  #$0000, Z80_BUSREQ
+    lea     ch_state, a6
+    lea     instrum, a1
+    moveq   #0, d0
+    moveq   #0, d1
+    bsr     dac_play
+    move.w  #$0100, Z80_BUSREQ
+.tklw2:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tklw2
+    move.b  Z80_RAM+$1FB0, $00FFD504
+    move.w  #$0000, Z80_BUSREQ
+    move.b  #2, cur_row
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# In LIVE, SONG C+B is a clip launch, but CHAIN/PHRASE C+B remains an immediate
+# isolated editor audition. It must bypass live_on[] gating and replace a running set
+# in one press; a second press stops the audition.
+LIVE_CONTEXT_AUDITION = """    tst.b   $00FFD920
+    bne     .tlcadone
+    move.b  #1, $00FFD920
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #1, proj_mode
+
+    move.b  #SCR_CHAIN, cur_screen
+    move.b  #2, cur_chan
+    move.b  #7, cur_chain
+    move.b  #3, cur_row
+    clr.b   playing
+    bsr     play_context
+    move.b  playing, $00FFD921
+    move.b  play_mode, $00FFD922
+    move.b  play_from, $00FFD923
+    lea     ch_state+(2*CHSIZE), a6
+    move.b  c_chain(a6), $00FFD924
+    move.b  c_cstep(a6), $00FFD925
+    bsr     is_live_silent
+    move.b  d0, $00FFD926
+    bsr     play_context
+    move.b  playing, $00FFD927
+
+    move.b  #SCR_PHRASE, cur_screen
+    move.b  #4, cur_chan
+    move.b  #5, cur_phrase
+    bsr     play_context
+    move.b  playing, $00FFD928
+    move.b  play_mode, $00FFD929
+    lea     ch_state+(4*CHSIZE), a6
+    move.l  c_phrase(a6), d0
+    sub.l   #phrases, d0
+    lsr.l   #6, d0
+    move.b  d0, $00FFD92A
+    bsr     is_live_silent
+    move.b  d0, $00FFD92B
+    bsr     play_context
+
+    move.b  #SCR_CHAIN, cur_screen
+    move.b  #1, cur_chan
+    move.b  #9, cur_chain
+    move.b  #4, cur_row
+    clr.b   play_mode
+    move.b  #1, playing                    ; represent an already-running LIVE set
+    bsr     play_context                   ; one press must replace it, not merely stop
+    move.b  playing, $00FFD92C
+    move.b  play_mode, $00FFD92D
+    lea     ch_state+CHSIZE, a6
+    move.b  c_chain(a6), $00FFD92E
+    move.b  c_cstep(a6), $00FFD92F
+    bsr     play_context
+    move.b  playing, $00FFD930
+    movem.l (sp)+, d0-d7/a0-a6
+.tlcadone:
+"""
+
 # CONT: the stress song with T1 (track 6) flagged as a carry, and a frame inject that
 # plants the carried voices as looping bridges at frame 30 (no real load -- proves the
 # bridge mechanism: snapshot -> plant, carried voice keeps sounding from its private
@@ -1929,6 +2026,330 @@ FM_FNUM_SWEEP = """    tst.b   $00FFD860
 .tfswdone:
 """
 
+# PERC/CH3 special mode has two non-linear orderings to reconcile: instrument records
+# are OP1,OP3,OP2,OP4, while the chip audibly maps OP1=A9/AD, OP3=A8/AC,
+# OP2=AA/AE and OP4=normal A2/A6. Give every row a unique word and exercise all
+# 16 logical $28 key masks so this test cannot merely mirror the driver's table order.
+PERC_OPERATOR_ROUTE = """    tst.b   $00FFD93F
+    bne     .tpordone
+    move.b  #1, $00FFD93F
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    move.b  #5, (i_type,a0)
+    move.b  #1, (i_pbase,a0)
+    clr.b   (i_pmode,a0)
+    clr.b   (i_psweep,a0)
+    clr.b   instrum+INSTR_SIZE+i_type
+    move.w  #$1111, perc_live
+    move.w  #$2222, perc_live+2
+    move.w  #$3333, perc_live+4
+    move.w  #$0444, perc_live+6
+    lea     ch_state+(2*CHSIZE), a6
+    move.b  #2, c_track(a6)
+    move.b  #1, c_type(a6)
+    clr.b   c_instr(a6)
+    clr.b   c_ympart(a6)
+    move.b  #2, c_ymchreg(a6)
+    move.b  #2, c_ymkey(a6)
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     perc_freq_send
+    move.b  ym_data+4,  $00FFD940
+    move.b  ym_data+5,  $00FFD941
+    move.b  ym_data+7,  $00FFD942
+    move.b  ym_data+8,  $00FFD943
+    move.b  ym_data+13, $00FFD944
+    move.b  ym_data+14, $00FFD945
+    move.b  ym_data+16, $00FFD946
+    move.b  ym_data+17, $00FFD947
+    move.b  ym_data+22, $00FFD948
+    move.b  ym_data+23, $00FFD949
+    move.b  ym_data+25, $00FFD94A
+    move.b  ym_data+26, $00FFD94B
+    move.b  ym_data+31, $00FFD94C
+    move.b  ym_data+32, $00FFD94D
+    move.b  ym_data+34, $00FFD94E
+    move.b  ym_data+35, $00FFD94F
+    st      ch3_spc
+    lea     $00FFD950, a0
+    moveq   #0, d6
+.tporkey:
+    move.b  d6, perc_keys
+    move.b  #4, fm_keypend
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     flush_fm_keyons
+    move.b  ym_data+2, (a0)+
+    addq.b  #1, d6
+    cmpi.b  #16, d6
+    blo.s   .tporkey
+    clr.b   ch3_spc
+
+    ; A software TUNE LFO targeting F3 used to bypass the PERC dispatcher and write
+    ; the phrase-note frequency to normal A2/A6 (audible OP4). Exercise the real
+    ; fmlfo_tick path and require a complete four-frequency PERC re-emit instead.
+    lea     lfo_cfg, a0
+    moveq   #(NLFO*LF_SIZE)-1, d0
+.tpor_lclr:
+    clr.b   (a0)+
+    dbra    d0, .tpor_lclr
+    move.b  #5, lfo_cfg+LF_FLAGS           ; ON + FREE
+    move.b  #2, lfo_cfg+LF_CHAN            ; F3
+    move.b  #LFP_TUNE, lfo_cfg+LF_PARM
+    move.b  #1, lfo_cfg+LF_RATE
+    move.b  #1, lfo_cfg+LF_DEPTH
+    clr.b   cont_active
+    lea     ch_state+(2*CHSIZE), a6         ; flush_fm_keyons walked a6 past the channel array
+    move.b  #1, c_keyon(a6)
+    move.b  #60, c_note(a6)                ; unrelated phrase fundamental
+    lea     ym_data, a5
+    moveq   #0, d5
+    bsr     fmlfo_tick
+    move.b  d5, $00FFD960
+    move.b  ym_data+4,  $00FFD961
+    move.b  ym_data+5,  $00FFD962
+    move.b  ym_data+7,  $00FFD963
+    move.b  ym_data+8,  $00FFD964
+    move.b  ym_data+13, $00FFD965
+    move.b  ym_data+14, $00FFD966
+    move.b  ym_data+16, $00FFD967
+    move.b  ym_data+17, $00FFD968
+    move.b  ym_data+22, $00FFD969
+    move.b  ym_data+23, $00FFD96A
+    move.b  ym_data+25, $00FFD96B
+    move.b  ym_data+26, $00FFD96C
+    move.b  ym_data+31, $00FFD96D
+    move.b  ym_data+32, $00FFD96E
+    move.b  ym_data+34, $00FFD96F
+    move.b  ym_data+35, $00FFD970
+    movem.l (sp)+, d0-d7/a0-a6
+.tpordone:
+"""
+
+# A real F3 PERC voice with four widely separated sine carriers. The companion
+# frame probe records the Z80's actually-applied CH3 mode, then replaces PERC with
+# ordinary FM and verifies that the driver returns the chip to normal mode.
+PERC_AUDIO_SONG = """    tst.b   $00FFD971
+    bne     .tpadone
+    move.b  #1, $00FFD971
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    move.b  #5, i_type(a0)
+    move.b  #1, i_pbase(a0)
+    move.b  #15, i_hld(a0)
+    move.b  #$FF, i_tbl(a0)
+    clr.b   i_tbs(a0)
+    clr.b   i_psweep(a0)
+    clr.b   i_pmode(a0)
+    move.w  #$1284, i_op(a0)
+    move.b  #1, i_op+p_mul(a0)
+    clr.b   i_op+p_dt(a0)
+    move.w  #$1B2A, i_op+FM_NPARM(a0)
+    move.b  #1, i_op+FM_NPARM+p_mul(a0)
+    clr.b   i_op+FM_NPARM+p_dt(a0)
+    move.w  #$23C4, i_op+(2*FM_NPARM)(a0)
+    move.b  #1, i_op+(2*FM_NPARM)+p_mul(a0)
+    clr.b   i_op+(2*FM_NPARM)+p_dt(a0)
+    move.w  #$2CBE, i_op+(3*FM_NPARM)(a0)
+    move.b  #1, i_op+(3*FM_NPARM)+p_mul(a0)
+    clr.b   i_op+(3*FM_NPARM)+p_dt(a0)
+    lea     instrum+INSTR_SIZE, a0
+    clr.b   i_type(a0)
+    move.b  #7, i_algo(a0)
+    clr.b   i_fb(a0)
+    move.b  #3, i_pan(a0)
+    clr.b   i_ams(a0)
+    clr.b   i_fms(a0)
+    move.b  #15, i_hld(a0)
+    move.b  #15, i_vol(a0)
+    move.b  #$FF, i_tbl(a0)
+    moveq   #3, d7
+.tpaop:
+    move.b  #1, i_op(a0)
+    clr.b   i_op+1(a0)
+    move.b  #24, i_op+2(a0)
+    clr.b   i_op+3(a0)
+    move.b  #31, i_op+4(a0)
+    clr.b   i_op+5(a0)
+    clr.b   i_op+6(a0)
+    clr.b   i_op+7(a0)
+    move.b  #15, i_op+8(a0)
+    clr.b   i_op+9(a0)
+    lea     FM_NPARM(a0), a0
+    dbra    d7, .tpaop
+    move.b  #0, song+2
+    move.b  #0, chains
+    move.b  #0, chains+1
+    move.b  #48, phrases
+    move.b  #0, phrases+1
+    clr.b   play_from
+    clr.b   play_mode
+    move.b  #1, playing
+    bsr     engine_play_reset
+    movem.l (sp)+, d0-d7/a0-a6
+.tpadone:
+"""
+
+PERC_MODE_LOGGER = """    movem.l d0/a0/a6, -(sp)
+    move.w  g_ticks, d0
+    cmpi.w  #30, d0
+    bne.s   .tpml_norm
+    move.w  #$0100, Z80_BUSREQ
+.tpml_w1:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tpml_w1
+    move.b  Z80_RAM+$1F7C, $00FFD972       ; CH3_LAST: applied mode bit
+    move.b  Z80_RAM+$1F76, $00FFD973       ; T27VAL: timer-clear value
+    move.w  #$0000, Z80_BUSREQ
+.tpml_norm:
+    cmpi.w  #90, d0
+    bne.s   .tpml_readn
+    clr.b   instrum+i_type                 ; same F3 slot becomes ordinary FM
+    lea     ch_state+(2*CHSIZE), a6
+    move.b  #1, c_trig(a6)
+    move.b  #1, c_keyon(a6)
+    move.b  #$FF, pshadow+2
+.tpml_readn:
+    cmpi.w  #110, d0
+    bne.s   .tpml_done
+    move.w  #$0100, Z80_BUSREQ
+.tpml_w2:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tpml_w2
+    move.b  Z80_RAM+$1F7C, $00FFD974
+    move.b  Z80_RAM+$1F76, $00FFD975
+    move.w  #$0000, Z80_BUSREQ
+.tpml_done:
+    movem.l (sp)+, d0/a0/a6
+"""
+
+PERC_DAC_TOGGLE = """    movem.l d0-d7/a0-a6, -(sp)
+    move.w  g_ticks, d0
+    cmpi.w  #70, d0
+    bne.s   .tpdt_norm
+    st      ch3_spc
+    clr.b   scb_count
+    clr.b   ym_count
+    bsr     push_scb
+.tpdt_norm:
+    cmpi.w  #80, d0
+    bne.s   .tpdt_read1
+    clr.b   ch3_spc
+    clr.b   scb_count
+    clr.b   ym_count
+    bsr     push_scb
+.tpdt_read1:
+    cmpi.w  #75, d0
+    bne.s   .tpdt_read2
+    move.w  #$0100, Z80_BUSREQ
+.tpdt_w1:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tpdt_w1
+    move.b  Z80_RAM+$1F7C, $00FFD988
+    move.w  #$0000, Z80_BUSREQ
+.tpdt_read2:
+    cmpi.w  #85, d0
+    bne.s   .tpdt_done
+    move.w  #$0100, Z80_BUSREQ
+.tpdt_w2:
+    btst    #0, Z80_BUSREQ
+    bne.s   .tpdt_w2
+    move.b  Z80_RAM+$1F7C, $00FFD989
+    move.w  #$0000, Z80_BUSREQ
+.tpdt_done:
+    movem.l (sp)+, d0-d7/a0-a6
+"""
+
+# PERC's union record deliberately contains values that disagree with BASE. Warm
+# retrigger resets and X/U TL helpers must all derive ordinary FM state from BASE.
+PERC_BASE_PATCH = """    tst.b   $00FFD976
+    bne     .tpbpdone
+    move.b  #1, $00FFD976
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    move.b  #5, i_type(a0)
+    move.b  #1, i_pbase(a0)
+    move.b  #7, i_fb(a0)
+    clr.b   i_pan(a0)
+    move.b  #3, i_ams(a0)
+    move.b  #7, i_fms(a0)
+    move.b  #15, i_hld(a0)
+    clr.b   i_vol(a0)
+    lea     instrum+INSTR_SIZE, a0
+    clr.b   i_type(a0)
+    clr.b   i_algo(a0)                     ; algorithm 0: OP4 carrier, OP1/3/2 modulators
+    move.b  #2, i_fb(a0)
+    move.b  #3, i_pan(a0)
+    move.b  #1, i_ams(a0)
+    move.b  #4, i_fms(a0)
+    move.b  #12, i_vol(a0)
+    move.b  #10, i_op+2(a0)
+    move.b  #20, i_op+FM_NPARM+2(a0)
+    move.b  #30, i_op+(2*FM_NPARM)+2(a0)
+    move.b  #40, i_op+(3*FM_NPARM)+2(a0)
+    lea     ch_state+(2*CHSIZE), a6
+    move.b  #2, c_track(a6)
+    move.b  #1, c_type(a6)
+    clr.b   c_instr(a6)
+    clr.b   k_set
+    clr.b   lq_dirty+2
+    clr.b   lx_dirty+2
+    clr.b   lo_dirty+2
+    clr.b   lu_dirty+2
+    bsr     note_trigger
+    move.b  lq_b0+2, $00FFD977
+    move.b  lx_vol+2, $00FFD978
+    move.b  lo_b4+2, $00FFD979
+    lea     ym_data, a5
+    moveq   #0, d5
+    moveq   #15, d1
+    bsr     emit_x_tl
+    move.b  d5, $00FFD97A
+    move.b  ym_data+1, $00FFD97B
+    move.b  ym_data+2, $00FFD97C
+    lea     ym_data, a5
+    moveq   #0, d5
+    moveq   #5, d1
+    bsr     emit_u_tl
+    move.b  d5, $00FFD97D
+    lea     ym_data, a0
+    lea     $00FFD97E, a1
+    moveq   #8, d0
+.tpbpcopy:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .tpbpcopy
+    movem.l (sp)+, d0-d7/a0-a6
+.tpbpdone:
+"""
+
+PERC_PITCHED_TSP = """    tst.b   $00FFD987
+    bne     .tpptdone
+    move.b  #1, $00FFD987
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    move.b  #5, i_type(a0)
+    move.b  #1, i_pbase(a0)
+    move.b  #1, i_pmode(a0)
+    move.b  #15, i_hld(a0)
+    move.b  #$FF, i_tbl(a0)
+    move.b  #12, ip_tsp(a0)                ; union poison: PERC must not read PSG TSP
+    move.b  #0, song+2
+    move.b  #0, chains
+    move.b  #0, chains+1
+    move.b  #48, phrases
+    move.b  #0, phrases+1
+    clr.b   play_from
+    clr.b   play_mode
+    move.b  #1, playing
+    bsr     engine_play_reset
+    movem.l (sp)+, d0-d7/a0-a6
+.tpptdone:
+"""
+
 # B is deliberately overloaded by effective instrument type: FM/PERC use the packed XY
 # as a per-note FSWP override, WAVE retains bank select, and incompatible placements ignore it.
 FM_FSWP_COMMAND = """    tst.b   $00FFD87F
@@ -2254,7 +2675,8 @@ FM_GROUP_OWNERSHIP = """    tst.b   $00FFD500
     move.b  #1, (i_fgroup,a0)
     move.b  #15, (i_hld,a0)
     move.b  #15, (i_vol,a0)
-    move.b  #$FF, (i_tbl,a0)
+    clr.b   (i_tbl,a0)                     ; exact reported case: TBL 00, TBS 1
+    move.b  #1, (i_tbs,a0)
     move.b  #$47, fmgrp_chord              ; root + major third + fifth
     lea     ch_state, a6                   ; F1 root
     clr.b   c_instr(a6)
@@ -2319,6 +2741,12 @@ FM_GROUP_OWNERSHIP = """    tst.b   $00FFD500
     move.b  #$47, fmgrp_chord
     move.b  #48, c_note(a6)
     bsr     note_trigger
+    lea     last_cmd, a0                   ; sentinels over the old $FFE3A0 collision range
+    moveq   #19, d0                        ; last_cmd .. final byte of btap_addr
+.tfgsent:
+    move.b  #$5A, (a0)+
+    dbra    d0, .tfgsent
+    clr.b   cur_table                      ; the user's selected table must remain TBL 00
     move.b  #$FF, pshadow
     move.b  #$FF, pshadow+1
     move.b  #$FF, pshadow+2
@@ -2338,6 +2766,23 @@ FM_GROUP_OWNERSHIP = """    tst.b   $00FFD500
     move.b  ch_state+CHSIZE+c_trig, $00FFD8BD
     move.b  ch_state+(2*CHSIZE)+c_trig, $00FFD8BE
     move.b  d5, $00FFD8BF
+    lea     last_cmd, a0                   ; snapshot every formerly-overwritten byte
+    lea     $00FFD920, a1
+    moveq   #19, d0
+.tfgsnap:
+    move.b  (a0)+, (a1)+
+    dbra    d0, .tfgsnap
+    move.b  #$A5, wave_ram+256             ; invalid TBL 28 used to address this saved wave byte
+    move.b  #$28, cur_table
+    move.b  #SCR_TABLE, cur_screen
+    move.b  #1, cur_row
+    clr.b   cur_col
+    bsr     get_field_addr                 ; must sanitize to TBL 00, not return wave_ram+256
+    move.b  cur_table, $00FFD934
+    move.b  wave_ram+256, $00FFD935
+    move.l  a1, d0
+    cmpi.l  #tbl_ram, d0
+    seq     $00FFD936
 
     move.b  #SCR_INSTR, cur_screen         ; visual grid: HLD -> GROUP -> FSWP -> TSP
     clr.b   cur_instr
@@ -2452,6 +2897,29 @@ FM_GROUP_OWNERSHIP = """    tst.b   $00FFD500
 .tfgdone:
 """
 
+HELP_MAP_NAV = """    tst.b   $00FFD500
+    bne     .thmdone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  #SCR_TABLE, cur_screen
+    move.b  #7, cur_row
+    move.b  #2, cur_col
+    clr.b   need_clear
+    bsr     grid_up                         ; the sole HELP entrance: TABLE C+Up
+    move.b  cur_screen, $00FFD510
+    move.b  cur_row, $00FFD511
+    move.b  cur_col, $00FFD512
+    move.b  need_clear, $00FFD513
+    clr.b   need_clear
+    bsr     grid_down                       ; and the matching HELP C+Down exit
+    move.b  cur_screen, $00FFD514
+    move.b  cur_row, $00FFD515
+    move.b  cur_col, $00FFD516
+    move.b  need_clear, $00FFD517
+    movem.l (sp)+, d0-d7/a0-a6
+.thmdone:
+"""
+
 # arm a tempo glide (4 -> 10 frames/row over SLID=2 bars) at frame 5
 CONT_GLIDE_ARM = """    move.w  g_ticks, d0
     cmpi.w  #5, d0
@@ -2465,7 +2933,7 @@ CONT_GLIDE_ARM = """    move.w  g_ticks, d0
 
 # ---- build/run machinery ----------------------------------------------------------
 
-def build_rom(name, boot_inject=None, frame_inject=None):
+def build_rom(name, boot_inject=None, frame_inject=None, kitless=False):
     """Patch a copy of main.asm, assemble it, fix the header. Returns the ROM path."""
     os.makedirs(TDIR, exist_ok=True)
     src = open(os.path.join(ROOT, 'src', 'main.asm')).read()
@@ -2481,6 +2949,7 @@ def build_rom(name, boot_inject=None, frame_inject=None):
     rom = os.path.join(TDIR, name + '.bin')
     open(asm, 'w').write(src)
     subprocess.run(['vasmm68k_mot', '-Fbin', '-spaces', '-quiet', '-m68000',
+                    '-DKIT_LESS=%d' % (1 if kitless else 0),
                     '-o', raw, asm], cwd=ROOT, check=True, capture_output=True)
     subprocess.run(['python3', 'tools/fixheader.py', raw, rom],
                    cwd=ROOT, check=True, capture_output=True)
@@ -2517,6 +2986,18 @@ def t_dac_rate():
     # floor 165 (=94.5%); ceiling 185 catches a mis-set Timer A / bake mismatch.
     assert 165 <= med <= 185, 'feed %d/frame (%.0f Hz) outside [165,185]' % (med, eff)
     return 'feed %.0f Hz (%d/frame, GPGX baseline 171)' % (eff, med)
+
+def t_perc_dac_mode():
+    """CH3 special/normal transitions during DAC streaming neither reset nor stall Timer A."""
+    rom = build_rom('perc_dac_mode', frame_inject=FRAME_LOGGER + PERC_DAC_TOGGLE)
+    ram = run_rom(rom, 115)
+    assert list(ram[0xD988:0xD98A]) == [0x40, 0x00], \
+        'CH3 mode did not apply during DAC playback: %r' % list(ram[0xD988:0xD98A])
+    r = ring(ram)
+    diffs = [((r[(f+1) & 63] - r[f & 63]) & 0xFF) for f in range(65, 90)]
+    assert all(165 <= x <= 185 for x in diffs), \
+        'CH3 transition disturbed DAC cadence: %r' % diffs
+    return 'special/normal applied inside DAC loop; feed stayed %d-%d/frame' % (min(diffs), max(diffs))
 
 def t_kit_endstop():
     """A real KIT drum feeds and STOPS at sample end (no runaway / no silence)."""
@@ -2966,10 +3447,71 @@ def t_fm_fnum_sweep():
     ram = run_rom(build_rom('fm_fnum_sweep', boot_inject=FM_FNUM_SWEEP), 35)
     got = list(ram[0xD861:0xD87B])
     expect = [16, 0x23, 0x84, 14, 0x23, 0x64, 12, 12,
-              0x23, 0x84, 0x1B, 0x84, 0x33, 0x84, 0x0B, 0x84, 14,
+              0x23, 0x84, 0x1B, 0x84, 0x33, 0x84, 0x0B, 0x84, 12,
               0x80, 0x22, 0x84, 0, 0x24, 0xBF, 0x22, 0x84, 0]
     assert got == expect, 'raw F-number sweep results %r' % got
     return 'pitch class ignored; $42 descends; $30 holds; $1F lands; PERC keeps blocks; $00 stays pitched'
+
+def t_perc_operator_route():
+    """PERC rows drive their matching CH3 operators and translate every selective key mask."""
+    ram = run_rom(build_rom('perc_operator_route', boot_inject=PERC_OPERATOR_ROUTE), 35)
+    freq = list(ram[0xD940:0xD950])
+    expect_freq = [0xAD,0x11,0xA9,0x11, 0xAC,0x22,0xA8,0x22,
+                   0xAE,0x33,0xAA,0x33, 0xA6,0x04,0xA2,0x44]
+    assert freq == expect_freq, 'PERC row/frequency register routing %r' % freq
+    keys = list(ram[0xD950:0xD960])
+    expect_keys = [0x02,0x12,0x42,0x52,0x22,0x32,0x62,0x72,
+                   0x82,0x92,0xC2,0xD2,0xA2,0xB2,0xE2,0xF2]
+    assert keys == expect_keys, 'PERC editor-order to $28 key-mask routing %r' % keys
+    lfo = list(ram[0xD960:0xD971])
+    assert lfo == [12] + expect_freq, 'F3 TUNE LFO replaced independent PERC pitches %r' % lfo
+    return 'audible OP1/OP3/OP2/OP4 pairs aligned; all $28 masks translated; TUNE preserves cluster'
+
+def t_perc_audio_mode():
+    """A no-DAC PERC voice applies/clears CH3 special mode and audibly exposes four pitches."""
+    rom = build_rom('perc_audio_mode', boot_inject=PERC_AUDIO_SONG,
+                    frame_inject=PERC_MODE_LOGGER)
+    ram = run_rom(rom, 150)
+    assert list(ram[0xD972:0xD976]) == [0x40, 0x55, 0x00, 0x15], \
+        'physical CH3 mode did not transition special->normal: %r' % list(ram[0xD972:0xD976])
+    with wave.open(rom + '.ppm.wav', 'rb') as wav:
+        rate = wav.getframerate()
+        raw = wav.readframes(wav.getnframes())
+        channels = wav.getnchannels()
+    pcm = struct.unpack('<%dh' % (len(raw)//2), raw)
+    mono = [(pcm[i] + pcm[i+1]) * 0.5 for i in range(0, len(pcm), channels)]
+    # Analyse only the stable PERC interval, before the frame probe changes F3 back to FM.
+    seg = mono[int(rate*0.35):int(rate*1.25)]
+    def goertzel(freq):
+        k = int(0.5 + len(seg) * freq / rate)
+        omega = 2.0 * math.pi * k / len(seg)
+        coeff = 2.0 * math.cos(omega)
+        s0 = s1 = s2 = 0.0
+        for sample in seg:
+            s0 = sample + coeff*s1 - s2
+            s2, s1 = s1, s0
+        return math.sqrt(s1*s1 + s2*s2 - coeff*s1*s2) / len(seg)
+    levels = [goertzel(f) for f in (65.5, 164.5, 392.0, 986.5)]
+    assert min(levels) > 80.0, 'not all four CH3 operator pitches are audible: %r' % levels
+    return 'CH3 $40/$00 transition applied; four no-DAC fundamentals %.0f/%.0f/%.0f/%.0f' % tuple(levels)
+
+def t_perc_base_patch():
+    """Warm PERC resets and live TL helpers consistently read the referenced BASE patch."""
+    ram = run_rom(build_rom('perc_base_patch', boot_inject=PERC_BASE_PATCH), 35)
+    assert list(ram[0xD977:0xD97A]) == [0x10, 12, 0xD4], \
+        'PERC warm reset did not use BASE FB/ALG/VOL/PAN/AMS/FMS: %r' % list(ram[0xD977:0xD97A])
+    assert list(ram[0xD97A:0xD97D]) == [1, 0x4E, 40], \
+        'PERC X/carrier TL did not use BASE algorithm/TL: %r' % list(ram[0xD97A:0xD97D])
+    assert ram[0xD97D] == 3, 'PERC U expected three BASE modulators, got %d' % ram[0xD97D]
+    assert list(ram[0xD97E:0xD987]) == [0,0x42,15, 0,0x46,25, 0,0x4A,35], \
+        'PERC U/modulator TL did not use BASE values: %r' % list(ram[0xD97E:0xD987])
+    return 'warm resets + X/U resolve PERC BASE patch'
+
+def t_perc_pitched_tsp():
+    """PITCHED PERC ignores the PSG-union transpose byte and starts from the phrase note."""
+    ram = run_rom(build_rom('perc_pitched_tsp', boot_inject=PERC_PITCHED_TSP), 35)
+    assert ram[0xE050] == 48, 'PERC consumed overlaid PSG TSP byte (note %d)' % ram[0xE050]
+    return 'pitched root stayed at note 48 despite ip_tsp union poison'
 
 def t_fm_fswp_command():
     """Bxy overrides FSWP only for compatible FM/PERC instruments and preserves WAVE B."""
@@ -3032,6 +3574,16 @@ def t_fm_group_ownership():
     burst = list(ram[0xD8BB:0xD8C0])
     assert burst[0:4] == [3, 0, 0, 0], 'FM GROUP cold patch burst deferred a voice %r' % burst
     assert burst[4] <= 139, 'FM GROUP burst exceeded per-frame YM drain budget (%d)' % burst[4]
+    assert burst[4] > 106, 'FM GROUP probe no longer crosses the historical staging boundary (%d)' % burst[4]
+    sentinels = list(ram[0xD920:0xD934])
+    expected_sentinels = [0x5A] * 20
+    expected_sentinels[9] = 0               # cur_table at $FFE3A9
+    assert sentinels == expected_sentinels, \
+        'YM staging overwrote editor state %r' % sentinels
+    assert list(ram[0x4A60 + 48:0x4A60 + 50]) == [0, 1], \
+        'GROUP playback changed stored TBL/TBS %r' % list(ram[0x4A60 + 48:0x4A60 + 50])
+    assert list(ram[0xD934:0xD937]) == [0, 0xA5, 0xFF], \
+        'invalid TABLE selector was not safely repaired %r' % list(ram[0xD934:0xD937])
     nav = list(ram[0xD8C0:0xD8D2])
     assert nav == [12, 1, 12, 0, 5, 0, 12, 0, 12, 1, 2, 0, 12, 1, 1, 5, 12, 0], \
         'FM GROUP visual navigation wrong %r' % nav
@@ -3048,6 +3600,86 @@ def t_fm_group_ownership():
     assert list(ram[0xD915:0xD91B]) == [1, 1, 55, 60, 0, 0], \
         'FM GROUP POWER voicing wrong %r' % list(ram[0xD915:0xD91B])
     return 'CHORD ownership; UNISON +/-2; OCTAVE +/-12; POWER +7/+12; C sync; vertical GROUP navigation'
+
+def t_help_map_navigation():
+    """HELP has no global button shortcut and remains reachable only above TABLE in the map."""
+    source = open(os.path.join(ROOT, 'src', 'main.asm')).read()
+    for obsolete in ('help_hotkey:', 'HELP_HOLD', 'HOLD A TO VIEW HELP'):
+        assert obsolete not in source, 'obsolete HELP shortcut remains: %s' % obsolete
+    ram = run_rom(build_rom('help_map_navigation', boot_inject=HELP_MAP_NAV), 35)
+    assert list(ram[0xD510:0xD518]) == [13, 0, 0, 1, 5, 0, 0, 1], \
+        'HELP TABLE up/down map path wrong %r' % list(ram[0xD510:0xD518])
+    return 'long-A shortcut absent; TABLE C+Up enters HELP; HELP C+Down returns'
+
+def t_six_button_mixer():
+    """The real 6-button TH handshake maps X/Y/Z to mute/solo/clear without phantom
+    extras on an ordinary direction read. C+B remains the independent context transport."""
+    source = open(os.path.join(ROOT, 'src', 'main.asm')).read()
+    assert 'bsr     pad6_tick' in source, 'six-button edge handler is not in the input path'
+    assert 'bsr     play_context' in source, 'C+B context playback was displaced by mixer controls'
+    rom = build_rom('six_button_mixer')
+
+    # Genesis Plus GX maps Mega Drive X/Y/Z to RetroPad L/X/R (bits 10/9/11).
+    # Force its explicit MD 6-button subclass; ordinary auto mode can follow frontend config.
+    old_dev = os.environ.get('GENMDDJ_DEV')
+    os.environ['GENMDDJ_DEV'] = '201'
+    x = run_rom(rom, 120, '0@100,400@2,0@4')
+    assert struct.unpack('>H', x[0xD37E:0xD380])[0] == 1, \
+        'X did not toggle F1 mute (%r)' % list(x[0xD37E:0xD382])
+    assert struct.unpack('>H', x[0xD380:0xD382])[0] == 0, 'X changed the solo mask'
+
+    y = run_rom(rom, 120, '0@100,200@2,0@4')
+    assert struct.unpack('>H', y[0xD380:0xD382])[0] == 1, \
+        'Y did not toggle F1 solo (%r)' % list(y[0xD37E:0xD382])
+    assert struct.unpack('>H', y[0xD37E:0xD380])[0] == 0, 'Y changed the mute mask'
+
+    z = run_rom(rom, 140, '0@100,400@2,0@2,200@2,0@2,800@2,0@4')
+    assert list(z[0xD37E:0xD382]) == [0, 0, 0, 0], \
+        'Z did not clear mute+solo (%r)' % list(z[0xD37E:0xD382])
+
+    three = run_rom(rom, 120, '0@100,10@2,0@4')
+    assert list(three[0xD37E:0xD382]) == [0, 0, 0, 0], \
+        '3-button direction read fabricated an extra button (%r)' % list(three[0xD37E:0xD382])
+
+    # FM mixer gating must not pause its sequencer, and unmute must re-key the held voice.
+    audio_rom = build_rom('six_button_mixer_audio', boot_inject=STRESS_SONG)
+    base = run_rom(audio_rom, 142, '0@142')
+    muted = run_rom(audio_rom, 142, '0@110,400@2,0@30')
+    assert muted[0xE007] == base[0xE007] and muted[0xE018] == base[0xE018], \
+        'muting paused F1 sequence (row/song %d/%d vs %d/%d)' % (
+            muted[0xE007], muted[0xE018], base[0xE007], base[0xE018])
+    assert muted[0xE01F] == 0, 'muted FM channel was not keyed off (%d)' % muted[0xE01F]
+    resumed = run_rom(audio_rom, 170, '0@110,400@2,0@20,400@2,0@20')
+    assert struct.unpack('>H', resumed[0xD37E:0xD380])[0] == 0, 'second X did not unmute F1'
+    assert resumed[0xE01F] == 1, 'unmuted held FM channel did not re-key (%d)' % resumed[0xE01F]
+
+    # Select T1 before the same stress song starts: PSG mute emits attenuation 15, then
+    # invalidates its shadows so the current pitch/level return on the second X.
+    t1_boot = STRESS_SONG.replace(
+        '    move.b  #0, play_from\n',
+        '    move.b  #6, cur_col\n    move.b  #0, play_from\n', 1)
+    t1_rom = build_rom('six_button_mixer_psg', boot_inject=t1_boot)
+    t1_muted = run_rom(t1_rom, 142, '0@110,400@2,0@30')
+    assert t1_muted[0xE0FA] == 15, 'muted T1 attenuation shadow is %d, not 15' % t1_muted[0xE0FA]
+    t1_resumed = run_rom(t1_rom, 170, '0@110,400@2,0@20,400@2,0@20')
+    assert t1_resumed[0xE0FA] != 15, 'unmuted T1 did not restore its current level'
+
+    # Direct-to-DAC KIT triggers bypass compose_ch, so verify their separate logical-track
+    # guard: muting F6 before the hit must leave the DAC feed counter still.
+    kit_muted_boot = KIT_SONG.replace(
+        '    move.b  #0, play_from\n',
+        '    move.w  #$0020, mix_mute\n    move.b  #0, play_from\n', 1)
+    kit_rom = build_rom('six_button_mixer_kit', boot_inject=kit_muted_boot,
+                        frame_inject=FRAME_LOGGER_NOARM)
+    kit = run_rom(kit_rom, 120)
+    kr = ring(kit)
+    kdiffs = [(kr[(i+1) % 64] - kr[i]) & 0xFF for i in range(64)]
+    assert not any(50 < x < 250 for x in kdiffs), 'muted KIT leaked into DAC feed (%r)' % kdiffs
+    if old_dev is None:
+        os.environ.pop('GENMDDJ_DEV', None)
+    else:
+        os.environ['GENMDDJ_DEV'] = old_dev
+    return 'GPGX X/Y/Z; FM/PSG timeline-safe resume and muted KIT DAC guard verified'
 
 def t_cont_glide():
     """CONT: the tempo glide selects a scratch groove, ramps it old->new per bar, then hands
@@ -3074,8 +3706,36 @@ def t_boot_smoke():
     assert ram[0xD762] == 4, 'CONT SLID boot default %d != 4' % ram[0xD762]
     return 'boot renders SONG (%d lit probes); CONT SLID defaults to 4 bars' % lit
 
+def t_kitless_build():
+    """128 KB KITLESS ROM boots, contains no PCM pool and preserves old KIT data safely."""
+    rom = build_rom('kitless_build', boot_inject=KITLESS_BOOT, kitless=True)
+    data = open(rom, 'rb').read()
+    assert len(data) == 0x20000, 'KITLESS ROM is %d bytes, expected 128 KB' % len(data)
+    assert b'GMDJKIT1' not in data, 'KITLESS ROM still contains the KIT sample pool'
+    assert struct.unpack('>I', data[0x1A4:0x1A8])[0] == 0x1FFFF, \
+        'KITLESS header does not advertise a 128 KB ROM'
+    assert b'GENMDDJ KITLESS' in data[0x120:0x180], 'KITLESS ROM title is not distinct'
+    ram = run_rom(rom, 180)
+    assert ram[0xD501] == 2, 'FM + Right selected type %d instead of skipping KIT to WAVE' % ram[0xD501]
+    assert ram[0xD502] == 0, 'WAVE + Left selected type %d instead of skipping KIT to FM' % ram[0xD502]
+    assert ram[0xD503] == ram[0xD504], 'legacy KIT playback touched the DAC trigger'
+    return '128 KB, no PCM pool; type cycle skips KIT and legacy KIT remains safely silent'
+
+def t_live_context_audition():
+    """LIVE keeps SONG launching, while CHAIN/PHRASE C+B provides isolated auditions."""
+    ram = run_rom(build_rom('live_context_audition', boot_inject=LIVE_CONTEXT_AUDITION), 30)
+    assert list(ram[0xD921:0xD928]) == [1, 1, 3, 7, 2, 0, 0], \
+        'LIVE CHAIN audition state %r' % list(ram[0xD921:0xD928])
+    assert list(ram[0xD928:0xD92C]) == [1, 2, 5, 0], \
+        'LIVE PHRASE audition state %r' % list(ram[0xD928:0xD92C])
+    assert list(ram[0xD92C:0xD931]) == [1, 1, 9, 3, 0], \
+        'running LIVE set was not replaced/stopped cleanly %r' % list(ram[0xD92C:0xD931])
+    return 'CHAIN step/PHRASE solo audible in LIVE; one press replaces a set, second stops'
+
 TESTS = [
     ('boot_smoke',   t_boot_smoke),
+    ('kitless_build', t_kitless_build),
+    ('live_context_audition', t_live_context_audition),
     ('save_roundtrip', t_save_roundtrip),
     ('lfo_save_state', t_lfo_save_state),
     ('lfo_chain_sync', t_lfo_chain_sync),
@@ -3097,13 +3757,20 @@ TESTS = [
     ('files_title', t_files_title),
     ('fm_ssg_eg', t_fm_ssg_eg),
     ('fm_fnum_sweep', t_fm_fnum_sweep),
+    ('perc_operator_route', t_perc_operator_route),
+    ('perc_audio_mode', t_perc_audio_mode),
+    ('perc_base_patch', t_perc_base_patch),
+    ('perc_pitched_tsp', t_perc_pitched_tsp),
     ('fm_fswp_command', t_fm_fswp_command),
     ('fm_simultaneous', t_fm_simultaneous),
     ('fm_prewarm', t_fm_prewarm),
     ('cut_primes_insert', t_cut_primes_insert),
     ('group_ownership', t_group_ownership),
     ('fm_group_ownership', t_fm_group_ownership),
+    ('help_map_navigation', t_help_map_navigation),
+    ('six_button_mixer', t_six_button_mixer),
     ('dac_rate',     t_dac_rate),
+    ('perc_dac_mode', t_perc_dac_mode),
     ('kit_endstop',  t_kit_endstop),
     ('kit_retrigger', t_kit_retrigger),
     ('kit_gain',     t_kit_gain),

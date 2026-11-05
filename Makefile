@@ -2,6 +2,8 @@ ASM   := vasmm68k_mot
 BUILD := build
 RAW   := $(BUILD)/genmddj.raw
 ROM   := $(BUILD)/genmddj.bin
+KITLESS_RAW := $(BUILD)/genmddj-kitless.raw
+KITLESS_ROM := $(BUILD)/genmddj-kitless.bin
 EMU   := mednafen
 
 SRCS  := src/main.asm
@@ -10,8 +12,9 @@ SRCS  := src/main.asm
 VER     := $(shell sed -nE 's/^ver_str:.*"([^"]+)".*/\1/p' src/main.asm | tr 'A-Z' 'a-z' | tr -d ' ' | tr '.' '_')
 HASH    := $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo 0000000)$(shell test -n "$$(git status --porcelain 2>/dev/null)" && printf '+')
 STAMPED := $(BUILD)/genmddj-$(VER)-$(HASH).bin
+KITLESS_STAMPED := $(BUILD)/genmddj-$(VER)-$(HASH)-kitless.bin
 
-all: $(ROM) $(STAMPED)
+all: $(ROM) $(STAMPED) $(KITLESS_ROM) $(KITLESS_STAMPED)
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -86,16 +89,31 @@ $(GITVER): FORCE | $(BUILD)
 FORCE:
 
 $(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
-	$(ASM) $(ASMFLAGS) -o $(RAW) src/main.asm
+	$(ASM) $(ASMFLAGS) -DKIT_LESS=0 -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py
 	python3 tools/fixheader.py $(RAW) $(ROM)
 
+# Complete tracker without KIT instruments or PCM data. This target deliberately does not
+# depend on samples.bin, so sample baking is skipped and the result fits in a 128 KB ROM.
+$(KITLESS_RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
+	$(ASM) $(ASMFLAGS) -DKIT_LESS=1 -o $(KITLESS_RAW) src/main.asm
+
+$(KITLESS_ROM): $(KITLESS_RAW) tools/fixheader.py
+	python3 tools/fixheader.py $(KITLESS_RAW) $(KITLESS_ROM)
+
 # a stamped copy for flashing/distribution: build/genmddj-V0.01-<hash>.bin (keeps only the latest)
 $(STAMPED): $(ROM)
-	@rm -f $(BUILD)/genmddj-*.bin
+	@rm -f $(filter-out %-kitless.bin,$(wildcard $(BUILD)/genmddj-v*.bin))
 	cp $(ROM) $(STAMPED)
 	@echo "wrote $(STAMPED)"
+
+$(KITLESS_STAMPED): $(KITLESS_ROM)
+	@rm -f $(filter %-kitless.bin,$(wildcard $(BUILD)/genmddj-v*.bin))
+	cp $(KITLESS_ROM) $(KITLESS_STAMPED)
+	@echo "wrote $(KITLESS_STAMPED)"
+
+kitless: $(KITLESS_ROM) $(KITLESS_STAMPED)
 
 run: $(ROM)
 	$(EMU) $(ROM)
@@ -131,7 +149,7 @@ shot: $(ROM) $(RETROSHOT)
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run shot clean test player player-test player-demo
+.PHONY: all kitless run shot clean test player player-test player-demo
 
 # headless regression tests (needs tools/emu/retroshot + the genesis_plus_gx core)
 test: $(ROM)

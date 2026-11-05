@@ -9,7 +9,14 @@
 ; (M4) edits phrase 0, played live on channel 0.
 ; ============================================================
 
+    ifnd KIT_LESS
+KIT_LESS equ 0                    ; normal build unless Make passes -DKIT_LESS=1
+    endc
+    ifne KIT_LESS
+ROM_SIZE   equ $020000           ; 128 KB: complete tracker, no KIT PCM pool
+    else
 ROM_SIZE   equ $200000           ; 2 MB ROM -> ~2 MB pool = ~270 s of 7610 Hz PCM
+    endc
 VDP_DATA   equ $C00000
 VDP_CTRL   equ $C00004
 Z80_RAM    equ $A00000
@@ -72,9 +79,6 @@ key_prev   equ $00FFE204
 key_raw    equ $00FFD320           ; pad debounce: last frame's RAW read (pre-debounce)
 key_stab   equ $00FFD321           ; pad debounce: 1-frame-confirmed stable button state
 help_page  equ $00FFD322           ; HELP screen: current page 0..HELP_PAGES-1 (d-pad turns it)
-help_actr  equ $00FFD323           ; HELP hotkey: frames A has been held alone (-> toggle HELP at HELP_HOLD)
-help_prev  equ $00FFD324           ; HELP hotkey: last non-HELP screen, restored on exit
-hint_ctr   equ $00FFD326           ; boot: frames left showing "HOLD A TO VIEW HELP" on SONG row0 (word)
 help_pgbuf equ $00FFD328           ; HELP page indicator scratch: "N/M",0 (4 bytes)
 hint_linebuf equ $00FFD32C         ; INSTR hint bottom-row scratch: the ">"..."<" bar + 0 (44 bytes)
 hint_last  equ $00FFD358           ; INSTR hint: last-drawn field key (cur_row:cur_col); $FFFF = redraw
@@ -92,6 +96,12 @@ fmgrp_owner equ $00FFD36A          ; FM GROUP: per-FM-voice owner token (0=free,
 fmgrp_chord equ $00FFD370          ; FM GROUP: Cxy offsets latched independently for roots F1..F4
 fmgrp_busy  equ $00FFD374          ; FM GROUP: synthetic follower trigger guard (prevents recursive groups)
 fmgrp_fine  equ $00FFD375          ; FM GROUP: signed raw-F-number detune per FM voice (UNISON followers)
+pad6_raw    equ $00FFD37B          ; six-button pad: current raw X/Y/Z/MODE state (active high)
+pad6_last   equ $00FFD37C          ; six-button pad: previous frame's raw state
+pad6_stab   equ $00FFD37D          ; six-button pad: debounced stable state
+mix_mute    equ $00FFD37E          ; transient 10-track explicit mute mask (not saved)
+mix_solo    equ $00FFD380          ; transient 10-track solo mask (0 = no solo restriction)
+mix_dac_owner equ $00FFD382        ; logical track that last started KIT/WAVE DAC, or $FF
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -118,7 +128,7 @@ env_dirty  equ $00FFE21E           ; 1 = envelope needs rasterising (UI changed)
 env_ready  equ $00FFE21F           ; 1 = env_canvas rasterised, upload in progress
 ch3_spc    equ $00FFDFFE           ; PERC: 1 = CH3 special mode (F3) -> pushed to Z80 $1FF6
 perc_live  equ $00FFDFE0           ; PERC: 4 live operator F-number words (phrase-driven)
-perc_keys  equ $00FFDFE8           ; PERC: current key mask (bits 0-3 = the 4 operator rows)
+perc_keys  equ $00FFDFE8           ; PERC: key mask in editor/storage order OP1,OP3,OP2,OP4
 perc_mask  equ $00FFDFE9           ; PERC: C-selected operator mask this row
 perc_cset  equ $00FFDFEA           ; PERC: 1 if C set the operator mask this row
 perc_ld    equ $00FFDFEB           ; PERC: instrument # loaded into perc_live ($FF = none)
@@ -326,8 +336,19 @@ NSCR       equ 12
 SCR_MAXPOS equ 4                    ; rightmost horizontal map position
 scb_count  equ $00FFE220           ; PSG byte count + buffer
 scb_data   equ $00FFE221
-ym_count   equ $00FFE260           ; YM write count + buffer (triples)
-ym_data    equ $00FFE261
+; The FM GROUP engine may compose three complete 30-write patches plus frequency/key
+; traffic in one tick.  Keep that stream out of the crowded $FFE2xx/$FFE3xx control
+; block: v0.25's old $FFE261 buffer reached last_cmd at triple 107 and cur_table at
+; triple 110 (whose register byte was predictably $28).  This dedicated staging area
+; lives above the worst-case RLE save stream and below the stopped-load prewarm state.
+; ym_count is one byte, so 255 triples is the largest representable stream; the normal
+; per-frame work/drain budget remains the much smaller YM_CAP below.
+YM_STAGE_CAP equ 255
+ym_count   equ $00FFBB00           ; YM write count + dedicated 68K staging buffer
+ym_data    equ ym_count+1           ; part, register, value triples
+    ifgt (ym_data+(YM_STAGE_CAP*3))-$00FFBFE0
+        fail "YM staging buffer overruns FM prewarm state"
+    endc
 
 phrases    equ $00FF0A60            ; phrases pool (PHRASE_SIZE each)
 PHRASE_SIZE equ 64
@@ -411,6 +432,12 @@ FILE_ERR_SAVE equ 2
 SONGVIS    equ 12                   ; OPTIONS song list: visible rows (16..27); the list scrolls past this
 SAVE_DATA  equ $5D60               ; 23904: globals 256 + song 2400 + ph 12288 + ch 4096 + instr 2048 + tbl 2048 + grv 256 + wav 512
                                     ;   + instr 2048 + tbl 2048 + grv 256 + wav 512 (32-step) = 20832
+; Worst case is all literal data: one control byte per 128 four-byte units.  Keep the
+; dedicated YM staging stream beyond even that expanded output, not merely SAVE_DATA.
+RLE_MAX    equ SAVE_DATA+(((SAVE_DATA/4)+127)/128)
+    ifgt (rle_buf+RLE_MAX)-ym_count
+        fail "worst-case RLE stream overruns YM staging buffer"
+    endc
 SAVE_HDR   equ 16                  ; slot header: magic "GMDDJ"(5) + ver(1) + checksum(2) + title(8)
 SAVE_SLOT  equ SAVE_DATA+SAVE_HDR  ; $5170 per slot
 NUBANK     equ 32                  ; SRAM cross-song instrument bank: 32 slots (64 B each)
@@ -549,14 +576,22 @@ GRID_TOP   equ 6
     dcb.b $110-*, ' '
     dc.b "(C)GENMDDJ 2026 "
     dcb.b $120-*, ' '
+    ifne KIT_LESS
+    dc.b "GENMDDJ KITLESS - MEGA DRIVE TRACKER"
+    else
     dc.b "GENMDDJ - MEGA DRIVE TRACKER"
+    endc
     dcb.b $150-*, ' '
+    ifne KIT_LESS
+    dc.b "GENMDDJ KITLESS - MEGA DRIVE TRACKER"
+    else
     dc.b "GENMDDJ - MEGA DRIVE TRACKER"
+    endc
     dcb.b $180-*, ' '
     dc.b "GM GENMDDJ-00"
     dcb.b $18E-*, ' '
     dc.w $0000
-    dc.b "J"
+    dc.b "J6"                       ; 3-button + six-button Control Pad support
     dcb.b $1A0-*, ' '
     dc.l $00000000
     dc.l ROM_END-1
@@ -659,9 +694,13 @@ Start:
     move.b  #0, key_prev
     move.b  #0, key_raw
     move.b  #0, key_stab
+    move.b  #0, pad6_raw
+    move.b  #0, pad6_last
+    move.b  #0, pad6_stab
+    move.w  #0, mix_mute
+    move.w  #0, mix_solo
+    move.b  #$FF, mix_dac_owner
     move.b  #0, help_page
-    move.b  #0, help_actr
-    move.b  #0, help_prev
     move.w  #$FFFF, hint_last
     move.b  #0, key_rpt
     move.b  #0, dpad_prev
@@ -957,7 +996,6 @@ VBlankInt:
     move.b  #1, env_dirty
     moveq   #1, d7
 .nc:
-    bsr     hint_tick                     ; boot HELP hint: count down + revert row0 to the title
     bsr     get_playrow                   ; playhead position for this screen
     move.b  d0, play_row
     tst.b   d7
@@ -1240,11 +1278,6 @@ splash_tick:                              ; a0 = VDP_CTRL; incremental draw + co
     addq.w  #1, d2
     cmpi.w  #14, d2
     bne.s   .ce
-    moveq   #0, d3                        ; boot: show the HELP hint at row0 col1 for ~3s (reverts to title)
-    moveq   #1, d4
-    lea     str_hint_help, a1
-    bsr     print_at
-    move.w  #HINT_FRAMES, hint_ctr        ; hint_tick counts this down, then restores the GENMDDJ title
     move.w  #0, g_ticks                   ; tick count starts when the UI loads
     move.b  #0, in_splash
     move.b  #1, need_clear                ; redraw the UI next frame
@@ -1450,8 +1483,7 @@ input_tick:
     not.b   d4
     and.b   d3, d4                       ; press edges
     bsr     c_tap_track                  ; clean C,C is paste; chords/navigation never count
-    bsr     help_hotkey                  ; hold A alone ~HELP_HOLD frames -> toggle HELP (any screen <-> HELP)
-    bne     .done                        ; toggled this frame -> skip the rest of the dispatch
+    bsr     pad6_tick                    ; X/Y/Z mixer controls are independent of 3-button gestures
     btst    #7, d4                        ; Start -> toggle transport
     beq.s   .nstart
     cmpi.b  #SCR_SONG, cur_screen          ; provisional SONG structural edits use held modifiers
@@ -3127,6 +3159,7 @@ get_field_addr:                           ; -> a1 = cursor field byte
     adda.w  d0, a1
     rts
 .table_fa:                                ; tbl_ram[cur_table]*64 + row*TROW + col
+    bsr     sanitize_cur_table             ; defensive: never address beyond the 32-table pool
     lea     tbl_ram, a1
     moveq   #0, d0
     move.b  cur_table, d0
@@ -3529,6 +3562,17 @@ edit_psg:
 .ep_td:
     subq.b  #1, d0
 .ep_tw:
+    ifne KIT_LESS
+    cmpi.b  #1, d0                          ; KIT remains type 1 in saves, but is not creatable here
+    bne.s   .ep_tkw
+    btst    #3, d2                          ; Right: FM -> WAVE; Left: WAVE -> FM
+    beq.s   .ep_tkleft
+    addq.b  #1, d0
+    bra.s   .ep_tkw
+.ep_tkleft:
+    subq.b  #1, d0
+.ep_tkw:
+    endc
     move.b  d0, (i_type,a3)
     tst.b   d0                              ; entering FM from another union type: SSG starts safely OFF
     bne.s   .ep_nfm
@@ -3697,7 +3741,15 @@ edit_psg:
 .ep_wnop:
     rts
 
+sanitize_cur_table:                       ; repair stale/corrupt UI state before any tbl_ram indexing
+    cmpi.b  #NTABLE, cur_table
+    blo.s   .sct_ok
+    clr.b   cur_table
+.sct_ok:
+    rts
+
 edit_table:                               ; left/right = +-1, up/down = +-$10 on the cursor cell
+    bsr     sanitize_cur_table
     tst.b   cur_row                         ; row 0 = the TBL selector field (pick which table)
     beq     .et_tblsel
     lea     tbl_ram, a1
@@ -4116,6 +4168,17 @@ edit_instr:
 .eidec:
     subq.b  #1, d0
 .ei2:
+    ifne KIT_LESS
+    cmpi.b  #1, d0                          ; keep the reserved KIT value out of the type cycle
+    bne.s   .ei_kw
+    btst    #3, d2
+    beq.s   .ei_kleft
+    addq.b  #1, d0
+    bra.s   .ei_kw
+.ei_kleft:
+    subq.b  #1, d0
+.ei_kw:
+    endc
     move.b  d0, (a1)
     rts
 
@@ -4591,12 +4654,13 @@ chk_dbltap:                               ; a1 = field addr -> d2.b = 1 if this 
     rts
 
 
-; Read pad 1 -> d0.b = St C B A R L D U (active high). The first TH phase returns
-; the standard buttons on BOTH 3- and 6-button pads (a 6-button pad starts each
-; idle-reset read at phase 0), so this reads every button genmddj uses on either
-; pad. The X/Y/Z/Mode extras (6-button only) are not read yet (no feature uses them;
-; the extended-sequence read needs hardware verification - see Q3 / pad6_ex notes).
+; Read pad 1 -> d0.b = St C B A R L D U (active high), and pad6_raw = ----MZYX.
+; The first pair is the ordinary 3-button-compatible read. Three more TH pulses enter
+; the MK-1653 extended phase: third-low returns 0000, fourth-high returns MXYZ, and
+; fourth-low returns 1111. That final signature prevents a 3-button pad (or no pad)
+; from fabricating X/Y/Z. TH is left high so the controller's timeout resets the phase.
 pad_read:
+    clr.b   pad6_raw
     move.b  #$40, IO_DATA1               ; TH=1
     nop
     nop
@@ -4605,7 +4669,49 @@ pad_read:
     nop
     nop
     move.b  IO_DATA1, d2                 ; . . . . A St
-    move.b  #$40, IO_DATA1               ; leave TH high (idle resets a 6-button pad)
+    move.b  #$40, IO_DATA1               ; second high (pulse 1)
+    nop
+    nop
+    move.b  #$00, IO_DATA1               ; second low
+    nop
+    nop
+    move.b  #$40, IO_DATA1               ; third high (pulse 2)
+    nop
+    nop
+    move.b  #$00, IO_DATA1               ; third low: 6-button ID = xxxx0000
+    nop
+    nop
+    move.b  IO_DATA1, d3
+    move.b  #$40, IO_DATA1               ; fourth high (pulse 3): xxxxMXYZ
+    nop
+    nop
+    move.b  IO_DATA1, d4
+    move.b  #$00, IO_DATA1               ; fourth low: 6-button ID = xxxx1111
+    nop
+    nop
+    move.b  IO_DATA1, d5
+    move.b  #$40, IO_DATA1               ; leave TH high (idle timeout resets the pad)
+    move.b  d3, d6                        ; require both halves of the 6-button signature
+    andi.b  #$0F, d6
+    bne.s   .no6
+    move.b  d5, d6
+    andi.b  #$0F, d6
+    cmpi.b  #$0F, d6
+    bne.s   .no6
+    not.b   d4                            ; external nibble is MXYZ, active low
+    andi.b  #$0F, d4
+    move.b  d4, d6                        ; internal nibble is MZYX: swap external Z/X bits
+    andi.b  #$0A, d6                      ; preserve MODE(bit3) + Y(bit1)
+    btst    #2, d4                        ; external X -> internal bit0
+    beq.s   .p6_nx
+    bset    #0, d6
+.p6_nx:
+    btst    #0, d4                        ; external Z -> internal bit2
+    beq.s   .p6_nz
+    bset    #2, d6
+.p6_nz:
+    move.b  d6, pad6_raw
+.no6:
     not.b   d1
     not.b   d2
     moveq   #0, d0
@@ -4627,6 +4733,152 @@ pad_read:
     beq.s   .s
     bset    #7, d0
 .s:
+    rts
+
+; Debounce six-button extras with the same immediate-press / confirmed-release policy as
+; the standard pad. X toggles explicit mute, Y toggles membership in the solo set, and Z
+; clears both masks. MODE is deliberately unassigned. Mixer gestures never replace C+B.
+pad6_tick:
+    movem.l d0-d7/a0-a6, -(sp)
+    move.b  pad6_raw, d0
+    move.b  pad6_last, d1                  ; previous raw sample
+    move.b  d0, pad6_last
+    move.b  pad6_stab, d2
+    move.b  d2, d7                         ; old stable state for edge detection
+    or.b    d0, d1                         ; raw high now or on previous frame
+    and.b   d1, d2                         ; confirm releases over two frames
+    or.b    d0, d2                         ; presses become stable immediately
+    move.b  d2, pad6_stab
+    not.b   d7
+    and.b   d2, d7                         ; d7 = stable press edges
+    btst    #2, d7                         ; Z has priority: clear all mute/solo state
+    beq.s   .p6t_x
+    bsr     mix_clear
+    bra.s   .p6t_done
+.p6t_x:
+    btst    #0, d7                         ; X = toggle mute on current track
+    beq.s   .p6t_y
+    bsr     mix_toggle_mute
+    bra.s   .p6t_done
+.p6t_y:
+    btst    #1, d7                         ; Y = toggle solo on current track
+    beq.s   .p6t_done
+    bsr     mix_toggle_solo
+.p6t_done:
+    movem.l (sp)+, d0-d7/a0-a6
+    rts
+
+; ---- transient six-button track mixer -------------------------------------------------------
+; mix_mute and mix_solo are session state, intentionally outside the song save image. Multiple
+; Y-solos can coexist. Explicit mute wins over solo. All ten sequencers keep advancing; these
+; masks only gate writes to the sound chips.
+mix_effective:                            ; -> d0.w = tracks currently allowed to sound; clobbers d1
+    move.w  mix_solo, d0
+    bne.s   .me_solo
+    move.w  #$03FF, d0
+.me_solo:
+    move.w  mix_mute, d1
+    not.w   d1
+    and.w   d1, d0
+    andi.w  #$03FF, d0
+    rts
+
+mix_cursor_track:                         ; -> d0 = SONG column, otherwise current channel context
+    moveq   #0, d0
+    move.b  cur_chan, d0
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .mct_ok
+    move.b  cur_col, d0
+.mct_ok:
+    cmpi.w  #NCH, d0                      ; defensive clamp for non-grid cursor layouts
+    blo.s   .mct_ret
+    moveq   #0, d0
+.mct_ret:
+    rts
+
+mix_toggle_mute:
+    bsr     mix_effective
+    move.w  d0, d6                        ; old effective mask
+    bsr     mix_cursor_track
+    moveq   #1, d1
+    lsl.w   d0, d1
+    eor.w   d1, mix_mute
+    bra.s   mix_apply
+
+mix_toggle_solo:
+    bsr     mix_effective
+    move.w  d0, d6                        ; old effective mask
+    bsr     mix_cursor_track
+    moveq   #1, d1
+    lsl.w   d0, d1
+    eor.w   d1, mix_solo
+    bra.s   mix_apply
+
+mix_clear:
+    bsr     mix_effective
+    move.w  d0, d6                        ; old effective mask
+    clr.w   mix_mute
+    clr.w   mix_solo
+
+mix_apply:                                ; d6.w = prior effective mask
+    bsr     mix_effective
+    move.w  d0, d7                        ; new effective mask
+    move.w  d6, d5
+    not.w   d5
+    and.w   d7, d5                        ; d5 = newly audible tracks
+    move.w  d7, d4
+    not.w   d4
+    and.w   d6, d4                        ; d4 = newly muted tracks
+    moveq   #0, d3
+    move.b  mix_dac_owner, d3
+    cmpi.b  #$FF, d3
+    beq.s   .ma_rearm
+    btst    d3, d4                        ; the current logical DAC owner just became inaudible
+    beq.s   .ma_rearm
+    bsr     mix_dac_park                  ; stop hardware now; a WAVE keeps advancing silently
+    tst.b   wave_on
+    bne.s   .ma_rearm
+    move.b  #$FF, mix_dac_owner           ; a one-shot KIT sample cannot resume after unmute
+.ma_rearm:
+    moveq   #0, d3
+    lea     ch_state, a6
+.ma_loop:
+    btst    d3, d5
+    beq.s   .ma_next
+    cmpi.b  #1, c_type(a6)
+    beq.s   .ma_fm
+    move.w  #$FFFF, c_shadowp(a6)         ; PSG resumes at its current pitch and volume
+    move.b  #$FF, c_shadowa(a6)
+    bra.s   .ma_next
+.ma_fm:
+    clr.b   c_kshadow(a6)                 ; held FM resumes; a pending note trigger retains its patch/freq
+.ma_next:
+    lea     CHSIZE(a6), a6
+    addq.w  #1, d3
+    cmpi.w  #NCH, d3
+    bne.s   .ma_loop
+    move.b  #1, vdirty
+    rts
+
+mix_is_audible:                           ; a6 = channel -> d0 = 1 audible / 0 muted; clobbers d1-d2
+    bsr     mix_effective
+    move.w  d0, d1
+    moveq   #0, d2
+    move.b  c_track(a6), d2
+    moveq   #0, d0
+    btst    d2, d1
+    beq.s   .mia_ret
+    moveq   #1, d0
+.mia_ret:
+    rts
+
+mix_dac_park:                             ; stop DAC hardware without discarding a WAVE's logical state
+    move.w  #$0100, Z80_BUSREQ
+.mdp_w:
+    btst    #0, Z80_BUSREQ
+    bne.s   .mdp_w
+    addq.b  #1, Z80_RAM+$1FF4
+    move.w  #$0000, Z80_BUSREQ
     rts
 
 ; grid cell highlight: d6 = row, d5 = col -> d4 = $60 if highlighted, else 0. In block-select mode
@@ -4674,6 +4926,7 @@ cell_hl:
 ; render TABLE grid: 16 rows of cur_table's signed arp offset
 ; ============================================================
 render_table:                             ; V(vol) TSP(transpose) CMD(cmd+prm), SMSGGDJ-style
+    bsr     sanitize_cur_table             ; render and playhead lookup must stay within tbl_ram
     moveq   #3, d3                          ; TBL selector field (cur_row 0): "TBL ##" at row 3
     moveq   #1, d4
     lea     str_tbl, a1
@@ -5114,10 +5367,9 @@ render_song_edit_status:
     movem.l (sp)+, d0-d4/a1
     rts
 
-; CONT carry/bridge markers on the SONG arrangement header (row 3), one per track just
-; to the RIGHT of its F1../NO label (in the gap column): '>' while this track is bridging,
-; '*' if it is flagged to carry across the next load (A+C), else blank. One glyph per
-; track -- not down the whole column. Mirrors SMSGGDJ's header cue (CONT.md). a0 = VDP_CTRL.
+; SONG track-status markers (row 3), one per track just right of its F1../NO label.
+; Priority: CONT bridge '>', explicit mute 'M', solo 'S', CONT flag '*', then blank.
+; One glyph per track -- not down the whole column. a0 = VDP_CTRL.
 CONT_HDRROW equ 3
 render_cont_hdr:
     movem.l d0-d2/a1-a2, -(sp)
@@ -5143,6 +5395,18 @@ render_cont_hdr:
     move.w  #'>', d0
     bra.s   .ch_put
 .ch_flag:
+    move.w  mix_mute, d1                    ; explicit X-mute wins over a Y-solo marker
+    btst    d2, d1
+    beq.s   .ch_solo
+    move.w  #'M', d0
+    bra.s   .ch_put
+.ch_solo:
+    move.w  mix_solo, d1                    ; Y-solo member -> 'S'
+    btst    d2, d1
+    beq.s   .ch_cont
+    move.w  #'S', d0
+    bra.s   .ch_put
+.ch_cont:
     move.w  cont_mask, d1                   ; flagged to carry -> '*'
     btst    d2, d1
     beq.s   .ch_put
@@ -6843,6 +7107,17 @@ render_kit:
     move.b  cur_instr, d0
     mulu.w  #INSTR_SIZE, d0
     adda.w  d0, a3
+    ifne KIT_LESS
+    moveq   #6, d3                          ; legacy save data retains KIT type, but is silent here
+    moveq   #1, d4
+    lea     str_kit_unavailable, a1
+    bsr     print_at
+    moveq   #8, d3
+    moveq   #1, d4
+    lea     str_kit_preserved, a1
+    bsr     print_at
+    rts
+    else
     moveq   #6, d3                          ; "KIT" + kit index at row 6 (cur_row 2; blank row 5 = spacer)
     moveq   #1, d4
     lea     str_kit, a1
@@ -6931,6 +7206,7 @@ render_kit:
     lea     16(a4), a4
     dbra    d5, .rkpad
     rts
+    endc
 
 PSG_TOP equ 6                             ; PSG field list top row
 ; TONE/NOISE instrument page: INST/TYPE header + a data-driven field list
@@ -8067,6 +8343,7 @@ clear_live_patch:
 
 silence_all:                              ; STOP: cut every ringing voice -- FM key-off, PSG vol-off, wave DAC feed
     move.b  #0, wave_on                   ; stop any wave-note DAC feed
+    move.b  #$FF, mix_dac_owner
     lea     scb_data, a0                   ; PSG: all 4 voices -> max attenuation (silent)
     move.b  #$9F, (a0)+
     move.b  #$BF, (a0)+
@@ -8139,8 +8416,28 @@ play_context:                             ; C+B: toggle audition of the current 
     beq.s   .pc_normal
     bra     live_launch_track
 .pc_normal:
+    tst.b   proj_mode                      ; LIVE editor audition remains distinct from SONG clip launch:
+    beq.s   .pc_toggle                     ; CHAIN/PHRASE/INSTR solo immediately, even over a running set
+    move.b  cur_screen, d0
+    cmpi.b  #SCR_CHAIN, d0
+    beq.s   .pc_live_editor
+    cmpi.b  #SCR_PHRASE, d0
+    beq.s   .pc_live_editor
+    cmpi.b  #SCR_INSTR, d0
+    bne.s   .pc_toggle
+.pc_live_editor:
+    tst.b   playing
+    beq.s   .pc_start
+    tst.b   play_mode                      ; a second C+B stops an existing editor audition
+    bne.s   .pc_stop
+    bsr     clear_live_patch               ; replace the running LIVE set with the isolated audition
+    bsr     silence_all
+    bsr     cont_restore_all               ; release any CONT bridge's borrowed target instruments first
+    bra.s   .pc_start
+.pc_toggle:
     tst.b   playing                        ; already playing -> stop
     beq.s   .pc_start
+.pc_stop:
     move.b  #0, playing
     bsr     clear_live_patch              ; drop A/V overrides on stop
     bsr     silence_all                   ; ...and cut any ringing FM / PSG / wave voice
@@ -8449,10 +8746,10 @@ engine_play_reset:
     move.b  #$FF, c_tbl(a6)              ; no table until the first note
     move.b  #$FF, c_trow(a6)             ; per-note table starts at row 0
     move.l  #phrases, c_phrase(a6)
-    tst.b   proj_mode                     ; LIVE: every track starts muted; a launch wakes it
-    bne     .mute
     tst.b   play_mode
     bne.s   .solo
+    tst.b   proj_mode                     ; LIVE: every track starts muted; a launch wakes it
+    bne     .mute
     lea     song, a2                       ; full song: begin at the exact play_from row. At block end,
     moveq   #0, d1                          ;   advance_song walks back up and loops the contiguous block.
     move.b  c_track(a6), d1                ;   Empty at play_from = silent for this track.
@@ -8608,8 +8905,8 @@ fmlfo_tick:
     add.w   d1, (a4,d0.w)                  ; accumulate the LFO delta into the pitch offset
     cmpi.w  #YM_CAP, d5                    ; SCB headroom -> re-emit this channel's frequency this tick
     bhi     .fltn
-    movea.l a3, a6                         ; fm_freq_send appends $A4/$A0 (base+fine+slide+TUNE), overriding the base
-    bsr     fm_freq_send
+    movea.l a3, a6                         ; channel-aware dispatch: ordinary FM uses $A4/$A0;
+    bsr     ch_freq_send                   ;   PERC must preserve/re-emit its four CH3-special frequencies
     bra     .fltn
 .flnottune:
     moveq   #0, d0                           ; param table entry -> a4 = {patch_off, reg, max}
@@ -8619,11 +8916,9 @@ fmlfo_tick:
     mulu.w  #6, d0
     lea     fmlfo_ptab, a4
     adda.w  d0, a4
-    lea     instrum, a1                      ; the target channel's instrument
-    moveq   #0, d2
-    move.b  c_instr(a3), d2
-    mulu.w  #INSTR_SIZE, d2
-    adda.w  d2, a1
+    moveq   #0, d0                          ; the target channel's effective FM patch
+    move.b  c_instr(a3), d0                ; (PERC parameter LFOs modulate BASE; TUNE was
+    bsr     fm_patch_ptr_a1                 ;  special-cased above and retains PERC frequencies)
     moveq   #0, d3                           ; base = patch param value
     move.b  (a4), d3
     moveq   #0, d2
@@ -8910,6 +9205,9 @@ retrig_kit_dac:
     movem.l d0-d2/a1/a4, -(sp)
     cmpi.b  #1, c_type(a6)                  ; only FM tracks can host KIT instruments
     bne.s   .rkd_done
+    bsr     mix_is_audible                  ; muted track consumes retriggers but cannot steal the DAC
+    tst.b   d0
+    beq.s   .rkd_muted
     lea     instrum, a4
     moveq   #0, d2
     move.b  c_instr(a6), d2
@@ -8928,10 +9226,15 @@ retrig_kit_dac:
     andi.w  #$0F, d1
     lea     0(a4,d2.w), a1                  ; same instrument retains its KIT, VOL and RATE
     bsr     dac_play_retrig
+    move.b  c_track(a6), mix_dac_owner
 .rkd_consume:
     move.b  #0, wave_on                     ; a KIT re-strike owns (or masks) the DAC path
     move.b  #0, c_keyon(a6)
     move.b  #0, c_trig(a6)                  ; do not fall through to the FM key-on composer
+    bra.s   .rkd_done
+.rkd_muted:
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_trig(a6)
 .rkd_done:
     movem.l (sp)+, d0-d2/a1/a4
     rts
@@ -9194,6 +9497,12 @@ engine_tick:
     bsr     echo_psg_rd                   ; PSG echo target: attenuate by RD (after the envelope set c_vol)
     bsr     retrig_psg_rd                 ; PSG: R-command retrigger volume decay (also post-envelope)
 .ch_compose:
+    bsr     mix_is_audible                ; six-button mixer gates chip writes, not sequencing
+    tst.b   d0
+    bne.s   .ch_mixon
+    bsr     compose_muted_ch              ; one-time FM key-off / PSG volume-off
+    bra.s   .ch_muted
+.ch_mixon:
     tst.b   player_active                 ; player stem pass: run the complete engine state, but only
     beq.s   .ch_emit                      ; let selected hardware voices reach the chip write lists
     moveq   #0, d0
@@ -9583,11 +9892,14 @@ wave_rebake:
     movea.l a1, a4                        ; a4 = instrument for wave_env
     bsr     wave_env                      ; advance the AHD envelope one frame
     tst.b   c_estate(a6)                  ; envelope decayed to off?
-    beq.s   .wr_off
+    beq.s   .wr_done
     bsr     wave_lfo                      ; advance the 5 LFOs -> wbake_in (vol/warp/fold/drv/crush)
+    bsr     mix_is_audible                ; muted WAVE keeps its env/LFO phase but emits no DAC writes
+    tst.b   d0
+    beq.s   .wrx
     bsr     wave_play                     ; bake (reads wbake_in) + push + re-arm
     rts
-.wr_off:
+.wr_done:
     bsr     wave_silence                  ; env finished -> stop + park the DAC
 .wrx:
     rts
@@ -9597,6 +9909,7 @@ wave_silence:
     tst.b   wave_on
     beq.s   .wsx
     move.b  #0, wave_on
+    move.b  #$FF, mix_dac_owner
     move.w  #$0100, Z80_BUSREQ
 .wsw:
     btst    #0, Z80_BUSREQ
@@ -9803,6 +10116,8 @@ cut_dac_if_sample:                         ; a6=ch: if c_instr is KIT/WAVE, tell
     subq.b  #1, d0                          ; KIT(1)/WAVE(2) -> 0/1; FM/TONE/NOISE out of range
     cmpi.b  #1, d0
     bhi.s   .cds_no
+    move.b  #0, wave_on
+    move.b  #$FF, mix_dac_owner
     move.w  #$0100, Z80_BUSREQ
 .cds_w:
     btst    #0, Z80_BUSREQ
@@ -10068,7 +10383,9 @@ advance_ch:                               ; a6 = channel
     move.b  (1,a1,d0.w), d3               ; phrase IN column = instrument #
     mulu.w  #INSTR_SIZE, d3
     adda.w  d3, a4
-    cmpi.b  #3, (a4)                       ; TONE/NOISE (>=3) transpose -> ip_tsp
+    cmpi.b  #5, (a4)                       ; PERC has no instrument TSP field: its overlaid
+    beq.s   .notsp                         ;   ip_tsp byte is unrelated operator storage
+    cmpi.b  #3, (a4)                       ; TONE/NOISE (3/4) transpose -> ip_tsp
     bhs.s   .psgtsp
     cmpi.b  #2, (a4)                        ; FM (0) + KIT (1) transpose -> i_tsp; WAVE (2): none
     beq.s   .notsp
@@ -10578,12 +10895,23 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     mulu.w  #INSTR_SIZE, d2
     cmpi.b  #1, (i_type,a4,d2.w)         ; i_type 1 = KIT
     bne.s   .nwkit
+    ifne KIT_LESS
+    move.b  #0, c_keyon(a6)              ; preserve legacy KIT records, but never touch/claim the DAC
+    move.b  #0, c_trig(a6)
+    rts
+    else
+    move.w  d2, -(sp)
+    bsr     mix_is_audible                ; a muted logical track must not steal the shared DAC
+    move.w  (sp)+, d2
+    tst.b   d0
+    beq.s   .kit_muted
     tst.b   player_active                 ; a stem pass without F6 must not leak its direct DAC path
     beq.s   .kit_audible
     move.w  player_mask, d0
     btst    #5, d0
     bne.s   .kit_audible
     move.b  #0, wave_on
+    move.b  #$FF, mix_dac_owner
     move.b  #0, c_keyon(a6)
     move.b  #0, c_trig(a6)
     rts
@@ -10594,19 +10922,31 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     andi.w  #$0F, d1                     ; pad = note % 16 (wraps every octave-ish)
     lea     0(a4,d2.w), a1               ; a1 = the KIT instrument (for gain/rate)
     bsr     dac_play
+    move.b  c_track(a6), mix_dac_owner
     move.b  #0, wave_on                  ; a sample takes the DAC -> end any wave note
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
     move.b  #0, c_trig(a6)
     rts
+.kit_muted:
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_trig(a6)
+    rts
+    endc
 .nwkit:
     cmpi.b  #2, (i_type,a4,d2.w)         ; i_type 2 = WAVE -> wavetable on the DAC
-    bne.s   .fmtrig
+    bne     .fmtrig
+    move.w  d2, -(sp)
+    bsr     mix_is_audible                ; muted WAVE notes advance in the phrase but do not steal DAC
+    move.w  (sp)+, d2
+    tst.b   d0
+    beq     .wave_muted
     tst.b   player_active                 ; WAVE also bypasses compose_ch and must obey the F6 mask here
     beq.s   .wave_audible
     move.w  player_mask, d0
     btst    #5, d0
     bne.s   .wave_audible
     move.b  #0, wave_on
+    move.b  #$FF, mix_dac_owner
     move.b  #0, c_keyon(a6)
     move.b  #0, c_trig(a6)
     rts
@@ -10623,7 +10963,12 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     bsr     wave_play                     ; bake (reads wbake_in) + push + arm
     move.b  #1, wave_on                  ; mark sounding -> engine re-bakes it every frame
     move.l  a6, wave_ch
+    move.b  c_track(a6), mix_dac_owner
     move.b  #0, c_keyon(a6)              ; DAC owns ch6 -> keep the FM voice silent
+    move.b  #0, c_trig(a6)
+    rts
+.wave_muted:
+    move.b  #0, c_keyon(a6)
     move.b  #0, c_trig(a6)
     rts
 .fmtrig:
@@ -10635,17 +10980,18 @@ note_trigger:                             ; trigger the note-on (a6 = channel); 
     bne.s   .fm_dacw
     addq.b  #1, Z80_RAM+$1FCE            ; bump DAC_FM -> Z80 dac_to_fm disables ch6 DAC ($2B off)
     move.w  #$0000, Z80_BUSREQ
+    move.b  #0, wave_on
+    move.b  #$FF, mix_dac_owner
 .fm_nodac:
     ; on an FM note-on, revert each live override (Q/X/O/U) to the instrument's value -- unless
     ; that command is on this very row (its dirty flag was just set by the dispatch). Else a stale
     ; override sticks forever (same-instrument retriggers skip the patch re-emit).
     moveq   #0, d2
     move.b  c_track(a6), d2
-    moveq   #0, d1
-    move.b  c_instr(a6), d1
-    mulu.w  #INSTR_SIZE, d1
-    lea     instrum, a3
-    adda.w  d1, a3                          ; a3 = the channel's instrument
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    bsr     fm_patch_ptr_a1
+    movea.l a1, a3                          ; a3 = FM patch (PERC resolves through BASE)
     lea     lq_dirty, a4                    ; Q -> $B0 = (FB<<3)|ALGO
     tst.b   (a4,d2.w)
     bne.s   .fm_rq
@@ -10866,6 +11212,8 @@ load_step:                                ; a6 = channel; d1 = chain step
 is_live_silent:                           ; a6 = channel -> d0 = 1 if LIVE mode and this track is un-launched
     cmpi.b  #4, opt_sync                  ; MIDI takeover: never LIVE-silence (MIDI owns the voices)
     beq.s   .ils_no
+    tst.b   play_mode                     ; explicit CHAIN/PHRASE C+B audition overrides LIVE launch gating
+    bne.s   .ils_no
     moveq   #0, d0                         ; an owned FM follower belongs to its grouped root, not live_on[]
     move.b  c_track(a6), d0
     cmpi.b  #6, d0
@@ -10983,16 +11331,14 @@ exec_cmd:
     beq.s   .o_nor
     ori.b   #$40, d3
 .o_nor:
-    moveq   #0, d0                          ; preserve the instrument's AMS/FMS
+    moveq   #0, d0                          ; preserve the effective patch's AMS/FMS
     move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a4
-    adda.w  d0, a4
-    move.b  (i_ams,a4), d0
+    bsr     fm_patch_ptr_a1                 ; PERC -> BASE FM patch
+    move.b  (i_ams,a1), d0
     andi.b  #3, d0
     lsl.b   #4, d0
     or.b    d0, d3
-    move.b  (i_fms,a4), d0
+    move.b  (i_fms,a1), d0
     andi.b  #7, d0
     or.b    d0, d3
     moveq   #0, d0
@@ -11168,13 +11514,11 @@ exec_cmd:
     cmpi.b  #1, c_type(a6)                ; FM channels only
     bne     .cmddone
     move.b  (3,a1,d1.w), d2               ; Y xy = FM LFO depth: x=AMS (0-3), y=FMS (0-7).
-    moveq   #0, d3                         ; Builds $B4 = (instrument pan)<<6 | AMS<<4 | FMS and
-    move.b  c_instr(a6), d3               ; rides O's lo_b4/lo_dirty shadow -> emitted now, reverts
-    mulu.w  #INSTR_SIZE, d3               ; to the instrument next note (needs the global LFO $22 on
-    lea     instrum, a4                    ; to be audible).
-    adda.w  d3, a4
+    moveq   #0, d0                         ; Build $B4 from the effective patch pan; PERC
+    move.b  c_instr(a6), d0               ; resolves through BASE just like its full patch.
+    bsr     fm_patch_ptr_a1
     moveq   #0, d3
-    move.b  (i_pan,a4), d3                ; keep the instrument's pan bits
+    move.b  (i_pan,a1), d3                ; keep the effective patch's pan bits
     lsl.b   #6, d3
     move.b  d2, d1                         ; AMS = high nibble -> bits 5-4
     lsr.b   #4, d1
@@ -11204,13 +11548,11 @@ exec_cmd:
     move.b  (3,a1,d1.w), d2
     andi.b  #7, d2                         ; FMS 0-7 -> $B4 bits 2-0
 .mv_b4:                                   ; d2 = this axis' $B4 bits; build (instrument pan)<<6 | axis, ride O/Y's shadow
+    moveq   #0, d0
+    move.b  c_instr(a6), d0
+    bsr     fm_patch_ptr_a1                 ; PERC -> BASE FM patch
     moveq   #0, d3
-    move.b  c_instr(a6), d3
-    mulu.w  #INSTR_SIZE, d3
-    lea     instrum, a4
-    adda.w  d3, a4
-    moveq   #0, d3
-    move.b  (i_pan,a4), d3
+    move.b  (i_pan,a1), d3
     lsl.b   #6, d3
     or.b    d2, d3
     moveq   #0, d2
@@ -11829,6 +12171,30 @@ cluster_hook:
     movem.l (sp)+, d0/d3/d4/a1
     rts
 
+; Gate one track without changing its sequencer/envelope state. Shadows are updated to the
+; actual silent hardware state, so an unmute naturally re-emits the current PSG level or FM key.
+compose_muted_ch:                         ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
+    cmpi.b  #1, c_type(a6)
+    beq.s   .cmc_fm
+    cmpi.b  #15, c_shadowa(a6)
+    beq.s   .cmc_ret
+    move.b  #15, c_shadowa(a6)
+    move.b  c_psgv(a6), d0
+    ori.b   #15, d0
+    move.b  d0, (a3)+
+    addq.b  #1, d6
+    rts
+.cmc_fm:
+    tst.b   c_kshadow(a6)
+    beq.s   .cmc_ret
+    clr.b   c_kshadow(a6)
+    move.b  #0, (a5)+
+    move.b  #$28, (a5)+
+    move.b  c_ymkey(a6), (a5)+
+    addq.w  #1, d5
+.cmc_ret:
+    rts
+
 compose_ch:                               ; a6=ch; a3/d6=PSG buf; a5/d5=YM buf
     move.b  c_type(a6), d0
     beq.s   .square
@@ -12203,6 +12569,33 @@ compose_fm:                               ; a6=ch; a5=YM ptr; d5=triple count
 .done:
     rts
 
+; Resolve an instrument number to the FM patch record that supplies channel/operator
+; parameters. PERC owns its frequencies, MUL/DT overrides, HLD, table and FSWP, but
+; every ordinary FM patch value comes from its BASE instrument. d0.b = instrument;
+; returns a1 = effective patch, preserving all registers except d0/a1.
+fm_patch_ptr_a1:
+    andi.w  #$00FF, d0
+    cmpi.w  #NINSTR, d0
+    blo.s   .fpp_slot
+    moveq   #NINSTR-1, d0
+.fpp_slot:
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+    cmpi.b  #5, (i_type,a1)
+    bne.s   .fpp_done
+    moveq   #0, d0
+    move.b  (i_pbase,a1), d0
+    cmpi.w  #NINSTR, d0
+    blo.s   .fpp_base
+    moveq   #NINSTR-1, d0
+.fpp_base:
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a1
+    adda.w  d0, a1
+.fpp_done:
+    rts
+
 flush_fm_keyons:                          ; append prepared F1-F6 $28 writes consecutively at the SCB tail
     moveq   #0, d4
     move.b  fm_keypend, d4
@@ -12220,7 +12613,10 @@ flush_fm_keyons:                          ; append prepared F1-F6 $28 writes con
     beq.s   .ffk_all
     cmpi.b  #2, d0
     bne.s   .ffk_all
-    move.b  perc_keys, d1
+    moveq   #0, d1
+    move.b  perc_keys, d1                  ; editor/storage bits are OP1,OP3,OP2,OP4
+    lea     perc_keymap, a1                ; $28 key bits are logical OP1,OP2,OP3,OP4
+    move.b  (a1,d1.w), d1
     lsl.b   #4, d1
     or.b    d1, d3
     bra.s   .ffk_write
@@ -12241,27 +12637,10 @@ flush_fm_keyons:                          ; append prepared F1-F6 $28 writes con
 ; advancing the triple count d5. Channel-aware: emits to c_ympart / (reg + c_ymchreg), reads c_instr.
 emit_ch_patch:                              ; d1 = instrument # to patch from (caller passes c_instr)
     movem.l d1-d4/d6/a3-a4, -(sp)
-    cmpi.b  #NINSTR, d1                      ; clamp a stale out-of-range instrument to a valid slot
-    blo.s   .ecp_ok
-    moveq   #NINSTR-1, d1
-.ecp_ok:
-    moveq   #0, d0                          ; PERC instrument -> take the patch from its base instead
-    move.b  d1, d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a3
-    cmpi.b  #5, (i_type,a3,d0.w)
-    bne.s   .ecp_np
-    move.b  (i_pbase,a3,d0.w), d1
-    andi.w  #$FF, d1
-    cmpi.b  #NINSTR, d1
-    blo.s   .ecp_np
-    moveq   #NINSTR-1, d1
-.ecp_np:
     moveq   #0, d0
     move.b  d1, d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a3
-    adda.w  d0, a3                          ; a3 = the patch-source instrument
+    bsr     fm_patch_ptr_a1
+    movea.l a1, a3                          ; a3 = patch source (PERC resolves through BASE)
     moveq   #0, d6                          ; operator slot 0..3 (register order)
 .ecp_op:
     move.w  d6, d4                          ; param base = i_op + slot*FM_NPARM
@@ -12493,9 +12872,8 @@ emit_x_tl:
     movem.l d1-d4/d6/a3-a4, -(sp)
     moveq   #0, d0
     move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a3
-    adda.w  d0, a3
+    bsr     fm_patch_ptr_a1
+    movea.l a1, a3                          ; PERC volume operates on BASE carriers/TLs
     moveq   #15, d4
     sub.b   d1, d4
     lsl.b   #3, d4                          ; d4 = atten = (15-vol)*8
@@ -12538,9 +12916,8 @@ emit_u_tl:
     movem.l d1-d4/d6/a3-a4, -(sp)
     moveq   #0, d0
     move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a3
-    adda.w  d0, a3
+    bsr     fm_patch_ptr_a1
+    movea.l a1, a3                          ; PERC brightness operates on BASE modulators/TLs
     move.b  d1, d4                          ; d4 = TL offset
     moveq   #0, d6
 .eut_op:
@@ -12769,54 +13146,22 @@ perc_freq_send:
     lea     FM_NPARM(a2), a2
     addq.l  #2, a3
     dbra    d3, .pfs_op
-    moveq   #0, d0                          ; --- re-assert the channel patch the wrap loses: $B0 algo/fb, $B4 pan ---
-    move.b  c_instr(a6), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a2
-    adda.w  d0, a2
-    moveq   #0, d0                          ; PERC -> its base instrument supplies the channel registers
-    move.b  (i_pbase,a2), d0
-    mulu.w  #INSTR_SIZE, d0
-    lea     instrum, a2
-    adda.w  d0, a2
-    move.b  c_ympart(a6), (a5)+            ; $B0 = (FB<<3)|ALGO
-    moveq   #0, d0
-    move.b  c_ymchreg(a6), d0
-    addi.w  #$B0, d0
-    move.b  d0, (a5)+
-    move.b  (i_fb,a2), d1
-    lsl.b   #3, d1
-    move.b  (i_algo,a2), d0
-    or.b    d1, d0
-    move.b  d0, (a5)+
-    addq.w  #1, d5
-    move.b  c_ympart(a6), (a5)+            ; $B4 = (pan<<6)|(AMS<<4)|FMS
-    moveq   #0, d0
-    move.b  c_ymchreg(a6), d0
-    addi.w  #$B4, d0
-    move.b  d0, (a5)+
-    move.b  (i_pan,a2), d0
-    lsl.b   #6, d0
-    move.b  (i_ams,a2), d1
-    andi.b  #3, d1
-    lsl.b   #4, d1
-    or.b    d1, d0
-    move.b  (i_fms,a2), d1
-    andi.b  #7, d1
-    or.b    d1, d0
-    move.b  d0, (a5)+
-    addq.w  #1, d5
+    ; A frequency refresh must not overwrite live Q/O/Y/M/V or software-LFO state.
+    ; The full/repatch paths already establish BASE $B0/$B4 whenever the PERC
+    ; instrument or its BASE changes, so only frequency and PERC MUL/DT belong here.
     cmpi.b  #$80, c_psweep(a6)              ; the exact target was emitted to all four operators
     bne.s   .pfs_done
     clr.b   c_psweep(a6)
 .pfs_done:
     movem.l (sp)+, d0-d4/a2-a4
     rts
-perc_freg:                                ; per record op (S1,S3,S2,S4): {DT/MUL reg, freq-hi, freq-lo}
-    dc.b $32, $AD, $A9                     ; op0 S1  -- VERIFY operator<->register mapping on hardware
-    dc.b $36, $AE, $AA                     ; op1 S3
-    dc.b $3A, $AC, $A8                     ; op2 S2
-    dc.b $3E, $A6, $A2                     ; op3 S4
+perc_freg:                                ; record rows are S1,S3,S2,S4; frequency routing is non-linear:
+    dc.b $32, $AD, $A9                     ; OP1 <- supplementary pair 1
+    dc.b $36, $AC, $A8                     ; OP3 <- supplementary pair 0
+    dc.b $3A, $AE, $AA                     ; OP2 <- supplementary pair 2
+    dc.b $3E, $A6, $A2                     ; OP4 <- normal CH3 frequency pair
+perc_keymap:                              ; storage OP1,OP3,OP2,OP4 -> YM $28 OP1,OP2,OP3,OP4
+    dc.b $0,$1,$4,$5,$2,$3,$6,$7,$8,$9,$C,$D,$A,$B,$E,$F
     even
 
 ; emit the FM channel's frequency ($A4/$A0) from c_note + chord arp offset + c_pfine fine.
@@ -13006,6 +13351,11 @@ push_scb:
 ; resolves (kit,pad) -> sample ROM addr via the directory, computes the Z80
 ; window bank/pointer, and pushes the DAC command (own BUSREQ). Empty pad = no-op.
 dac_play:
+    ifne KIT_LESS
+    rts                                      ; no sample directory or PCM data exists in this build
+dac_play_retrig:
+    rts
+    else
     movem.l d2-d6/a0, -(sp)
     moveq   #0, d6                          ; ordinary note-on uses the instrument's gain pool
     bra.s   dac_play_gain_ready
@@ -13092,6 +13442,7 @@ dac_play_gain_ready:
 .dpx:
     movem.l (sp)+, d2-d6/a0
     rts
+    endc
 
 ; E command: effective AHD attack/decay = the per-channel override (c_eatk/c_edcy; $FF = none),
 ; else the instrument's ip_atk/ip_dcy. a6 = channel, a4 = instrument. Clobbers d1/d2, preserves a3.
@@ -13744,33 +14095,6 @@ print_hl:                                 ; a1=str, d3=row, d4=col, d2=char offs
 .phd:
     rts
 
-; boot HELP hint: for ~HINT_FRAMES frames after load, SONG row 0 reads "HOLD A TO VIEW HELP"
-; (armed at splash exit); this counts it down and restores the GENMDDJ title when it expires
-; or the user leaves SONG. a0 = VDP_CTRL. ~3 s NTSC / 3.6 s PAL. Preserves d7 (render-needed).
-HINT_FRAMES equ 180
-HINT_LEN    equ 19                        ; chars in "HOLD A TO VIEW HELP" -- wipe width on revert
-hint_tick:
-    tst.w   hint_ctr
-    beq.s   .ht_ret
-    subq.w  #1, hint_ctr
-    beq.s   .ht_revert                    ; timed out
-    cmpi.b  #SCR_SONG, cur_screen         ; left SONG while it was up -> revert now (hint is SONG-only)
-    beq.s   .ht_ret
-.ht_revert:
-    move.w  #0, hint_ctr
-    lea     VDP_CTRL, a0
-    move.l  #$40020003, (a0)              ; VDP address: row 0, col 1
-    moveq   #HINT_LEN-1, d0
-.ht_wipe:
-    move.w  #$20, VDP_DATA                ; blank the hint's cells first (it is longer than the title)
-    dbra    d0, .ht_wipe
-    moveq   #0, d3
-    moveq   #1, d4
-    lea     str_title, a1
-    bsr     print_at
-.ht_ret:
-    rts
-
 ; INSTR per-field hint: draw the current field's hint on the bottom row, inverted and
 ; ">> "-prefixed. Keyed by (i_type, cur_row) for the top rows or by the op-grid column;
 ; Bottom-row context hint bar (row 27). Shared by the INSTR per-field hints and the
@@ -13942,6 +14266,7 @@ cmd_cell_addr:
     andi    #$FE, ccr                       ; clear carry -> have a cell
     rts
 .cca_tbl:
+    bsr     sanitize_cur_table             ; hint/command lookup also indexes the selected table
     moveq   #0, d1
     move.b  cur_row, d1
     subq.b  #1, d1                          ; cur_row 1-16 -> table row 0-15
@@ -14108,54 +14433,6 @@ draw_dec_s:                               ; d3=signed byte, d4=offset; addr pres
 
 ; NB: no per-render body clear -- clear_grid wipes on entry, and these fields are
 ; fixed-width so they self-overwrite; clearing rows 5-16 every render overran VBlank.
-; ---- HELP hotkey: hold A alone ~HELP_HOLD frames toggles HELP <-> the current screen ----
-; HELP_HOLD = 150 frames = 2.5 s NTSC / 3.0 s PAL (the 2.5-3 s the design asked for). Counts
-; only a LONE A hold -- any other button or d-pad resets it -- so A-modifier gestures (A+B
-; block-select, A+C CONT flag) never accumulate toward it. Returns Z clear when it toggled.
-HELP_HOLD  equ 150
-help_hotkey:
-    cmpi.b  #SCR_HELP, cur_screen
-    beq.s   .hk_onhelp
-    move.b  cur_screen, help_prev          ; track the last non-HELP screen (restored on exit)
-.hk_onhelp:
-    btst    #4, d3                          ; A held (debounced)?
-    beq.s   .hk_reset
-    move.b  d3, d0
-    andi.b  #$EF, d0                        ; any OTHER button or d-pad held? (mask out A = bit 4)
-    bne.s   .hk_reset                       ;   yes -> not a lone A-hold
-    move.b  help_actr, d0
-    cmpi.b  #HELP_HOLD, d0
-    bhs.s   .hk_no                          ; already fired -> hold until release (no re-fire)
-    addq.b  #1, d0
-    move.b  d0, help_actr
-    cmpi.b  #HELP_HOLD, d0
-    beq.s   .hk_fire                        ; reached the threshold this frame
-.hk_no:
-    moveq   #0, d0                          ; Z set -> did not fire
-    rts
-.hk_reset:
-    move.b  #0, help_actr
-    moveq   #0, d0                          ; Z set
-    rts
-.hk_fire:
-    bsr     help_toggle
-    moveq   #1, d0                          ; Z clear -> toggled this frame
-    rts
-
-; toggle HELP <-> the last non-HELP screen (help_prev, tracked each frame by help_hotkey).
-help_toggle:
-    cmpi.b  #SCR_HELP, cur_screen
-    bne.s   .ht_enter
-    move.b  help_prev, cur_screen           ; on HELP -> exit back to where we came from
-    bra.s   .ht_fin
-.ht_enter:
-    move.b  #SCR_HELP, cur_screen
-    move.b  #0, help_page                   ; always open on page 1
-.ht_fin:
-    move.b  #1, need_clear                  ; clear + redraw the destination screen
-    move.b  #1, vdirty
-    rts
-
 ; ---- HELP: a button reference, built from help.txt -> build/help.i (makehelp.py) ----
 ; The page data (help_pages / help_pN) is generated from the editable help.txt and
 ; included with the ROM data (see `include "build/help.i"`). Body draws from row 8 so
@@ -18062,9 +18339,8 @@ Exception:
 ; data
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
-str_hint_help: dc.b "HOLD A TO VIEW HELP",0
 str_hint_fmgroup: dc.b "GROUP: CHORD UNISON OCTAVE POWER",0
-ver_str:    dc.b "V0.25",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+ver_str:    dc.b "V0.26",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
@@ -18239,6 +18515,10 @@ str_t_wav:  dc.b "WAVE",0
 str_t_ton:  dc.b "TONE",0
 str_t_noi:  dc.b "NOISE",0
 str_t_perc: dc.b "PERC",0
+    ifne KIT_LESS
+str_kit_unavailable: dc.b "KIT UNAVAILABLE",0
+str_kit_preserved:   dc.b "DATA PRESERVED",0
+    endc
 str_random: dc.b "RANDOM  ",0               ; padded so a shorter value overwrites cleanly
 str_period: dc.b "PERIODIC",0
 str_r512:   dc.b "512     ",0
@@ -18548,11 +18828,13 @@ bar_tiles:
     dc.l 0,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
     dc.l $00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100,$00111100
 
+    ifeq KIT_LESS
 silence_sample:
     dc.b $80,$80                           ; muted KIT trigger: centred DAC sample, no click
 sample_pool:                              ; kit directory (16x16) + shifted PCM pools (makesamples.py)
     incbin "build/samples.bin"
     even
+    endc
 
     dcb.b ROM_SIZE-*, $FF                  ; pad to the full ROM (errors if pool overflows it)
 ROM_END:

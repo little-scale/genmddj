@@ -2,7 +2,51 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
-## Unreleased
+## v0.26 — 2026-11-06
+
+### Added
+- A second, explicitly named **KITLESS** build flow. Every ordinary `make` now writes both the
+  normal ROM and `build/genmddj-kitless.bin`; `make kitless` can rebuild only the latter. The
+  KITLESS output is a 128 KB ROM instead of the normal 2 MB image. It keeps the full
+  tracker, save layout, FM/PSG/PERC/WAVE synthesis and tools-compatible data structures, but does
+  not build or embed the PCM sample pool and skips KIT in the instrument type cycle. KIT records
+  encountered in a full-ROM save remain unmodified and safely silent, with `KIT UNAVAILABLE`
+  shown in the editor, so the save can return to the full ROM without losing those instruments.
+- Six-button pads now provide a transient per-track performance mixer without displacing any
+  three-button gesture: **X** toggles the selected track's mute, **Y** toggles its membership
+  in a multi-track solo set, and **Z** clears all mutes and solos. Muted tracks keep sequencing
+  so FM/PSG/WAVE voices return in time; one-shot KIT samples resume on their next hit. SONG
+  headers identify explicit mutes and solos with `M` / `S`. The mixer is not written to SRAM,
+  while the existing **C+B** context-play behaviour remains unchanged.
+
+### Changed
+- HELP no longer has a global long-hold shortcut, so lingering on the heavily used A modifier
+  cannot unexpectedly change screens. HELP remains available above TABLE in the screen map:
+  `C+Up` enters it and `C+Down` returns to TABLE. The obsolete boot prompt was removed.
+
+### Fixed
+- **PERC now reliably enables YM2612 Channel 3 special mode without requiring KIT/WAVE DAC
+  activity.** The Z80 explicitly applies `$27` mode transitions before draining the matching
+  frequency/key writes, while keeping Timer-A reset writes confined to real DAC overflows so no
+  sample cadence is lost. Returning F3 to an ordinary FM instrument also restores normal mode.
+  Warm retriggers, carrier/modulator level commands, pan/chip-LFO commands and non-pitch software
+  LFO parameters now consistently read PERC's referenced **BASE** patch; frequency refreshes no
+  longer overwrite those live controls. PITCHED PERC also ignores the unrelated PSG transpose
+  byte that shares its union record.
+- **PERC operator pitch routing** now matches the YM2612 CH3-special *audible slot* layout:
+  `OP1=A9/AD`, `OP3=A8/AC`, `OP2=AA/AE`, and `OP4=A2/A6`. The editor/storage rows remain
+  `OP1, OP3, OP2, OP4`, while selective PITCH-mode key masks translate that order into register
+  `$28`'s logical `OP1, OP2, OP3, OP4` bits. The software-TUNE-LFO path is also channel-aware,
+  so targeting F3 can no longer overwrite OP4's independent frequency with the phrase note.
+- **C+B editor audition in LIVE mode** now works from CHAIN, PHRASE and INSTR. These screens
+  immediately replace a running LIVE set with the established isolated chain/phrase audition,
+  bypassing LIVE's unlaunched-track gate; a second C+B stops it. SONG keeps its distinct
+  quantized per-track clip-launch behaviour.
+- FM GROUP cold starts no longer let the three-patch YM2612 write burst overwrite editor
+  state. The 68K-side YM staging stream now has a dedicated bounded RAM region, so combinations
+  such as `GROUP=CHORD`, `TBL=00`, `TBS=1` keep the selected table at `00` instead of corrupting
+  it to the YM key-on register number `28`. Invalid transient table selectors are also repaired
+  before any table-memory access.
 
 ## v0.25 — 2026-10-21
 
