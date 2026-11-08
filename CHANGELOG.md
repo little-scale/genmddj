@@ -2,6 +2,15 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.27 — 2026-11-08
+
+### Added
+- On the SONG screen, an active block selection is now also a transient performance loop:
+  release A after selecting the rectangle, then press **Start**. Playback starts at the selected
+  top row, enables only the selected track columns, skips empty cells inside each independently
+  timed track, and wraps at the selected bottom row. The same bounds work in SONG and LIVE modes,
+  remain visibly selected during playback, and are released on Stop without changing song data.
+
 ## v0.26 — 2026-11-06
 
 ### Added

@@ -69,7 +69,7 @@ Think of it as:
 | **C** hold + D-pad | **Move between screens** (the screen map, §3) — context-following |
 | **C** clean double-tap | **Paste** the clipboard here. Chords, navigation and block-cancel C taps are ignored |
 | **C** + **B** | **Play from here / solo** the current thing (§3). On FILES it opens the action menu |
-| **Start** | **Play / stop.** From SONG it starts on the exact cursor row; from other editor screens it starts at row 0. LIVE mode launches the cursor row |
+| **Start** | **Play / stop.** From SONG it starts on the exact cursor row, or loops an active block selection; from other editor screens it starts at row 0. LIVE mode launches the cursor row/selection |
 | **X** (six-button pad) | Toggle **mute** on the selected SONG track/current channel (`M` in the SONG header) |
 | **Y** (six-button pad) | Toggle that track in/out of the **solo set** (`S`; several tracks may be soloed) |
 | **Z** (six-button pad) | Clear every track mute and solo; **Mode** is currently unused |
@@ -90,6 +90,15 @@ anchored at the cursor.
 
 Then **cleanly double-tap C** to paste: the block drops in at the cursor, and each column lands
 back on its own column type, so nothing gets scrambled.
+
+On **SONG**, the selection can also become a performance loop. Release A after drawing the
+rectangle, then press **Start**: playback begins at the rectangle's top row, only its selected
+track columns are enabled, and every track wraps at the selected bottom row. Empty cells inside
+the vertical range are skipped; an entirely empty selected column stays silent. Tracks retain
+their normal independent chain timing, so different chain lengths still form polymeters. This
+works in both SONG and LIVE modes. The rectangle remains highlighted while it plays; Start stops
+and releases the transport loop while leaving the edit selection available for another launch.
+Selections remain limited to the current 16-row SONG page.
 
 ### Experimental SONG gap closing and insertion
 

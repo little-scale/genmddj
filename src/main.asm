@@ -102,6 +102,11 @@ pad6_stab   equ $00FFD37D          ; six-button pad: debounced stable state
 mix_mute    equ $00FFD37E          ; transient 10-track explicit mute mask (not saved)
 mix_solo    equ $00FFD380          ; transient 10-track solo mask (0 = no solo restriction)
 mix_dac_owner equ $00FFD382        ; logical track that last started KIT/WAVE DAC, or $FF
+song_loop_active equ $00FFD383     ; transient SONG selection loop (not saved)
+song_loop_row0 equ $00FFD384       ; absolute inclusive first SONG row (0..239)
+song_loop_row1 equ $00FFD385       ; absolute inclusive last SONG row
+song_loop_col0 equ $00FFD386       ; inclusive first selected track (0..9)
+song_loop_col1 equ $00FFD387       ; inclusive last selected track
 key_rpt    equ $00FFE205
 dpad_prev  equ $00FFE206
 last_note  equ $00FFE207
@@ -722,6 +727,7 @@ Start:
     dbra    d0, .clr_fmgrp
     move.b  #$FF, clip_screen             ; copy/paste clipboard starts empty
     move.b  #0, sel_active                ; not in block-select mode
+    move.b  #0, song_loop_active          ; no transient SONG selection loop
     move.b  #0, song_edit_msg             ; no provisional SONG edit warning at boot
     move.b  #0, song_edit_ctr
     move.b  #0, song_edit_pending
@@ -8368,6 +8374,15 @@ silence_all:                              ; STOP: cut every ringing voice -- FM 
     bra     push_scb                        ; push (own BUSREQ); a restart re-emits via engine_play_reset
 
 start_button:                             ; SONG Start is exactly the same all-track context launch as C+B
+    tst.b   playing                       ; a stopped Start snapshots a SONG block selection for looping
+    bne.s   .sb_dispatch                  ; a running Start only stops the current transport/loop
+    clr.b   song_loop_active              ; ordinary starts discard any stale transient loop
+    cmpi.b  #SCR_SONG, cur_screen
+    bne.s   .sb_dispatch
+    tst.b   sel_active
+    beq.s   .sb_dispatch
+    bsr     song_loop_capture
+.sb_dispatch:
     cmpi.b  #SCR_SONG, cur_screen
     bne.s   .sb_toggle
     tst.b   proj_mode                     ; LIVE Start still launches the complete cursor row
@@ -8391,17 +8406,63 @@ toggle_play:
     bra.s   .tp
 .tp_live:
     bsr     engine_play_reset             ; all-silent, then launch the cursor row
+    tst.b   song_loop_active
+    bne.s   .tp_live_loop
     bsr     live_launch_row
     bra.s   .tp
+.tp_live_loop:
+    bsr     live_launch_loop              ; selection: only its tracks, from its top populated cells
+    bra.s   .tp
 .tp_stop:
+    clr.b   song_loop_active              ; transport stop releases the snapshotted loop bounds
     bsr     silence_all                   ; STOP: silence any ringing FM / PSG / wave voice
     bsr     cont_restore_all              ; put back target patches borrowed by any active CONT bridges
 .tp:
     rts
 
+; Snapshot the visible SONG selection as absolute, inclusive transport bounds. Selection itself
+; remains modal/highlighted; playback reads this private copy so later cursor/cancel actions cannot
+; move the active loop. SONG selections are intentionally page-local (the editor's existing rule).
+song_loop_capture:
+    movem.l d0-d2, -(sp)
+    moveq   #0, d0
+    move.b  sel_row0, d0
+    moveq   #0, d1
+    move.b  cur_row, d1
+    cmp.w   d1, d0
+    bls.s   .slc_rows
+    exg     d0, d1
+.slc_rows:
+    moveq   #0, d2
+    move.b  song_page, d2
+    lsl.w   #4, d2
+    add.w   d2, d0
+    add.w   d2, d1
+    move.b  d0, song_loop_row0
+    move.b  d1, song_loop_row1
+    moveq   #0, d0
+    move.b  sel_col0, d0
+    moveq   #0, d1
+    move.b  cur_col, d1
+    cmp.w   d1, d0
+    bls.s   .slc_cols
+    exg     d0, d1
+.slc_cols:
+    move.b  d0, song_loop_col0
+    move.b  d1, song_loop_col1
+    move.b  song_loop_row0, play_from
+    move.b  #1, song_loop_active
+    movem.l (sp)+, d0-d2
+    rts
+
 prepare_song_start:                       ; stopped SONG-mode transport: choose the full-song launch row
     move.b  #0, play_mode
     move.b  #0, play_from                 ; outside SONG view, Start retains the master row-0 launch
+    tst.b   song_loop_active              ; a selected SONG rectangle always starts from its top row
+    beq.s   .pss_cursor
+    move.b  song_loop_row0, play_from
+    rts
+.pss_cursor:
     cmpi.b  #SCR_SONG, cur_screen
     bne.s   .pss_done
     bsr     song_cursor_row               ; SONG view: page*16 + visible cursor row
@@ -8426,6 +8487,7 @@ play_context:                             ; C+B: toggle audition of the current 
     cmpi.b  #SCR_INSTR, d0
     bne.s   .pc_toggle
 .pc_live_editor:
+    clr.b   song_loop_active              ; editor audition replaces any snapshotted SONG region
     tst.b   playing
     beq.s   .pc_start
     tst.b   play_mode                      ; a second C+B stops an existing editor audition
@@ -8439,6 +8501,7 @@ play_context:                             ; C+B: toggle audition of the current 
     beq.s   .pc_start
 .pc_stop:
     move.b  #0, playing
+    clr.b   song_loop_active              ; every context/transport stop releases selection-loop playback
     bsr     clear_live_patch              ; drop A/V overrides on stop
     bsr     silence_all                   ; ...and cut any ringing FM / PSG / wave voice
     bra     cont_restore_all              ; restore target patches borrowed by CONT bridges
@@ -8469,6 +8532,7 @@ play_context:                             ; C+B: toggle audition of the current 
     rts
 
 live_launch_track:                        ; C+B in LIVE: launch (cold) or queue (running) the cursor's track
+    clr.b   song_loop_active              ; an explicit clip launch leaves selection-loop mode
     tst.b   playing
     bne.s   .ll_running
     move.b  #1, playing                     ; transport stopped -> start it + launch immediately
@@ -8580,6 +8644,58 @@ live_launch_row:                          ; LIVE Start: launch every populated t
     addq.b  #1, d1
     cmpi.b  #NCH, d1
     blo.s   .llr
+    rts
+
+live_launch_loop:                         ; LIVE Start + SONG selection: launch only selected track columns
+    moveq   #0, d1
+    move.b  song_loop_col0, d1
+.lll_track:
+    move.w  d1, d0                        ; find this track's first populated cell in the selected rows
+    moveq   #0, d3
+    move.b  song_loop_row0, d3
+    bsr     song_loop_find
+    cmpi.b  #$FF, d2
+    beq.s   .lll_next                     ; an entirely empty selected column remains silent
+    move.w  d3, d2
+    bsr     live_setup_chan
+    lea     live_on, a0
+    move.b  #1, (a0,d1.w)
+.lll_next:
+    addq.b  #1, d1
+    cmp.b   song_loop_col1, d1
+    bls.s   .lll_track
+    rts
+
+; Find the next populated SONG cell for one track inside the snapshotted selection loop.
+; in: d0.w = track, d3.w = desired starting row. out: d3.w = found row, d2.b = chain/$FF.
+; Empty cells are skipped because SONG rows have no global duration; every track retains its
+; established independent chain timing. At most the selected row count (<=16) is inspected.
+song_loop_find:
+    moveq   #0, d4
+    move.b  song_loop_row0, d4
+    moveq   #0, d5
+    move.b  song_loop_row1, d5
+    sub.w   d4, d5                        ; DBRA count: height - 1
+    cmp.b   song_loop_row1, d3
+    bls.s   .slf_cell
+    move.w  d4, d3
+.slf_cell:
+    move.w  d3, d4
+    mulu.w  #NCH, d4
+    add.w   d0, d4
+    lea     song, a2
+    move.b  (a2,d4.w), d2
+    cmpi.b  #$FF, d2
+    bne.s   .slf_done
+    addq.b  #1, d3
+    cmp.b   song_loop_row1, d3
+    bls.s   .slf_again
+    moveq   #0, d3
+    move.b  song_loop_row0, d3
+.slf_again:
+    dbra    d5, .slf_cell
+    moveq   #-1, d2
+.slf_done:
     rts
 
 live_setup_chan:                          ; d1 = track, d2 = songpos; arm that channel to play from there
@@ -8747,12 +8863,30 @@ engine_play_reset:
     move.b  #$FF, c_trow(a6)             ; per-note table starts at row 0
     move.l  #phrases, c_phrase(a6)
     tst.b   play_mode
-    bne.s   .solo
+    bne     .solo
     tst.b   proj_mode                     ; LIVE: every track starts muted; a launch wakes it
     bne     .mute
+    moveq   #0, d1
+    move.b  c_track(a6), d1               ; track index for either selection-loop or ordinary SONG setup
+    tst.b   song_loop_active              ; selected SONG rectangle: only its track columns participate
+    beq.s   .epr_song
+    cmp.b   song_loop_col0, d1
+    blo     .mute
+    cmp.b   song_loop_col1, d1
+    bhi     .mute
+    move.w  d1, d0
+    moveq   #0, d3
+    move.b  song_loop_row0, d3
+    bsr     song_loop_find                ; start at first populated cell; all-empty column stays silent
+    cmpi.b  #$FF, d2
+    beq.s   .epr_silent
+    move.b  d3, c_songpos(a6)
+    move.b  d2, c_chain(a6)
+    bra     .next
+.epr_song:
     lea     song, a2                       ; full song: begin at the exact play_from row. At block end,
-    moveq   #0, d1                          ;   advance_song walks back up and loops the contiguous block.
-    move.b  c_track(a6), d1                ;   Empty at play_from = silent for this track.
+                                           ;   advance_song walks back up and loops the contiguous block.
+                                           ;   Empty at play_from = silent for this track.
     moveq   #0, d2
     move.b  play_from, d2
     move.w  d2, d0
@@ -11132,6 +11266,20 @@ advance_song:                             ; a6 = channel
     addq.b  #1, d3
     moveq   #0, d0
     move.b  c_track(a6), d0
+    tst.b   song_loop_active              ; explicit SONG selection loop overrides contiguous-block discovery
+    beq.s   .as_regular
+    bsr     song_loop_find                ; wraps at row1 -> row0 and skips empty cells inside the window
+    cmpi.b  #$FF, d2
+    bne     .ok
+    lea     live_on, a1                   ; a selected column edited completely empty becomes silent
+    move.b  #0, (a1,d0.w)
+    move.b  #$FF, c_chain(a6)
+    move.b  #$FF, c_kshadow(a6)
+    move.b  #0, c_keyon(a6)
+    move.b  #0, c_estate(a6)
+    move.b  #0, c_vol(a6)
+    rts
+.as_regular:
     lea     live_when, a1                 ; LIVE chain-end queue for this track
     moveq   #0, d1
     move.b  (a1,d0.w), d1
@@ -16259,6 +16407,7 @@ dir_load_commit:
     move.b  (a1)+, (a2)+
     dbra    d1, .dlc_cn
     bsr     scatter_globals
+    clr.b   song_loop_active              ; successful song replacement cannot inherit old SONG bounds
     bsr     invalidate_patches              ; the loaded song replaced every instrument definition
     move.b  proj_groove, groove_sel
     move.b  #1, g_lfo_dirty
@@ -18302,6 +18451,7 @@ copy_factory_bank:                        ; fm_factory (ROM) -> instrum (RAM): a
 
 clear_song:                               ; blank project: phrases -> rests, chains + song empty ($FF)
     clr.b   new_named                       ; a fresh project: the (empty) slot reads "(EMPTY)" again
+    clr.b   song_loop_active                ; NEW cannot retain a performance range from the old song
     lea     phrases, a2
     move.w  #NPHRASES*16-1, d0
 .cz_p:
@@ -18340,7 +18490,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_fmgroup: dc.b "GROUP: CHORD UNISON OCTAVE POWER",0
-ver_str:    dc.b "V0.26",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+ver_str:    dc.b "V0.27",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0

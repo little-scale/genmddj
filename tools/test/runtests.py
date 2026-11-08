@@ -1060,6 +1060,73 @@ CURSOR_BLOCK = """    tst.b   $00FFD500
 .tcbdone:
 """
 
+SONG_SELECTION_LOOP = """    tst.b   $00FFD500
+    bne     .tssldone
+    move.b  #1, $00FFD500
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    move.b  #SCR_SONG, cur_screen
+    move.b  #2, song_page
+    move.b  #2, sel_row0                  ; selection = absolute rows 34..37, tracks 1..3
+    move.b  #5, cur_row
+    move.b  #1, sel_col0
+    move.b  #3, cur_col
+    move.b  #1, sel_active
+    move.b  #20, song+(34*NCH)            ; outside selected tracks: must remain silent
+    move.b  #10, song+(34*NCH)+1
+    move.b  #11, song+(36*NCH)+1          ; row 35 is empty: skip it
+    move.b  #12, song+(37*NCH)+1
+    move.b  #21, song+(38*NCH)+1          ; outside selected rows: must never play
+    move.b  #13, song+(35*NCH)+3          ; row 34/36 empty for track 3
+    move.b  #14, song+(37*NCH)+3
+    clr.b   proj_mode
+    clr.b   playing
+    bsr     start_button
+    move.b  song_loop_active, $00FFD501
+    move.b  song_loop_row0, $00FFD502
+    move.b  song_loop_row1, $00FFD503
+    move.b  song_loop_col0, $00FFD504
+    move.b  song_loop_col1, $00FFD505
+    move.b  ch_state+c_chain, $00FFD506
+    move.b  ch_state+CHSIZE+c_songpos, $00FFD507
+    move.b  ch_state+CHSIZE+c_chain, $00FFD508
+    move.b  ch_state+(2*CHSIZE)+c_chain, $00FFD509
+    move.b  ch_state+(3*CHSIZE)+c_songpos, $00FFD50A
+    move.b  ch_state+(3*CHSIZE)+c_chain, $00FFD50B
+    lea     ch_state+CHSIZE, a6
+    bsr     advance_song                  ; track 1: row 34 -> skip empty 35 -> row 36
+    move.b  c_songpos(a6), $00FFD50C
+    move.b  c_chain(a6), $00FFD50D
+    move.b  #37, c_songpos(a6)
+    bsr     advance_song                  ; row 37 -> selected top 34, never outside row 38
+    move.b  c_songpos(a6), $00FFD50E
+    move.b  c_chain(a6), $00FFD50F
+    lea     ch_state+(3*CHSIZE), a6
+    move.b  #37, c_songpos(a6)
+    bsr     advance_song                  ; track 3 wraps and skips empty row 34 -> row 35
+    move.b  c_songpos(a6), $00FFD510
+    move.b  c_chain(a6), $00FFD511
+    bsr     start_button                  ; stop releases transport bounds but leaves edit selection
+    move.b  playing, $00FFD512
+    move.b  song_loop_active, $00FFD513
+    move.b  sel_active, $00FFD514
+    move.b  #1, proj_mode                 ; the same selection also drives LIVE Start
+    bsr     start_button
+    move.b  song_loop_active, $00FFD515
+    move.b  live_on, $00FFD516
+    move.b  live_on+1, $00FFD517
+    move.b  live_on+2, $00FFD518
+    move.b  live_on+3, $00FFD519
+    move.b  live_on+4, $00FFD51A
+    move.b  ch_state+CHSIZE+c_songpos, $00FFD51B
+    move.b  ch_state+CHSIZE+c_chain, $00FFD51C
+    move.b  ch_state+(3*CHSIZE)+c_songpos, $00FFD51D
+    move.b  ch_state+(3*CHSIZE)+c_chain, $00FFD51E
+    bsr     start_button
+    movem.l (sp)+, d0-d7/a0-a6
+.tssldone:
+"""
+
 START_FROM_SONG_CURSOR = """    tst.b   $00FFD500
     bne     .tscsdone
     move.b  #1, $00FFD500
@@ -3276,6 +3343,23 @@ def t_cursor_block():
     assert ram[0xD504] == 0, 'block loop loaded chain %d instead of row-0 chain 0' % ram[0xD504]
     return 'started at cursor row 1; block end looped to row 0'
 
+def t_song_selection_loop():
+    """Start snapshots a SONG rectangle and loops only its populated cells/tracks in SONG and LIVE."""
+    ram = run_rom(build_rom('song_selection_loop', boot_inject=SONG_SELECTION_LOOP), 30)
+    assert list(ram[0xD501:0xD506]) == [1, 34, 37, 1, 3], \
+        'selection bounds were not captured as absolute inclusive rows/tracks (%r)' % list(ram[0xD501:0xD506])
+    assert list(ram[0xD506:0xD50C]) == [0xFF, 34, 10, 0xFF, 35, 13], \
+        'SONG selection did not isolate tracks/start at first populated cells (%r)' % list(ram[0xD506:0xD50C])
+    assert list(ram[0xD50C:0xD512]) == [36, 11, 34, 10, 35, 13], \
+        'SONG selection did not skip empties/wrap at explicit bounds (%r)' % list(ram[0xD50C:0xD512])
+    assert list(ram[0xD512:0xD515]) == [0, 0, 1], \
+        'Stop did not release loop playback while preserving edit selection (%r)' % list(ram[0xD512:0xD515])
+    assert list(ram[0xD515:0xD51B]) == [1, 0, 1, 0, 1, 0], \
+        'LIVE selection did not launch only non-empty selected tracks (%r)' % list(ram[0xD515:0xD51B])
+    assert list(ram[0xD51B:0xD51F]) == [34, 10, 35, 13], \
+        'LIVE selection started at wrong cells (%r)' % list(ram[0xD51B:0xD51F])
+    return 'rows 34-37/tracks 1-3 isolated; empties skipped; SONG and LIVE wrap identically'
+
 def t_start_from_song_cursor():
     """Start/C+B use the SONG cursor and automatically wait when external sync is selected."""
     ram = run_rom(build_rom('start_from_song_cursor', boot_inject=START_FROM_SONG_CURSOR), 30)
@@ -3744,6 +3828,7 @@ TESTS = [
     ('load_bad_rle', t_load_bad_rle),
     ('cont_bad_reload', t_cont_bad_reload),
     ('cursor_block', t_cursor_block),
+    ('song_selection_loop', t_song_selection_loop),
     ('start_from_song_cursor', t_start_from_song_cursor),
     ('phrase_iteration', t_phrase_iteration),
     ('deep_clone_aliases', t_deep_clone_aliases),
