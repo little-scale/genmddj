@@ -121,7 +121,7 @@ cur_instr  equ $00FFE20F           ; instrument shown/edited on the INSTRUMENT s
 cur_chan   equ $00FFE210           ; editing context: current channel (0..NCH-1)
 cur_songrow equ $00FFE211          ; editing context: song row drilled from
 g_ticks    equ $00FFE212           ; internal VBlank frame clock (word; UI timing/confirm windows/tests)
-play_mode  equ $00FFE214           ; 0 = full song, 1 = chain-solo, 2 = phrase-solo
+play_mode  equ $00FFE214           ; 0 = full song, 1 = chain-solo, 2 = phrase-solo, 3 = all-chain audition
 play_from  equ $00FFE215           ; song row to start from (full-song mode)
 in_splash  equ $00FFE216           ; 1 = showing the power-up splash
 splash_ctr equ $00FFE218           ; splash countdown (word)
@@ -408,7 +408,10 @@ s_set        equ c_ssgdirty+NCH               ; FM S command occurred on this ph
 c_fswpcfg    equ s_set+1                      ; B command: per-channel packed FSWP override value
 c_fswpovr    equ (c_fswpcfg+NCH+1)&$FFFFFFFE  ; aligned word: bit per track whose current note uses the B override
 b_set        equ c_fswpovr+2                  ; valid FM/PERC B command occurred on this phrase row
-PLAYER_RAM_END equ b_set+1
+ym_test21    equ b_set+1                      ; alpha command: masked global YM register $21 value
+ym_test2c    equ ym_test21+1                  ; beta command: masked global YM register $2C value
+ym_testdirty equ ym_test2c+1                  ; bit0=$21 pending, bit1=$2C pending
+PLAYER_RAM_END equ ym_testdirty+1
     ifgt PLAYER_RAM_END-$00FFDFE0
         fail "player/command state overruns into perc_live ($FFDFE0)"
     endc
@@ -468,6 +471,16 @@ t_vol      equ 0                    ; volume column ($FF = no change)
 t_tsp      equ 1                    ; transposition, signed semitones
 t_cmd      equ 2                    ; command
 t_prm      equ 3                    ; command parameter
+CMD_ALPHA  equ 27                   ; extended command glyphs: alpha and beta are active
+CMD_BETA   equ 28
+CMD_GAMMA  equ 29                   ; reserved glyphs -- not selectable or valid song commands yet
+CMD_DELTA  equ 30
+CMD_EPSILON equ 31
+CMD_ZETA   equ 32
+CMD_THETA  equ 33
+CMD_LAST   equ CMD_BETA             ; highest command currently available to the editor/song validator
+CMD_EXT_COUNT equ 7
+CMD_EXT_TILE equ $00F1              ; normal alpha..theta at $F1-$F7; inverse at $F8-$FE
 NINSTR     equ 32
 i_type     equ 0                    ; instrument type: 0 FM, 1 KIT, 2 WAVE, 3 TONE, 4 NOISE, 5 PERC
 i_algo     equ 1                    ; FM algorithm 0-7
@@ -657,6 +670,12 @@ Start:
 .btl:
     move.w  (a1)+, VDP_DATA
     dbra    d0, .btl
+    move.l  #$5E200000, (a0)            ; extended command glyphs -> tile $F1 (VRAM $1E20)
+    lea     cmd_symbol_tiles, a1         ; 7 normal tiles followed by 7 inverse tiles
+    move.w  #(CMD_EXT_COUNT*2*16)-1, d0
+.cstl:
+    move.w  (a1)+, VDP_DATA
+    dbra    d0, .cstl
     move.l  #$43E00000, (a0)            ; playhead triangle -> tile $1F
     lea     tri_tile, a1
     moveq   #16-1, d0
@@ -684,6 +703,7 @@ Start:
     move.b  #$40, IO_CTRL1
 
     bsr     z80_load
+    bsr     ym_test_init                  ; boot without touching undocumented YM test registers
 
     lea     tbl_ram, a2                   ; copy the ROM default macro tables into RAM
     lea     psg_tables, a1
@@ -1093,6 +1113,7 @@ VBlankInt:
 .gch:
     bsr     render_chain
     bsr     render_track_playing
+    bsr     render_chain_context_status
     bra     .gd
 .gsg:
     bsr     render_song
@@ -2784,6 +2805,7 @@ SONG_EDIT_CUT_FIRST equ 1
 SONG_EDIT_NO_ROOM   equ 2
 SONG_EDIT_NO_CLIP   equ 3
 SONG_EDIT_STOP_FIRST equ 4
+CHAIN_NO_LINK       equ 5
 SONG_EDIT_FRAMES    equ 90                 ; ~1.5 s NTSC / 1.8 s PAL
 
 song_edit_status_set:                      ; d0.b = SONG_EDIT_* warning
@@ -2805,7 +2827,10 @@ song_edit_status_tick:
     bne.s   .sest_done
     clr.b   song_edit_msg
     cmpi.b  #SCR_SONG, cur_screen
+    beq.s   .sest_dirty
+    cmpi.b  #SCR_CHAIN, cur_screen
     bne.s   .sest_done
+.sest_dirty:
     move.b  #1, vdirty                     ; erase the expired readout on the next SONG render
 .sest_done:
     rts
@@ -3118,7 +3143,7 @@ prime_cut:                                ; a1=current field; prime only the rep
     moveq   #0, d0
     move.b  (a1), d0
     beq.s   .pc_done                        ; command 0 is an empty cell
-    cmpi.w  #27, d0
+    cmpi.w  #CMD_LAST+1, d0
     bhs.s   .pc_done
     move.b  d0, last_cmd
     move.b  1(a1), last_cprm                ; command cuts carry their parameter as one repeatable entry
@@ -3771,7 +3796,7 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     moveq   #0, d0                          ; + the column under the cursor (VOL/TSP/CMD/PRM)
     move.b  cur_col, d0
     adda.w  d0, a1
-    cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0-26, wrap)
+    cmpi.b  #t_cmd, d0                       ; CMD column cycles commands (0..CMD_LAST, wrap)
     beq     .et_cmd
     cmpi.b  #t_vol, d0                       ; VOL = 4-bit: +-1 (L/R), +-4 (U/D), masked 0-15
     beq     .et_vol
@@ -3881,11 +3906,11 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
 .etc_norm:
     moveq   #0, d0                            ; keep the cell blank -> fall into the normal cycle
 .etc_have:
-    btst    #3, d2                           ; Right -> next command (skip A/I/J, wrap 0-26)
+    btst    #3, d2                           ; Right -> next command (skip table exclusions, wrap)
     beq.s   .etcl
 .et_up:
     addq.b  #1, d0
-    cmpi.b  #27, d0
+    cmpi.b  #CMD_LAST+1, d0
     blo.s   .et_uc
     moveq   #0, d0
 .et_uc:
@@ -3893,12 +3918,12 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
     beq.s   .et_up
     bra.s   .etcw
 .etcl:
-    btst    #2, d2                           ; Left -> previous command (skip A/I/J, wrap 26-0)
+    btst    #2, d2                           ; Left -> previous command (skip table exclusions, wrap)
     beq.s   .etcw
 .et_dn:
     tst.b   d0
     bne.s   .et_dc
-    moveq   #27, d0
+    moveq   #CMD_LAST+1, d0
 .et_dc:
     subq.b  #1, d0
     bsr     tbl_cmd_excl
@@ -3911,7 +3936,7 @@ edit_table:                               ; left/right = +-1, up/down = +-$10 on
 .etcw_x:
     rts
 
-tbl_cmd_excl:                               ; Z=1 if d0 is table-excluded: A=1 G=7 I=9 J=10 T=20 W=23
+tbl_cmd_excl:                               ; Z=1 if d0 is table-excluded
     cmpi.b  #1, d0                           ; A (table nesting)
     beq.s   .tce_done
     cmpi.b  #7, d0                           ; G (groove -- global timing)
@@ -4089,7 +4114,7 @@ edit_value:
     btst    #3, d2
     beq.s   .cl
     addq.b  #1, d0
-    cmpi.b  #27, d0
+    cmpi.b  #CMD_LAST+1, d0
     blo.s   .cl
     moveq   #0, d0
 .cl:
@@ -4097,7 +4122,7 @@ edit_value:
     beq.s   .cw
     tst.b   d0
     bne.s   .cdec
-    moveq   #26, d0
+    moveq   #CMD_LAST, d0
     bra.s   .cw
 .cdec:
     subq.b  #1, d0
@@ -5286,6 +5311,18 @@ get_playrow:                              ; shared single playhead (PHRASE/CHAIN
     rts
 .chain:                                   ; step of a channel playing cur_chain
     move.b  cur_chain, d3
+    cmpi.b  #3, play_mode                  ; all-chain audition: prefer the selected track's phase even
+    bne.s   .ch_scan                       ; when another track happens to reuse the displayed chain
+    moveq   #0, d0
+    move.b  cur_chan, d0
+    mulu.w  #CHSIZE, d0
+    lea     ch_state, a6
+    adda.w  d0, a6
+    cmp.b   c_chain(a6), d3
+    bne.s   .ch_scan
+    move.b  c_cstep(a6), d0
+    rts
+.ch_scan:
     lea     ch_state, a6
     moveq   #NCH-1, d2
 .cl:
@@ -5317,6 +5354,25 @@ get_playrow:                              ; shared single playhead (PHRASE/CHAIN
     rts
 .none:
     moveq   #-1, d0                       ; $FF -> no row matches
+    rts
+
+; CHAIN contextual-start warning at row 1, cols 23-34. A manually flipped chain has no
+; unambiguous all-track SONG origin, so Start refuses it rather than launching unrelated data.
+render_chain_context_status:
+    movem.l d0-d4/a1, -(sp)
+    move.l  #$40AE0003, (a0)               ; row 1, col 23
+    moveq   #12-1, d0
+.rccs_blank:
+    move.w  #' ', VDP_DATA
+    dbra    d0, .rccs_blank
+    cmpi.b  #CHAIN_NO_LINK, song_edit_msg
+    bne.s   .rccs_done
+    moveq   #1, d3
+    moveq   #23, d4
+    lea     str_no_song_link, a1
+    bsr     print_at
+.rccs_done:
+    movem.l (sp)+, d0-d4/a1
     rts
 
 ; ============================================================
@@ -8061,12 +8117,30 @@ draw_hex2:
     rts
 
 draw_cmd:
+    moveq   #0, d0
     move.b  d3, d0
     bne.s   .v
     moveq   #'-', d0                       ; 0 = no command
     bra.s   .draw
 .v:
+    cmpi.b  #26, d0
+    bhi.s   .ext
     addi.b  #$40, d0                       ; 1-26 -> 'A'-'Z' (H = HOP)
+    bra.s   .draw
+.ext:
+    subi.w  #CMD_ALPHA, d0                 ; 27-33 -> dedicated alpha..theta tile
+    cmpi.w  #CMD_EXT_COUNT, d0
+    blo.s   .ext_ok
+    moveq   #'?', d0                       ; corrupt/future command without a loaded glyph
+    bra.s   .draw
+.ext_ok:
+    addi.w  #CMD_EXT_TILE, d0
+    tst.w   d4                             ; extended glyphs have their own compact inverse bank
+    beq.s   .ext_draw
+    addi.w  #CMD_EXT_COUNT, d0
+.ext_draw:
+    move.w  d0, VDP_DATA
+    rts
 .draw:
     andi.w  #$00FF, d0
     add.w   d4, d0
@@ -8347,7 +8421,28 @@ clear_live_patch:
     move.b  #$FF, live_fb
     rts
 
+ym_test_init:                             ; cold boot: initialise shadows without touching undocumented hardware
+    clr.b   ym_test21
+    clr.b   ym_test2c
+    clr.b   ym_testdirty
+    rts
+
+ym_test_reset:                            ; restore only test registers which may actually be active
+    tst.b   ym_test21
+    beq.s   .ytr_beta
+    bset    #0, ym_testdirty              ; a non-zero alpha shadow needs one explicit $21=$00
+.ytr_beta:
+    tst.b   ym_test2c
+    beq.s   .ytr_clear
+    bset    #1, ym_testdirty              ; a non-zero beta shadow needs one explicit $2C=$00
+.ytr_clear:
+    clr.b   ym_test21
+    clr.b   ym_test2c
+                                            ; retain an already-pending zero command in ym_testdirty
+    rts
+
 silence_all:                              ; STOP: cut every ringing voice -- FM key-off, PSG vol-off, wave DAC feed
+    bsr     ym_test_reset                 ; test state never survives an ordinary transport stop
     move.b  #0, wave_on                   ; stop any wave-note DAC feed
     move.b  #$FF, mix_dac_owner
     lea     scb_data, a0                   ; PSG: all 4 voices -> max attenuation (silent)
@@ -8377,6 +8472,13 @@ start_button:                             ; SONG Start is exactly the same all-t
     tst.b   playing                       ; a stopped Start snapshots a SONG block selection for looping
     bne.s   .sb_dispatch                  ; a running Start only stops the current transport/loop
     clr.b   song_loop_active              ; ordinary starts discard any stale transient loop
+    cmpi.b  #SCR_CHAIN, cur_screen         ; CHAIN Start: all tracks at this SONG-row/chain-step phase
+    bne.s   .sb_song
+    bsr     prepare_chain_all
+    tst.b   d0                             ; an unlinked manually flipped chain refuses the launch
+    beq.s   .sb_done
+    bra.s   .sb_toggle
+.sb_song:
     cmpi.b  #SCR_SONG, cur_screen
     bne.s   .sb_dispatch
     tst.b   sel_active
@@ -8390,6 +8492,36 @@ start_button:                             ; SONG Start is exactly the same all-t
     bra     play_context                  ; stopped: cursor start; running: ordinary stop
 .sb_toggle:
     bra     toggle_play
+.sb_done:
+    rts
+
+; Prepare CHAIN Start as an all-track audition of the chains referenced by the exact SONG row
+; from which this editor context was entered. cur_chain may be manually flipped with A+Up/Down;
+; validate the retained link so Start never launches a different, hidden arrangement context.
+; Returns d0.b = 1 ready, 0 refused.
+prepare_chain_all:
+    lea     song, a1
+    moveq   #0, d0
+    move.b  cur_songrow, d0
+    mulu.w  #NCH, d0
+    moveq   #0, d1
+    move.b  cur_chan, d1
+    add.w   d1, d0
+    move.b  (a1,d0.w), d0
+    cmpi.b  #NCHAINS, d0
+    bhs.s   .pca_bad
+    cmp.b   cur_chain, d0
+    bne.s   .pca_bad
+    move.b  #3, play_mode
+    move.b  cur_row, play_from             ; phase in 16-step chain space; each track wraps modulo its length
+    bsr     song_edit_status_clear
+    moveq   #1, d0
+    rts
+.pca_bad:
+    moveq   #CHAIN_NO_LINK, d0
+    bsr     song_edit_status_set
+    moveq   #0, d0
+    rts
 
 toggle_play:
     move.b  playing, d0
@@ -8399,6 +8531,8 @@ toggle_play:
     move.b  playing, d0                   ; (ym_setup clobbered d0)
     tst.b   d0
     beq.s   .tp_stop
+    cmpi.b  #3, play_mode                 ; CHAIN all-track audition is identical in SONG/LIVE projects
+    beq.s   .tp_chain_all                 ; and bypasses LIVE's normal row-launch gate
     tst.b   proj_mode                     ; LIVE: Start launches the cursor row, not the full song
     bne.s   .tp_live
     bsr     prepare_song_start            ; SONG screen: absolute cursor row; other screens: row 0
@@ -8413,10 +8547,14 @@ toggle_play:
 .tp_live_loop:
     bsr     live_launch_loop              ; selection: only its tracks, from its top populated cells
     bra.s   .tp
+.tp_chain_all:
+    bsr     engine_play_reset
+    bra.s   .tp
 .tp_stop:
     clr.b   song_loop_active              ; transport stop releases the snapshotted loop bounds
     bsr     silence_all                   ; STOP: silence any ringing FM / PSG / wave voice
     bsr     cont_restore_all              ; put back target patches borrowed by any active CONT bridges
+    clr.b   play_mode                     ; discard any transient solo/all-chain audition context
 .tp:
     rts
 
@@ -8504,7 +8642,9 @@ play_context:                             ; C+B: toggle audition of the current 
     clr.b   song_loop_active              ; every context/transport stop releases selection-loop playback
     bsr     clear_live_patch              ; drop A/V overrides on stop
     bsr     silence_all                   ; ...and cut any ringing FM / PSG / wave voice
-    bra     cont_restore_all              ; restore target patches borrowed by CONT bridges
+    bsr     cont_restore_all              ; restore target patches borrowed by CONT bridges
+    clr.b   play_mode                     ; a later Start must not inherit the stopped audition mode
+    rts
 .pc_start:
     move.b  cur_screen, d0
     cmpi.b  #SCR_SONG, d0
@@ -8730,6 +8870,7 @@ live_setup_chan:                          ; d1 = track, d2 = songpos; arm that c
 ; reset every channel for playback per play_mode (kshadow=$FF forces a key-off,
 ; silencing any hanging FM note when switching context mid-play)
 engine_play_reset:
+    bsr     ym_test_reset                 ; every transport start begins from deterministic YM test state
     clr.b   fm_pre_mask                    ; an immediate start cancels unfinished speculative warming
     lea     fmgrp_owner, a0                ; FM GROUP ownership/chords/detune are transient transport state
     moveq   #16, d0                        ; 6 owners + 4 chords + busy guard + 6 fine offsets
@@ -8862,6 +9003,8 @@ engine_play_reset:
     move.b  #$FF, c_tbl(a6)              ; no table until the first note
     move.b  #$FF, c_trow(a6)             ; per-note table starts at row 0
     move.l  #phrases, c_phrase(a6)
+    cmpi.b  #3, play_mode                 ; CHAIN Start: every track auditions its chain at cur_songrow
+    beq     .chain_all
     tst.b   play_mode
     bne     .solo
     tst.b   proj_mode                     ; LIVE: every track starts muted; a launch wakes it
@@ -8900,10 +9043,51 @@ engine_play_reset:
     mulu.w  #NCH, d0
     add.w   d1, d0
     move.b  (a2,d0.w), c_chain(a6)
-    bra.s   .next
+    bra     .next
 .epr_silent:
     move.b  play_from, c_songpos(a6)
     move.b  #$FF, c_chain(a6)
+    bra     .next
+.chain_all:
+    moveq   #0, d1                        ; fetch this track's chain from the retained source SONG row
+    move.b  c_track(a6), d1
+    moveq   #0, d2
+    move.b  cur_songrow, d2
+    move.w  d2, d0
+    mulu.w  #NCH, d0
+    add.w   d1, d0
+    lea     song, a2
+    move.b  (a2,d0.w), d2
+    cmpi.b  #NCHAINS, d2
+    bhs     .mute
+    move.b  d2, c_chain(a6)
+    move.b  cur_songrow, c_songpos(a6)
+    mulu.w  #CHAIN_SIZE, d2
+    lea     chains, a2
+    adda.w  d2, a2                        ; a2 = this track's chain
+    moveq   #0, d3                        ; count its populated contiguous steps (1..16)
+.ca_len:
+    cmpi.w  #16, d3
+    bhs.s   .ca_phase
+    move.w  d3, d0
+    add.w   d0, d0
+    cmpi.b  #$FF, (a2,d0.w)
+    beq.s   .ca_phase
+    addq.w  #1, d3
+    bra.s   .ca_len
+.ca_phase:
+    tst.w   d3
+    beq     .mute                          ; a referenced but empty chain remains silent
+    moveq   #0, d0
+    move.b  play_from, d0                  ; selected step modulo this track's chain length
+.ca_mod:
+    cmp.w   d3, d0
+    blo.s   .ca_seed
+    sub.w   d3, d0
+    bra.s   .ca_mod
+.ca_seed:
+    subq.b  #1, d0                         ; first engine advance lands on the calculated step
+    move.b  d0, c_cstep(a6)
     bra.s   .next
 .solo:
     move.b  c_track(a6), d0               ; solo: only cur_chan is active
@@ -9536,6 +9720,7 @@ engine_tick:
     or.b    d5, d0
     or.b    repatch, d0                   ; a pending patch re-push also needs a push
     or.b    g_lfo_dirty, d0               ; ...as does a global-LFO ($22) change
+    or.b    ym_testdirty, d0              ; ...or an alpha/beta write/reset
     or.b    fm_pre_mask, d0               ; ...or background FM patch prewarming after a song load
     beq.s   .sret
     bsr     fm_prewarm_service            ; append up to two silent channel patches to this stopped SCB
@@ -9658,6 +9843,7 @@ engine_tick:
     or.b    d5, d0
     or.b    repatch, d0                   ; a pending patch re-push also needs a push
     or.b    g_lfo_dirty, d0               ; ...as does a global-LFO ($22) change
+    or.b    ym_testdirty, d0              ; ...or an alpha/beta write/reset
     beq.s   .nopush
     bsr     push_scb
 .nopush:
@@ -10376,7 +10562,7 @@ advance_ch:                               ; a6 = channel
     lea     c_rtdrop, a2
     clr.b   (a2,d2.w)                       ; ...and reset the decay
 .rt_keep:
-    move.b  (2,a1,d1.w), d2               ; phrase command (letter A-Z = 1..26)
+    move.b  (2,a1,d1.w), d2               ; phrase command (A-Z=1..26, alpha/beta=27/28)
     cmpi.b  #8, d2                         ; H = HOP -> jump to PR row (phrase-structural, stays here)
     beq     .cmd_hop
     cmpi.b  #9, d2                         ; I xx = iteration: gate the note by a repeat mask
@@ -11235,7 +11421,9 @@ advance_chain:                            ; a6 = channel
     addq.b  #1, d1
     cmpi.b  #16, d1                       ; a fully populated chain has no $FF terminator
     blo.s   .ac_read
-    cmpi.b  #1, play_mode                 ; chain-solo deliberately wraps step 15 -> 0
+    cmpi.b  #1, play_mode                 ; chain solo/all-track audition wrap step 15 -> 0
+    beq.s   .ac_wrap
+    cmpi.b  #3, play_mode
     beq.s   .ac_wrap
     bra     advance_song                  ; arrangement playback advances to the next contiguous song row
 .ac_wrap:
@@ -11252,8 +11440,11 @@ advance_chain:                            ; a6 = channel
     move.b  (a2,d0.w), d2                 ; phrase# at this step
     cmpi.b  #$FF, d2
     bne.s   .step
-    cmpi.b  #1, play_mode                 ; chain-solo: loop chain (step 0)
+    cmpi.b  #1, play_mode                 ; chain solo/all-track audition: loop chain (step 0)
+    beq.s   .ac_empty_wrap
+    cmpi.b  #3, play_mode
     bne.s   advance_song                  ; else: chain done -> next song row
+.ac_empty_wrap:
     moveq   #0, d1
 .step:
     move.b  d1, c_cstep(a6)
@@ -11384,14 +11575,18 @@ is_live_silent:                           ; a6 = channel -> d0 = 1 if LIVE mode 
     rts
 
 ; ============================================================
-; exec_cmd -- the shared voice-command executor: Q X O U K F C P R Y B. a1 = row (cmd@+2,
+; exec_cmd -- the shared voice-command executor, including extended alpha/beta YM tests. a1 = row (cmd@+2,
 ; prm@+3), d1 = row offset, a6 = channel. Runs the command's effect and returns; the CALLER
 ; resolves the note (advance_ch falls into .cmddone) or not (table_cmd). The phrase-structural
 ; commands (H I J) and global ones (T W) are NOT here -- advance_ch keeps those inline. The
 ; local .cmddone is just an rts, so the handlers move in verbatim (they end `bra .cmddone`).
 ; ============================================================
 exec_cmd:
-    move.b  (2,a1,d1.w), d2               ; command letter (A-Z = 1..26)
+    move.b  (2,a1,d1.w), d2               ; command code (A-Z=1..26, alpha/beta=27/28)
+    cmpi.b  #CMD_ALPHA, d2                 ; alpha xx = masked YM test register $21
+    beq     .cmd_alpha
+    cmpi.b  #CMD_BETA, d2                  ; beta xx = masked YM DAC/test register $2C
+    beq     .cmd_beta
     cmpi.b  #17, d2                        ; Q xy = one-shot ALGO(x)+FB(y) override
     beq     .cmd_q
     cmpi.b  #24, d2                        ; X xx = volume (carrier TL)
@@ -11431,6 +11626,50 @@ exec_cmd:
     cmpi.b  #12, d2                         ; L xx = slide / portamento (PSG period + FM fnum glide rate)
     beq     .cmd_l
     rts                                    ; not a voice command (or no command)
+.cmd_alpha:
+    moveq   #$38, d4                       ; musical subset only: phase hold, ugly bit, EG hold
+    bra.s   .cmd_test
+.cmd_beta:
+    moveq   #$28, d4                       ; musical subset only: DAC bit 9 + DAC broadcast
+.cmd_test:
+    cmpi.b  #1, c_type(a6)                 ; only a physical FM channel may issue a YM test write
+    bne     .cmddone
+    moveq   #0, d0                         ; resolve the PHRASE row's effective instrument
+    move.l  a1, d3
+    cmpi.l  #tbl_ram, d3
+    blo.s   .ct_phrase
+    cmpi.l  #tbl_ram+(NTABLE*TBL_ROWS*TROW), d3
+    blo.s   .ct_current                     ; TABLE rows use the owning channel's current instrument
+.ct_phrase:
+    move.b  (1,a1,d1.w), d0
+    cmpi.b  #$FF, d0
+    bne.s   .ct_havei
+.ct_current:
+    move.b  c_instr(a6), d0
+.ct_havei:
+    cmpi.w  #NINSTR, d0
+    bhs     .cmddone
+    mulu.w  #INSTR_SIZE, d0
+    lea     instrum, a4
+    adda.w  d0, a4
+    move.b  (i_type,a4), d0
+    beq.s   .ct_typeok                       ; genuine FM instrument
+    cmpi.b  #5, d0                          ; PERC is also YM FM, but valid only on F3
+    bne     .cmddone
+    cmpi.b  #2, c_track(a6)
+    bne     .cmddone
+.ct_typeok:
+    move.b  (3,a1,d1.w), d2
+    and.b   d4, d2                          ; never expose timer/status/TEST-pin bits through a phrase
+    cmpi.b  #CMD_ALPHA, (2,a1,d1.w)
+    bne.s   .ct_beta
+    move.b  d2, ym_test21
+    bset    #0, ym_testdirty
+    bra     .cmddone
+.ct_beta:
+    move.b  d2, ym_test2c
+    bset    #1, ym_testdirty
+    bra     .cmddone
 .cmd_q:
     cmpi.b  #1, c_type(a6)                 ; FM channels only
     bne     .cmddone
@@ -13438,6 +13677,25 @@ fm_freq:
     andi.w  #$00FF, d2                     ; $A0 value
     rts
 
+emit_ym_tests:                            ; append pending alpha/beta globals; a2=dest, d7=count
+    btst    #0, ym_testdirty
+    beq.s   .eyt_beta
+    bclr    #0, ym_testdirty
+    move.b  #0, (a2)+                      ; alpha: part 0, register $21, safely masked value
+    move.b  #$21, (a2)+
+    move.b  ym_test21, (a2)+
+    addq.b  #1, d7
+.eyt_beta:
+    btst    #1, ym_testdirty
+    beq.s   .eyt_done
+    bclr    #1, ym_testdirty
+    move.b  #0, (a2)+                      ; beta: part 0, register $2C, safely masked value
+    move.b  #$2C, (a2)+
+    move.b  ym_test2c, (a2)+
+    addq.b  #1, d7
+.eyt_done:
+    rts
+
 push_scb:
     move.w  #$0100, Z80_BUSREQ
 .w:
@@ -13456,11 +13714,12 @@ push_scb:
     dbra    d0, .pcp
 .nopsg:
     moveq   #0, d7                        ; --- YM section (triples) ---
-    move.b  ym_count, d7                 ; running triple count (composed note SCB)
     lea     Z80_RAM+$1000, a2            ; YM write buffer (relocated to free Z80 RAM; 256-triple room)
-    tst.b   d7
+    bsr     emit_ym_tests                 ; globals first: reset/apply before this tick's patches and key-ons
+    moveq   #0, d0
+    move.b  ym_count, d0                  ; composed note SCB follows the global test writes
     beq.s   .ymap
-    move.w  d7, d0
+    add.b   d0, d7                        ; d7 remains the complete running triple count
     mulu.w  #3, d0
     subq.w  #1, d0
     lea     ym_data, a4
@@ -14341,8 +14600,8 @@ hint_bar_draw:
     bsr     cmd_cell_addr                   ; a1 -> this row's CMD byte (C set: no cell -- TABLE selector row)
     bcs     .hb_cmdblank
     moveq   #0, d0
-    move.b  (a1), d0                        ; command value 0..26
-    cmpi.b  #27, d0
+    move.b  (a1), d0                        ; command value 0..CMD_LAST
+    cmpi.b  #CMD_LAST+1, d0
     bhs     .hb_cmdblank
     tst.b   d0
     beq     .hb_cmdblank                    ; 0 = no command ('-')
@@ -15666,7 +15925,7 @@ sanitize_song:
 .sz_ch1:
     addq.l  #2, a0
     dbra    d0, .sz_ch
-    lea     phrases, a0                    ; phrase rows: note < 96 or $FF; IN < NINSTR or $FF; cmd <= 26
+    lea     phrases, a0                    ; phrase rows: note < 96 or $FF; IN < NINSTR or $FF; cmd <= CMD_LAST
     move.w  #NPHRASES*16-1, d0
 .sz_ph:
     move.b  (a0), d1                        ; note
@@ -15683,7 +15942,7 @@ sanitize_song:
     blo.s   .sz_p2
     move.b  #$FF, 1(a0)
 .sz_p2:
-    cmpi.b  #27, 2(a0)                      ; command 0-26
+    cmpi.b  #CMD_LAST+1, 2(a0)              ; command 0..CMD_LAST (alpha/beta included)
     blo.s   .sz_p3
     move.b  #0, 2(a0)
 .sz_p3:
@@ -17909,6 +18168,7 @@ load_song:                                 ; load SRAM slot (proj_slot-1) into t
     bne.s   .ld_bad2
     bsr     scatter_globals                 ; unpack the song globals
     bsr     invalidate_patches              ; legacy load also replaced the complete instrument bank
+    bsr     ym_test_reset                   ; loaded songs never inherit undocumented chip-test state
     move.b  proj_groove, groove_sel         ; loaded default groove active
     move.b  #1, g_lfo_dirty                 ; re-emit the global LFO on the next SCB push
     bsr     data_longsum                    ; remember the loaded state for the unsaved indicator
@@ -18490,7 +18750,7 @@ Exception:
 ; ============================================================
 str_title:  dc.b "GENMDDJ",0
 str_hint_fmgroup: dc.b "GROUP: CHORD UNISON OCTAVE POWER",0
-ver_str:    dc.b "V0.27",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
+ver_str:    dc.b "V0.28",0                   ; app version (splash + ROM filename) -- bump +0.01 per release (V0.1, V0.11, V0.12, V0.14, V0.15, V0.16, ...; 0.13 skipped)
 str_hdr_ph: dc.b "   NOTE IN CMD",0
 str_hdr_ch: dc.b "   PHR TSP    ",0
 str_hdr_sg: dc.b "   F1 F2 F3 F4 F5 F6 T1 T2 T3 NO",0
@@ -18615,6 +18875,7 @@ str_cut_first: dc.b "CUT FIRST",0
 str_no_room:   dc.b "NO ROOM",0
 str_no_clip:   dc.b "NO CLIP",0
 str_stop_first: dc.b "STOP FIRST",0
+str_no_song_link: dc.b "NO SONG LINK",0
 str_blank15:  dc.b "               ",0
 str_go:     dc.b "GO",0
 str_vid_n:  dc.b "NTSC",0
@@ -18948,6 +19209,10 @@ algo_maps:
 font_data:
     incbin "build/font.bin"
 font_end:
+    even
+cmd_symbol_tiles:
+    incbin "build/cmd_symbols.bin"       ; alpha,beta,gamma,delta,epsilon,zeta,theta; normal then inverse
+cmd_symbol_tiles_end:
     even
     dc.b    "GMDJWAV0"              ; locator for the browser wave ROM-patcher (factory WAVE bank)
 wave_factory:

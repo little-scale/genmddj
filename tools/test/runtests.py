@@ -371,6 +371,97 @@ LIVE_CONTEXT_AUDITION = """    tst.b   $00FFD920
 .tlcadone:
 """
 
+# Start from CHAIN is an all-track audition anchored to the SONG cell used to enter the
+# editor. Each populated chain begins at cursor_step modulo its own length and loops there;
+# a manually flipped chain refuses the ambiguous launch instead of falling back to row 0.
+CHAIN_ALL_AUDITION = """    tst.b   $00FFD940
+    bne     .tca_done
+    move.b  #1, $00FFD940
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    clr.b   proj_mode
+    move.b  #SCR_CHAIN, cur_screen
+    move.b  #6, cur_songrow
+    move.b  #1, cur_chan
+    move.b  #7, cur_chain
+    move.b  #5, cur_row
+
+    ; The source SONG row contains lengths 2, 8, 4, then a referenced-empty chain.
+    move.b  #2, song+(6*NCH)
+    move.b  #7, song+(6*NCH)+1
+    move.b  #3, song+(6*NCH)+2
+    move.b  #4, song+(6*NCH)+3
+    move.b  #10, chains+(2*CHAIN_SIZE)
+    clr.b   chains+(2*CHAIN_SIZE)+1
+    move.b  #11, chains+(2*CHAIN_SIZE)+2
+    clr.b   chains+(2*CHAIN_SIZE)+3
+    lea     chains+(7*CHAIN_SIZE), a0
+    moveq   #20, d1
+    moveq   #7, d0
+.tca_c7:
+    move.b  d1, (a0)+
+    clr.b   (a0)+
+    addq.b  #1, d1
+    dbra    d0, .tca_c7
+    lea     chains+(3*CHAIN_SIZE), a0
+    moveq   #30, d1
+    moveq   #3, d0
+.tca_c3:
+    move.b  d1, (a0)+
+    clr.b   (a0)+
+    addq.b  #1, d1
+    dbra    d0, .tca_c3
+
+    clr.b   playing
+    bsr     start_button
+    move.b  playing, $00FFD941
+    move.b  play_mode, $00FFD942
+    move.b  play_from, $00FFD943
+    lea     ch_state, a6
+    move.b  c_chain(a6), $00FFD944
+    move.b  c_cstep(a6), $00FFD945
+    move.b  c_songpos(a6), $00FFD946
+    lea     CHSIZE(a6), a6
+    move.b  c_chain(a6), $00FFD947
+    move.b  c_cstep(a6), $00FFD948
+    move.b  c_songpos(a6), $00FFD949
+    lea     CHSIZE(a6), a6
+    move.b  c_chain(a6), $00FFD94A
+    move.b  c_cstep(a6), $00FFD94B
+    move.b  c_songpos(a6), $00FFD94C
+    lea     CHSIZE(a6), a6
+    move.b  c_chain(a6), $00FFD94D
+
+    ; Selected length-8 chain wraps locally instead of advancing the SONG arrangement.
+    lea     ch_state+CHSIZE, a6
+    move.b  #7, c_cstep(a6)
+    bsr     advance_chain
+    move.b  c_cstep(a6), $00FFD94E
+    move.b  c_chain(a6), $00FFD94F
+    move.b  c_songpos(a6), $00FFD950
+
+    bsr     start_button                   ; Start again stops and clears transient mode 3
+    move.b  playing, $00FFD951
+    move.b  play_mode, $00FFD952
+    move.b  #8, cur_chain                  ; no longer matches SONG row 6 / track 1
+    bsr     start_button
+    move.b  playing, $00FFD953
+    move.b  song_edit_msg, $00FFD954
+
+    ; The contextual audition also bypasses LIVE's all-silent reset/launch gate.
+    move.b  #7, cur_chain
+    move.b  #1, proj_mode
+    bsr     start_button
+    move.b  playing, $00FFD955
+    move.b  play_mode, $00FFD956
+    lea     ch_state, a6
+    move.b  c_chain(a6), $00FFD957
+    move.b  c_cstep(a6), $00FFD958
+    bsr     start_button
+    movem.l (sp)+, d0-d7/a0-a6
+.tca_done:
+"""
+
 # CONT: the stress song with T1 (track 6) flagged as a carry, and a frame inject that
 # plants the carried voices as looping bridges at frame 30 (no real load -- proves the
 # bridge mechanism: snapshot -> plant, carried voice keeps sounding from its private
@@ -2417,6 +2508,171 @@ PERC_PITCHED_TSP = """    tst.b   $00FFD987
 .tpptdone:
 """
 
+# Extended alpha/beta commands are masked, type-safe global YM writes. Gamma through theta
+# have real glyphs but remain outside CMD_LAST and are removed by loaded-song sanitization.
+EXTENDED_YM_COMMANDS = """    tst.b   $00FFD8AF
+    bne     .tey_done
+    move.b  #1, $00FFD8AF
+    movem.l d0-d7/a0-a6, -(sp)
+    bsr     clear_song
+    lea     instrum, a0
+    clr.b   (i_type,a0)                         ; instrument 0 = genuine FM
+    move.b  #3, (INSTR_SIZE+i_type,a0)          ; instrument 1 = TONE (must be rejected)
+    move.b  #5, (2*INSTR_SIZE+i_type,a0)        ; instrument 2 = PERC
+    lea     ch_state, a6
+    move.b  #1, c_type(a6)                      ; physical F1 FM channel
+    clr.b   c_track(a6)
+    clr.b   c_instr(a6)
+    lea     phrases, a1
+    move.b  #48, (a1)
+    clr.b   1(a1)
+    move.b  #CMD_ALPHA, 2(a1)
+    move.b  #$FF, 3(a1)
+    clr.b   ym_testdirty
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  ym_test21, $00FFD8B0
+    move.b  ym_testdirty, $00FFD8B1
+
+    move.b  #CMD_BETA, 2(a1)
+    move.b  #$FF, 3(a1)
+    bsr     exec_cmd
+    move.b  ym_test2c, $00FFD8B2
+    move.b  ym_testdirty, $00FFD8B3
+
+    lea     ym_data, a2
+    moveq   #0, d7
+    bsr     emit_ym_tests
+    move.b  d7, $00FFD8B4
+    move.b  ym_data, $00FFD8B5
+    move.b  ym_data+1, $00FFD8B6
+    move.b  ym_data+2, $00FFD8B7
+    move.b  ym_data+3, $00FFD8B8
+    move.b  ym_data+4, $00FFD8B9
+    move.b  ym_data+5, $00FFD8BA
+    move.b  ym_testdirty, $00FFD8BB
+
+    ; TONE on FM hardware must not alter the global test shadow.
+    move.b  #1, 1(a1)
+    move.b  #CMD_ALPHA, 2(a1)
+    clr.b   3(a1)
+    move.b  #$38, ym_test21
+    clr.b   ym_testdirty
+    bsr     exec_cmd
+    move.b  ym_test21, $00FFD8BC
+    move.b  ym_testdirty, $00FFD8BD
+
+    ; A genuine FM instrument on PSG hardware must also be rejected.
+    clr.b   1(a1)
+    clr.b   c_type(a6)
+    bsr     exec_cmd
+    move.b  ym_test21, $00FFD8BE
+    move.b  ym_testdirty, $00FFD8BF
+
+    ; PERC is accepted only on F3.
+    move.b  #1, c_type(a6)
+    move.b  #2, 1(a1)
+    move.b  #CMD_BETA, 2(a1)
+    move.b  #$28, 3(a1)
+    move.b  #$28, ym_test2c
+    clr.b   ym_testdirty
+    clr.b   c_track(a6)                    ; invalid PERC on F1
+    bsr     exec_cmd
+    move.b  ym_testdirty, $00FFD8C0
+    move.b  #2, c_track(a6)                ; valid PERC on F3
+    bsr     exec_cmd
+    move.b  ym_test2c, $00FFD8C1
+    move.b  ym_testdirty, $00FFD8C2
+
+    bsr     ym_test_reset
+    move.b  ym_test21, $00FFD8C3
+    move.b  ym_test2c, $00FFD8C4
+    move.b  ym_testdirty, $00FFD8C5
+
+    ; Only alpha/beta survive imported-song validation; gamma remains reserved.
+    move.b  #CMD_ALPHA, phrases+2
+    move.b  #CMD_BETA, phrases+PHRASE_SIZE+2
+    move.b  #CMD_GAMMA, phrases+(2*PHRASE_SIZE)+2
+    bsr     sanitize_song
+    move.b  phrases+2, $00FFD8C6
+    move.b  phrases+PHRASE_SIZE+2, $00FFD8C7
+    move.b  phrases+(2*PHRASE_SIZE)+2, $00FFD8C8
+
+    ; PHRASE cycles Z -> alpha -> beta -> blank, and wraps backwards to beta.
+    move.b  #SCR_PHRASE, cur_screen
+    clr.b   cur_phrase
+    clr.b   cur_row
+    move.b  #2, cur_col
+    move.b  #26, phrases+2
+    moveq   #8, d2
+    bsr     edit_value
+    move.b  phrases+2, $00FFD8C9
+    bsr     edit_value
+    move.b  phrases+2, $00FFD8CA
+    bsr     edit_value
+    move.b  phrases+2, $00FFD8CB
+    moveq   #4, d2
+    bsr     edit_value
+    move.b  phrases+2, $00FFD8CC
+
+    ; TABLE also cycles Z -> alpha -> beta -> blank.
+    move.b  #SCR_TABLE, cur_screen
+    clr.b   cur_table
+    move.b  #1, cur_row
+    move.b  #2, cur_col
+    move.b  #26, tbl_ram+t_cmd
+    moveq   #8, d2
+    bsr     edit_value
+    move.b  tbl_ram+t_cmd, $00FFD8CD
+    bsr     edit_value
+    move.b  tbl_ram+t_cmd, $00FFD8CE
+    bsr     edit_value
+    move.b  tbl_ram+t_cmd, $00FFD8CF
+
+    ; TABLE has no instrument byte: resolve against the owning channel's current instrument.
+    lea     ch_state, a6
+    move.b  #1, c_type(a6)
+    clr.b   c_track(a6)
+    clr.b   c_instr(a6)                    ; current instrument 0 = genuine FM
+    lea     tbl_ram, a1
+    move.b  #$7F, t_tsp(a1)                ; poison: must never be treated as an instrument index
+    move.b  #CMD_ALPHA, t_cmd(a1)
+    move.b  #$18, t_prm(a1)
+    clr.b   ym_test21
+    clr.b   ym_testdirty
+    moveq   #0, d1
+    bsr     exec_cmd
+    move.b  ym_test21, $00FFD8D0
+    move.b  ym_testdirty, $00FFD8D1
+
+    move.b  #1, c_instr(a6)                ; current instrument 1 = TONE: reject beta
+    move.b  #CMD_BETA, t_cmd(a1)
+    move.b  #$28, t_prm(a1)
+    clr.b   ym_test2c
+    clr.b   ym_testdirty
+    bsr     exec_cmd
+    move.b  ym_test2c, $00FFD8D2
+    move.b  ym_testdirty, $00FFD8D3
+
+    ; Untouched experimental state must reset without producing an undocumented YM write.
+    clr.b   ym_test21
+    clr.b   ym_test2c
+    clr.b   ym_testdirty
+    bsr     ym_test_reset
+    move.b  ym_testdirty, $00FFD8D4
+    lea     ym_data, a2
+    moveq   #0, d7
+    bsr     emit_ym_tests
+    move.b  d7, $00FFD8D5
+
+    ; An explicit pending beta-zero must survive reset so an already-active value is cleared.
+    move.b  #2, ym_testdirty
+    bsr     ym_test_reset
+    move.b  ym_testdirty, $00FFD8D6
+    movem.l (sp)+, d0-d7/a0-a6
+.tey_done:
+"""
+
 # B is deliberately overloaded by effective instrument type: FM/PERC use the packed XY
 # as a per-note FSWP override, WAVE retains bank select, and incompatible placements ignore it.
 FM_FSWP_COMMAND = """    tst.b   $00FFD87F
@@ -3608,6 +3864,34 @@ def t_fm_fswp_command():
     assert got == expect, 'Bxy FSWP/type-routing results %r' % got
     return 'FM override/disable/restore; WAVE bank retained; PERC F3-only guard'
 
+def t_extended_ym_commands():
+    """Alpha/beta safely mask and emit $21/$2C; the other five glyphs stay reserved."""
+    ram = run_rom(build_rom('extended_ym_commands', boot_inject=EXTENDED_YM_COMMANDS), 35)
+    assert list(ram[0xD8B0:0xD8B4]) == [0x38, 1, 0x28, 3], \
+        'alpha/beta masking or dirty flags %r' % list(ram[0xD8B0:0xD8B4])
+    assert list(ram[0xD8B4:0xD8BC]) == [2, 0, 0x21, 0x38, 0, 0x2C, 0x28, 0], \
+        'extended YM write stream %r' % list(ram[0xD8B4:0xD8BC])
+    assert list(ram[0xD8BC:0xD8C0]) == [0x38, 0, 0x38, 0], \
+        'instrument/hardware type guard %r' % list(ram[0xD8BC:0xD8C0])
+    assert list(ram[0xD8C0:0xD8C3]) == [0, 0x28, 2], \
+        'PERC F3-only alpha/beta routing %r' % list(ram[0xD8C0:0xD8C3])
+    assert list(ram[0xD8C3:0xD8C6]) == [0, 0, 3], \
+        'transport reset shadow %r' % list(ram[0xD8C3:0xD8C6])
+    assert list(ram[0xD8C6:0xD8C9]) == [27, 28, 0], \
+        'active/reserved command sanitization %r' % list(ram[0xD8C6:0xD8C9])
+    assert list(ram[0xD8C9:0xD8D0]) == [27, 28, 0, 28, 27, 28, 0], \
+        'PHRASE/TABLE extended-command cycling %r' % list(ram[0xD8C9:0xD8D0])
+    assert list(ram[0xD8D0:0xD8D4]) == [0x18, 1, 0, 0], \
+        'TABLE current-instrument routing %r' % list(ram[0xD8D0:0xD8D4])
+    assert list(ram[0xD8D4:0xD8D7]) == [0, 0, 2], \
+        'lazy test-register reset contract %r' % list(ram[0xD8D4:0xD8D7])
+    symbols = os.path.join(BUILD, 'cmd_symbols.bin')
+    data = open(symbols, 'rb').read()
+    assert len(data) == 7 * 2 * 32, 'extended symbol bank is %d bytes' % len(data)
+    assert len({data[i*32:(i+1)*32] for i in range(7)}) == 7, \
+        'one or more reserved normal glyphs are duplicates'
+    return 'alpha/beta masks, routing, type guards and lazy reset; seven glyphs; gamma-theta reserved'
+
 def t_fm_prewarm():
     """Stopped-load prediction scans first chains, warms three FM patches per pass, and cancels on start."""
     ram = run_rom(build_rom('fm_prewarm', boot_inject=FM_PREWARM), 35)
@@ -3816,10 +4100,27 @@ def t_live_context_audition():
         'running LIVE set was not replaced/stopped cleanly %r' % list(ram[0xD92C:0xD931])
     return 'CHAIN step/PHRASE solo audible in LIVE; one press replaces a set, second stops'
 
+def t_chain_all_audition():
+    """CHAIN Start phase-aligns and loops every linked track; unlinked chains refuse cleanly."""
+    ram = run_rom(build_rom('chain_all_audition', boot_inject=CHAIN_ALL_AUDITION), 35)
+    got = list(ram[0xD941:0xD959])
+    expect = [1, 3, 5,
+              2, 0, 6,
+              7, 4, 6,
+              3, 0, 6,
+              0xFF,
+              0, 7, 6,
+              0, 0,
+              0, 5,
+              1, 3, 2, 0]
+    assert got == expect, 'CHAIN all-track contextual audition state %r' % got
+    return 'all tracks phased modulo chain length; local wrap, stop reset, unlinked guard and LIVE verified'
+
 TESTS = [
     ('boot_smoke',   t_boot_smoke),
     ('kitless_build', t_kitless_build),
     ('live_context_audition', t_live_context_audition),
+    ('chain_all_audition', t_chain_all_audition),
     ('save_roundtrip', t_save_roundtrip),
     ('lfo_save_state', t_lfo_save_state),
     ('lfo_chain_sync', t_lfo_chain_sync),
@@ -3847,6 +4148,7 @@ TESTS = [
     ('perc_base_patch', t_perc_base_patch),
     ('perc_pitched_tsp', t_perc_pitched_tsp),
     ('fm_fswp_command', t_fm_fswp_command),
+    ('extended_ym_commands', t_extended_ym_commands),
     ('fm_simultaneous', t_fm_simultaneous),
     ('fm_prewarm', t_fm_prewarm),
     ('cut_primes_insert', t_cut_primes_insert),

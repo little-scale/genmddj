@@ -148,8 +148,9 @@ move operation; cutting an already-empty cell leaves the previous insert memory 
 
 There are two ways to start sound:
 
-- **Start** is your all-track master transport. From **SONG**, it starts on the exact cursor row;
-  from another editor screen, it starts at row 0.
+- **Start** is your all-track master transport. From **SONG**, it starts on the exact cursor row.
+  From **CHAIN**, it auditions all chains referenced by the SONG row you entered from, beginning
+  at the cursor's chain-step phase. From the other editor screens, it starts at row 0.
 - **C + B** plays **from where you are**, so you can audition a section while you work:
   - **SONG** — matches Start: it begins on the **exact cursor row**, then loops the cursor's **contiguous block**
     from its top when the block end is reached. (A *block* is a run of rows with no fully-empty
@@ -164,6 +165,13 @@ track's SONG clip while the other launched tracks continue. CHAIN, PHRASE and IN
 editor meaning instead: C+B immediately replaces the running set with an isolated audition of
 that context. Press C+B again to stop it. A CHAIN audition loops only that chain; it does not
 traverse the surrounding SONG rows.
+
+**Start from CHAIN** is the all-track counterpart to its C+B solo audition. Every populated
+track on the retained SONG row starts at the same chain-step phase and loops its own chain.
+Shorter chains wrap by their own populated length, so starting at step 5 begins a two-step chain
+at step 1. Empty tracks remain silent. If A+Up/Down has manually flipped the displayed chain away
+from the chain referenced by that SONG cell, Start refuses the ambiguous launch and briefly shows
+**NO SONG LINK**; C+B can still audition that unlinked chain by itself.
 
 Press **Start** again to stop.
 
@@ -253,7 +261,7 @@ cells it's in). So a gap-free column plays whole and loops; an empty cell is a s
 and the blocks above/below it loop separately. Tracks loop independently, so columns of
 different lengths create polymeters. From SONG, **Start** and **C+B** begin on the exact cursor
 row, then return to that block's top when they loop (§2). Start from another editor screen begins
-every column at row 0.
+every column at row 0, except CHAIN's contextual all-track audition described in §2.
 (In **LIVE** mode the SONG grid is a clip
 launcher — §10.)
 
@@ -577,6 +585,32 @@ parameter `xy` with **B-hold + D-pad**. Most take a two-digit hex parameter.
 | `N` | Noise | x = mode (0 white / 1 periodic), y = rate 0–3 | NOISE |
 | `B` | FSWP / wave bank | FM/PERC: override FSWP with packed `xy`; WAVE: select wave `y` | FM / PERC / WAVE |
 | `S` | SSG-EG / sample rate | FM: `x` selects operators and `y` sets SSG-EG; KIT: DAC walk rate 0–3 | FM / KIT |
+
+**Extended YM2612 test commands**
+
+After `Z`, the PHRASE and TABLE command selectors contain two dedicated Greek-symbol commands. They are
+global YM2612 writes, despite being placed on one track, and are accepted only when the row's
+effective instrument is a genuine FM instrument or a valid F3 PERC instrument. In a TABLE, this
+check uses the table-owning channel's current instrument because TABLE rows do not store an
+instrument number.
+
+| Cmd | Register | Safe parameter bits | Suggested values |
+|---|---|---|---|
+| `αxx` | YM2612 `$21` | `xx & $38` | `00` reset; `08` phase hold; `10` output-MSB distortion; `20` envelope hold; combinations allowed |
+| `βxx` | YM2612 `$2C` | `xx & $28` | `00` reset; `08` ninth DAC bit; `20` DAC broadcast/routing; `28` both |
+
+The mask is deliberate: `α` cannot enable the timer/status-read test bits on which GENMDDJ's
+KIT/WAVE driver depends, and `β` cannot change the incompletely understood TEST-pin direction.
+Transport start, Stop and ordinary song load reset any activated register to `00`; when neither
+command has been used, ordinary playback never touches these undocumented registers. Multiple
+extended commands reached on the same engine tick follow track-processing order, so the last value wins.
+Start with low monitoring volume, particularly for `β20` / `β28`, because DAC routing can cause
+large clicks or unexpectedly loud output. Behaviour may differ between YM2612/YM3438 hardware
+and emulators.
+
+The extended glyph bank also reserves `γ` (gamma), `δ` (delta), `ε` (epsilon), `ζ` (zeta) and
+`θ` (theta), but these five symbols are not selectable commands and are rejected if encountered
+in song data.
 
 On a genuine **FM or PERC instrument**, `Bxy` overrides the instrument's stored FSWP for
 that note, using the same packed control: `x` is the initial F-number offset and `y` is the

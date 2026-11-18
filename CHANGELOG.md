@@ -2,6 +2,25 @@
 
 All notable changes to genmddj. Versions increment by **0.01**.
 
+## v0.28 — 2026-11-19
+
+### Added
+- **Start from CHAIN** now auditions every chain referenced by the originating SONG row, beginning
+  at the cursor's chain-step phase and looping each populated chain independently. Shorter chains
+  phase by modulo length, empty tracks stay silent, and C+B retains its distinct selected-track
+  solo. A manually flipped chain that no longer matches its retained SONG cell refuses the
+  ambiguous launch with `NO SONG LINK` instead of starting unrelated material.
+- A dedicated seven-glyph extended command bank: alpha, beta, gamma, delta, epsilon, zeta and
+  theta. Alpha and beta are currently selectable after `Z`; the remaining five glyphs are
+  reserved for future commands and are not accepted in song data.
+- PHRASE and TABLE commands **`αxx`** and **`βxx`** provide guarded access to the YM2612's global test
+  registers `$21` and `$2C` from genuine FM/PERC instruments. Alpha is masked to `$38`
+  (phase hold, output-MSB distortion and envelope hold); beta is masked to `$28` (DAC ninth bit
+  and experimental DAC routing). Transport start, Stop and song load restore any test register
+  that was actually activated, while ordinary playback never writes either undocumented register.
+  In a TABLE, the command is validated against the owning FM/PERC channel's current instrument
+  before the global register write is queued.
+
 ## v0.27 — 2026-11-08
 
 ### Added

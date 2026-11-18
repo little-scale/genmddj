@@ -4,7 +4,7 @@
 # regenerates build/cmd_hints.i. Shares the OPTIONS -> HINTS toggle with the INSTR hints.
 #
 # Rules: UPPERCASE only (no lowercase glyphs); <= 35 chars/line; no double-quotes; a
-# too-wide line fails the build. One line per command letter A..Z, in order (26 lines).
+# too-wide line fails the build. Lines are A..Z, ALPHA, BETA in that order (28 lines).
 # A blank line = that command shows no hint. Parameter nibbles are written X (high) / Y (low).
 
 SWITCH / RESTART MACRO TABLE
@@ -33,3 +33,5 @@ SET SCALE - X KEY, Y TYPE
 VOLUME: CARRIER TL / PSG LVL
 FM LFO DEPTH: X AMS, Y FMS
 RANDOM NOTE GATE, PROB XX
+TEST21: 08 PH 10 UGLY 20 EG
+TEST2C: 08 DAC9 20 ROUTE

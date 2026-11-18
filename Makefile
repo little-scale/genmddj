@@ -21,6 +21,7 @@ $(BUILD):
 
 ASMFLAGS := -Fbin -spaces -quiet -m68000
 FONT     := $(BUILD)/font.bin
+CMDSYMS  := $(BUILD)/cmd_symbols.bin
 NOTES    := $(BUILD)/notes.bin
 Z80SRC   := src/z80/driver.asm
 Z80BIN   := $(BUILD)/driver.z80.bin
@@ -35,6 +36,10 @@ $(SAMPLES): tools/makesamples.py FORCE | $(BUILD)
 # FORCE (like the factory bank): so adding/changing/removing tools/font_custom.bin always re-bakes the font.
 $(FONT): tools/makefont.py FORCE | $(BUILD)
 	python3 tools/makefont.py $(FONT)
+
+# Seven dedicated extended-command glyphs (normal + inverse): alpha through theta.
+$(CMDSYMS): tools/makecmdsymbols.py | $(BUILD)
+	python3 tools/makecmdsymbols.py $(CMDSYMS)
 
 # FORCE so tools/wave_custom.bin (a bank from the browser tool) is picked up/dropped like the font.
 $(WAVES): tools/makewaves.py FORCE | $(BUILD)
@@ -88,7 +93,7 @@ $(GITVER): FORCE | $(BUILD)
 	 printf 'git_hash_str:\n    dc.b "%s%s",0\n' "$$hash" "$$dirty" > $(GITVER)
 FORCE:
 
-$(RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
+$(RAW): $(SRCS) $(FONT) $(CMDSYMS) $(NOTES) $(Z80BIN) $(SAMPLES) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -DKIT_LESS=0 -o $(RAW) src/main.asm
 
 $(ROM): $(RAW) tools/fixheader.py
@@ -96,7 +101,7 @@ $(ROM): $(RAW) tools/fixheader.py
 
 # Complete tracker without KIT instruments or PCM data. This target deliberately does not
 # depend on samples.bin, so sample baking is skipped and the result fits in a 128 KB ROM.
-$(KITLESS_RAW): $(SRCS) $(FONT) $(NOTES) $(Z80BIN) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
+$(KITLESS_RAW): $(SRCS) $(FONT) $(CMDSYMS) $(NOTES) $(Z80BIN) $(SPLASH) $(ALGOS) $(GITVER) $(HELP) $(HINTS) $(CMDHINTS) $(FACTORY) $(WAVES) | $(BUILD)
 	$(ASM) $(ASMFLAGS) -DKIT_LESS=1 -o $(KITLESS_RAW) src/main.asm
 
 $(KITLESS_ROM): $(KITLESS_RAW) tools/fixheader.py
