@@ -1,0 +1,467 @@
+<!doctype html>
+<!--
+  genmddj web player -- renders a .gmdj song through the real GENMDDJ ROM and
+  a WebAssembly build of Genesis Plus GX, entirely client-side. No server,
+  no upload, no build step; just open this file over http(s) (not file://,
+  browsers block WASM+fetch there) alongside the other three files in this
+  folder: genesis_plus_gx_libretro.js, genesis_plus_gx_libretro.wasm, genmddj.bin.
+
+  See NOTICE.md for attribution and license terms for the bundled emulator core.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>genmddj player</title>
+<style>
+  :root{ --pad:18px; }
+  body{ margin:0; font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;
+        background:#15171c; color:#cfd6e0; }
+  header{ padding:14px var(--pad); border-bottom:1px solid #2a2e38; }
+  header h1{ font-size:17px; margin:0; }
+  header .sub{ color:#7d8595; font-size:12px; }
+  main{ max-width:640px; margin:0 auto; padding:var(--pad); }
+  .card{ background:#1b1f27; border:1px solid #2a2e38; border-radius:8px; padding:16px; margin-bottom:16px; }
+  label{ display:block; font-size:12px; color:#9aa3b2; margin:12px 0 4px; }
+  label:first-child{ margin-top:0; }
+  input[type=file], input[type=number], select{
+    width:100%; box-sizing:border-box; background:#0e1014; color:#cfd6e0;
+    border:1px solid #2a2e38; border-radius:6px; padding:8px; font:inherit; }
+  .row{ display:flex; gap:16px; }
+  .row > div{ flex:1; }
+  .check{ display:flex; align-items:center; gap:8px; margin:12px 0 0; }
+  .check input{ width:auto; }
+  .check label{ margin:0; color:#cfd6e0; font-size:14px; }
+  button{ background:#2b6cb0; color:#fff; border:0; border-radius:7px; padding:10px 18px;
+          font:inherit; font-weight:600; cursor:pointer; margin-top:16px; }
+  button:disabled{ opacity:.5; cursor:not-allowed; }
+  button.ghost{ background:#222838; }
+  .status{ font-size:13px; color:#9aa3b2; margin-top:10px; white-space:pre-wrap; }
+  .drop{ border:2px dashed #2a2e38; border-radius:8px; padding:24px; text-align:center;
+         color:#7d8595; cursor:pointer; transition:border-color .15s,color .15s; }
+  .drop.hot{ border-color:#2b6cb0; color:#cfd6e0; background:#1a2230; }
+  .drop b{ color:#cfd6e0; }
+  .drop .fname{ margin-top:6px; font-family:ui-monospace,monospace; font-size:12px; color:#6ea8e0; }
+  .status.err{ color:#ff8a8a; }
+  .results{ margin-top:16px; }
+  .track{ display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid #2a2e38; }
+  .track:first-child{ border-top:none; }
+  .track .name{ width:64px; font-family:ui-monospace,monospace; font-size:12px; color:#9aa3b2; }
+  .track audio{ flex:1; height:32px; }
+  .track a{ color:#6ea8e0; font-size:12px; text-decoration:none; white-space:nowrap; }
+  h2{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#7d8595; margin:0 0 10px; }
+  .note{ font-size:12px; color:#7d8595; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>genmddj player</h1>
+  <span class="sub">renders a .gmdj through the real ROM + emulator, entirely in your browser &mdash; nothing is uploaded anywhere</span>
+</header>
+<main>
+  <div class="card">
+    <h2>Song</h2>
+    <label>.gmdj file</label>
+    <div class="drop" id="dropZone">
+      Drop a <b>.gmdj</b> file here, or click to choose
+      <div class="fname" id="fname"></div>
+    </div>
+    <input type="file" id="gmdj" accept=".gmdj" hidden>
+
+    <div class="row">
+      <div>
+        <label>Duration (seconds)</label>
+        <input type="number" id="seconds" value="30" min="1" max="300">
+      </div>
+      <div>
+        <label>Sample rate</label>
+        <select id="rate">
+          <option value="44100">44.1 kHz</option>
+          <option value="48000" selected>48 kHz</option>
+          <option value="96000">96 kHz</option>
+        </select>
+      </div>
+    </div>
+
+    <label>YM2612 core</label>
+    <select id="core">
+      <option value="mame (ym2612)" selected>MAME (default, faster)</option>
+      <option value="nuked (ym2612)">Nuked OPN2 (cycle-accurate, slower)</option>
+    </select>
+
+    <div class="check"><input type="checkbox" id="mix" checked><label for="mix">Render main stereo mix</label></div>
+    <div class="check"><input type="checkbox" id="stems"><label for="stems">Also render the 10 hardware-voice stems (slower, one full pass per voice)</label></div>
+
+    <button id="go">Render</button>
+    <div class="status" id="status">Loading emulator core&hellip;</div>
+  </div>
+
+  <div class="card results" id="results" style="display:none">
+    <h2>Output</h2>
+    <div id="tracks"></div>
+    <button class="ghost" id="dlZip" style="display:none">Download all as .zip</button>
+  </div>
+
+  <div class="note">Runs the real genmddj ROM through a WebAssembly build of Genesis Plus GX (Charles MacDonald, Eke-Eke and contributors). Everything happens locally in this tab; no song data or audio ever leaves your machine. Genesis Plus GX is free for non-commercial use, see <a href="./NOTICE.md" style="color:#6ea8e0">NOTICE.md</a>.</div>
+</main>
+
+<script type="module">
+const $ = s => document.querySelector(s);
+
+// ---- drop zone: click-to-browse or drag-and-drop, both feed the same hidden file input
+const dropZone = $("#dropZone"), fileInput = $("#gmdj"), fnameEl = $("#fname");
+function showChosenFile(){
+  const f = fileInput.files[0];
+  fnameEl.textContent = f ? f.name : "";
+}
+dropZone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", showChosenFile);
+["dragenter","dragover"].forEach(ev => dropZone.addEventListener(ev, e => {
+  e.preventDefault(); dropZone.classList.add("hot");
+}));
+["dragleave","dragend"].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.remove("hot")));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault(); dropZone.classList.remove("hot");
+  const f = e.dataTransfer.files[0];
+  if (f) { fileInput.files = e.dataTransfer.files; showChosenFile(); }
+});
+
+// ---- minimal ZIP writer (STORE method, no compression -- WAV data doesn't compress much anyway,
+// and this avoids pulling in a whole deflate implementation for a single-file HTML tool)
+function crc32(bytes) {
+  let table = crc32.table;
+  if (!table) {
+    table = crc32.table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+async function buildZip(entries /* [{name, blob}] */) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  const enc = new TextEncoder();
+  for (const { name, blob } of entries) {
+    const data = new Uint8Array(await blob.arrayBuffer());
+    const nameBytes = enc.encode(name);
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true); local.setUint16(6, 0, true); local.setUint16(8, 0, true);
+    local.setUint16(10, 0, true); local.setUint16(12, 0, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true); local.setUint32(22, data.length, true);
+    local.setUint16(26, nameBytes.length, true); local.setUint16(28, 0, true);
+    parts.push(new Uint8Array(local.buffer), nameBytes, data);
+
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true);
+    cd.setUint16(4, 20, true); cd.setUint16(6, 20, true); cd.setUint16(8, 0, true);
+    cd.setUint16(10, 0, true); cd.setUint16(12, 0, true); cd.setUint16(14, 0, true);
+    cd.setUint32(16, crc, true);
+    cd.setUint32(20, data.length, true); cd.setUint32(24, data.length, true);
+    cd.setUint16(28, nameBytes.length, true); cd.setUint16(30, 0, true); cd.setUint16(32, 0, true);
+    cd.setUint16(34, 0, true); cd.setUint16(36, 0, true); cd.setUint32(38, 0, true);
+    cd.setUint32(42, offset, true);
+    central.push(new Uint8Array(cd.buffer), nameBytes);
+
+    offset += local.buffer.byteLength + nameBytes.length + data.length;
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const p of central) centralSize += p.byteLength;
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(4, 0, true); end.setUint16(6, 0, true);
+  end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+  end.setUint32(12, centralSize, true); end.setUint32(16, centralStart, true);
+  end.setUint16(20, 0, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+}
+
+const GMDJ_HEADER = 32;
+const DATA_SIZE = 23904;
+const SRAM_LEAD = 1;
+const DIR_SIG = 8;
+const CONFIG_OFS = 16;
+const DIR_BASE = 2304;
+const HEAP_BASE = 2816;
+const VOICE_MASK_ALL = 0x03ff;
+const RETRO_MEMORY_SAVE_RAM = 0;
+const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT = 10;
+const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY = 9;
+const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY = 31;
+const RETRO_ENVIRONMENT_GET_CAN_DUPE = 3;
+const RETRO_ENVIRONMENT_GET_VARIABLE = 15;
+
+const STEM_NAMES = ["F1","F2","F3","F4","F5","F6","T1","T2","T3","NO"];
+
+function parseSong(buf) {
+  const bytes = new Uint8Array(buf);
+  const magic = String.fromCharCode(...bytes.subarray(0, 8));
+  if (bytes.length !== GMDJ_HEADER + DATA_SIZE || magic !== "GMDJSONG") {
+    throw new Error("Not a 23,904-byte GENMDDJ song container (.gmdj)");
+  }
+  const version = bytes[8];
+  const declared = (bytes[10] << 8) | bytes[11];
+  if (version !== 1 || declared !== DATA_SIZE) {
+    throw new Error(`Unsupported .gmdj version/size (${version}/${declared})`);
+  }
+  return { file: bytes, data: bytes.subarray(GMDJ_HEADER) };
+}
+
+function songChecksum(data) {
+  let sum = 0;
+  for (let i = 0; i < DATA_SIZE; i++) sum = (sum + data[i]) >>> 0;
+  return sum & 0xffff;
+}
+
+// Byte-for-byte port of populate_sram() from genmddj-player.c.
+function populateSram(heapU8, sramPtr, sramSize, song, mask) {
+  if (sramSize < SRAM_LEAD + HEAP_BASE + DATA_SIZE) {
+    throw new Error(`Emulator SRAM buffer is too small (${sramSize} bytes)`);
+  }
+  const sram = heapU8.subarray(sramPtr, sramPtr + sramSize);
+  sram.fill(0xff);
+  sram.set(new TextEncoder().encode("GMD1"), SRAM_LEAD + DIR_SIG);
+
+  const configOfs = SRAM_LEAD + CONFIG_OFS;
+  sram[configOfs + 0] = 0xa5; sram[configOfs + 1] = 0; sram[configOfs + 2] = 2; sram[configOfs + 3] = 0;
+  sram[configOfs + 4] = 0; sram[configOfs + 5] = 1; sram[configOfs + 6] = 0x5a; sram[configOfs + 7] = 2; sram[configOfs + 8] = 0xc3;
+  sram.set(new TextEncoder().encode("PLY1"), configOfs + 9);
+  sram[configOfs + 13] = (mask >> 8) & 0xff;
+  sram[configOfs + 14] = mask & 0xff;
+
+  const entryOfs = SRAM_LEAD + DIR_BASE;
+  const checksum = songChecksum(song.data);
+  sram[entryOfs + 0] = 0xa5; sram[entryOfs + 1] = 1;
+  sram[entryOfs + 2] = 0; sram[entryOfs + 3] = 0;
+  sram[entryOfs + 4] = (DATA_SIZE >> 8) & 0xff;
+  sram[entryOfs + 5] = DATA_SIZE & 0xff;
+  sram.set(song.file.subarray(12, 20), entryOfs + 6);
+  sram[entryOfs + 14] = (checksum >> 8) & 0xff;
+  sram[entryOfs + 15] = checksum & 0xff;
+  sram.set(song.data, SRAM_LEAD + HEAP_BASE);
+}
+
+// Linear-interpolation resampler on an exact rational clock, same algorithm
+// as resampler_push() in genmddj-player.c.
+function makeResampler(inputRate, outputRate, onSample) {
+  let havePrevious = false, prevL = 0, prevR = 0, inputIndex = 0n, nextOutputIndex = 1n;
+  const IR = BigInt(inputRate), OR = BigInt(outputRate);
+  return function push(left, right) {
+    if (!havePrevious) {
+      prevL = left; prevR = right; havePrevious = true;
+      inputIndex = 0n; nextOutputIndex = 1n;
+      onSample(left, right);
+      return;
+    }
+    inputIndex += 1n;
+    const intervalStart = (inputIndex - 1n) * OR;
+    const intervalEnd = inputIndex * OR;
+    while (nextOutputIndex * IR <= intervalEnd) {
+      const position = nextOutputIndex * IR - intervalStart;
+      const dl = BigInt(left - prevL), dr = BigInt(right - prevR);
+      const outL = prevL + Number((dl * position + OR / 2n) / OR);
+      const outR = prevR + Number((dr * position + OR / 2n) / OR);
+      onSample(outL | 0, outR | 0);
+      nextOutputIndex += 1n;
+    }
+    prevL = left; prevR = right;
+  };
+}
+
+function buildWavBlob(samplesArr, rate) {
+  const n = samplesArr.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const dv = new DataView(buf);
+  const wStr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  wStr(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); wStr(8, "WAVE");
+  wStr(12, "fmt "); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); dv.setUint16(22, 2, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * 4, true);
+  dv.setUint16(32, 4, true); dv.setUint16(34, 16, true);
+  wStr(36, "data"); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, samplesArr[i], true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+let corePromise = null;
+function loadCore() {
+  if (!corePromise) {
+    corePromise = (async () => {
+      const [{ default: factory }, wasmBinary] = await Promise.all([
+        import("./genesis_plus_gx_libretro.js"),
+        fetch("./genesis_plus_gx_libretro.wasm").then(r => r.arrayBuffer()),
+      ]);
+      return { factory, wasmBinary };
+    })();
+  }
+  return corePromise;
+}
+
+let romPromise = null;
+function loadRom() {
+  if (!romPromise) romPromise = fetch("./genmddj.bin").then(r => r.arrayBuffer()).then(b => new Uint8Array(b));
+  return romPromise;
+}
+
+async function renderOnce(mod, rom, song, seconds, outputRate, ymCore, voiceMask) {
+  const outSamples = [];
+  let resampler = null;
+
+  const envCb = mod.addFunction((cmd, dataPtr) => {
+    if (cmd === RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) return 1;
+    if (cmd === RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY || cmd === RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY) {
+      const p = mod._malloc(5); mod.stringToUTF8("/tmp", p, 5);
+      mod.setValue(dataPtr, p, "i32");
+      return 1;
+    }
+    if (cmd === RETRO_ENVIRONMENT_GET_CAN_DUPE) { mod.setValue(dataPtr, 1, "i8"); return 1; }
+    if (cmd === RETRO_ENVIRONMENT_GET_VARIABLE) {
+      const keyPtr = mod.getValue(dataPtr, "i32");
+      const key = mod.UTF8ToString(keyPtr);
+      if (key === "genesis_plus_gx_ym2612") {
+        const vp = mod._malloc(24); mod.stringToUTF8(ymCore, vp, 24);
+        mod.setValue(dataPtr + 4, vp, "i32");
+        return 1;
+      }
+      return 0;
+    }
+    return 0;
+  }, "iii");
+  mod._retro_set_environment(envCb);
+  mod._retro_set_video_refresh(mod.addFunction(() => {}, "viiii"));
+  mod._retro_set_input_poll(mod.addFunction(() => {}, "v"));
+  mod._retro_set_input_state(mod.addFunction(() => 0, "iiiii"));
+  mod._retro_set_audio_sample(mod.addFunction(() => {}, "vii"));
+  mod._retro_set_audio_sample_batch(mod.addFunction((dataPtr, frames) => {
+    const view = new Int16Array(mod.HEAPU8.buffer, dataPtr, frames * 2);
+    for (let i = 0; i < frames; i++) resampler(view[i * 2], view[i * 2 + 1]);
+    return frames;
+  }, "iii"));
+
+  mod._retro_init();
+
+  const romPtr = mod._malloc(rom.length);
+  mod.HEAPU8.set(rom, romPtr);
+  const vfsPath = "/rom.bin";
+  mod.FS.writeFile(vfsPath, rom);
+  const pathPtr = mod._malloc(64);
+  mod.stringToUTF8(vfsPath, pathPtr, 64);
+  const gameInfoPtr = mod._malloc(16);
+  mod.setValue(gameInfoPtr, pathPtr, "i32");
+  mod.setValue(gameInfoPtr + 4, romPtr, "i32");
+  mod.setValue(gameInfoPtr + 8, rom.length, "i32");
+  mod.setValue(gameInfoPtr + 12, 0, "i32");
+
+  if (!mod._retro_load_game(gameInfoPtr)) throw new Error("Emulator rejected the ROM");
+
+  const sramPtr = mod._retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) >>> 0;
+  const sramSize = mod._retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) >>> 0;
+  if (!sramPtr || !sramSize) throw new Error("Core did not expose cartridge SRAM");
+
+  const avInfoPtr = mod._malloc(40);
+  mod._retro_get_system_av_info(avInfoPtr);
+  const fps = mod.getValue(avInfoPtr + 24, "double");
+  const inputRate = Math.round(mod.getValue(avInfoPtr + 32, "double"));
+  if (!inputRate || fps <= 1) throw new Error("Emulator reported invalid audio/video timing");
+
+  resampler = makeResampler(inputRate, outputRate, (l, r) => outSamples.push(l, r));
+  populateSram(mod.HEAPU8, sramPtr, sramSize, song, voiceMask);
+
+  const frameCount = Math.ceil(seconds * fps);
+  for (let f = 0; f < frameCount; f++) mod._retro_run();
+
+  mod._retro_unload_game();
+  mod._retro_deinit();
+
+  return buildWavBlob(Int16Array.from(outSamples), outputRate);
+}
+
+async function render() {
+  const file = fileInput.files[0];
+  const status = $("#status");
+  const wantMix = $("#mix").checked, wantStems = $("#stems").checked;
+  if (!file) { status.textContent = "Choose a .gmdj file first."; status.className = "status err"; return; }
+  if (!wantMix && !wantStems) { status.textContent = "Pick at least one of mix or stems."; status.className = "status err"; return; }
+
+  $("#go").disabled = true;
+  status.className = "status";
+  $("#results").style.display = "none";
+  $("#dlZip").style.display = "none";
+
+  try {
+    status.textContent = "Loading emulator core\u2026";
+    const [{ factory, wasmBinary }, rom] = await Promise.all([loadCore(), loadRom()]);
+    const song = parseSong(await file.arrayBuffer());
+
+    const seconds = Math.min(300, Math.max(1, parseInt($("#seconds").value, 10) || 30));
+    const outputRate = parseInt($("#rate").value, 10);
+    const ymCore = $("#core").value;
+
+    const tracks = $("#tracks");
+    tracks.innerHTML = "";
+    const rendered = []; // { name, blob } -- kept around for the zip-all button
+    const addTrack = (name, blob) => {
+      rendered.push({ name: name + ".wav", blob });
+      const url = URL.createObjectURL(blob);
+      const row = document.createElement("div");
+      row.className = "track";
+      row.innerHTML = `<span class="name">${name}</span><audio controls src="${url}"></audio><a href="${url}" download="${name}.wav">Download</a>`;
+      tracks.appendChild(row);
+    };
+
+    if (wantMix) {
+      status.textContent = "Rendering main mix\u2026";
+      const mod = await factory({ wasmBinary });
+      const blob = await renderOnce(mod, rom, song, seconds, outputRate, ymCore, VOICE_MASK_ALL);
+      addTrack("mix", blob);
+    }
+
+    if (wantStems) {
+      for (let i = 0; i < STEM_NAMES.length; i++) {
+        status.textContent = `Rendering stems\u2026 (${i + 1}/${STEM_NAMES.length}: ${STEM_NAMES[i]})`;
+        const mod = await factory({ wasmBinary });
+        const blob = await renderOnce(mod, rom, song, seconds, outputRate, ymCore, 1 << i);
+        addTrack(STEM_NAMES[i], blob);
+      }
+    }
+
+    status.textContent = "Done.";
+    $("#results").style.display = "";
+    if (rendered.length > 1) {
+      $("#dlZip").style.display = "";
+      $("#dlZip").onclick = async () => {
+        $("#dlZip").disabled = true;
+        $("#dlZip").textContent = "Zipping\u2026";
+        const zipBlob = await buildZip(rendered);
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "genmddj-render.zip";
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        $("#dlZip").disabled = false;
+        $("#dlZip").textContent = "Download all as .zip";
+      };
+    }
+  } catch (e) {
+    console.error(e);
+    status.textContent = "Render failed: " + e.message;
+    status.className = "status err";
+  } finally {
+    $("#go").disabled = false;
+  }
+}
+
+$("#go").onclick = render;
+loadCore().then(() => { $("#status").textContent = "Ready. Choose a .gmdj file and click Render."; })
+  .catch(e => { $("#status").textContent = "Failed to load emulator core: " + e.message; $("#status").className = "status err"; });
+</script>
+</body>
+</html>
